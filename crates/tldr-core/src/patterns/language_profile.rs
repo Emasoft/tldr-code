@@ -237,10 +237,18 @@ pub fn create_evidence_from(node: Node, source: &str, file_path: &Path) -> Evide
 }
 
 fn get_snippet(node: Node, source: &str) -> String {
+    // why: this runs once per evidence push (potentially thousands of times
+    // per large file), and `source.lines().collect()` re-materialized a
+    // Vec<&str> of EVERY line in the file just to slice out at most 3 of
+    // them. `skip`+`take` walk the same lazy iterator without allocating a
+    // vector proportional to the whole file.
     let start_line = node.start_position().row;
-    let lines: Vec<&str> = source.lines().collect();
-    let end_line = (start_line + 3).min(lines.len());
-    lines[start_line..end_line].join("\n")
+    source
+        .lines()
+        .skip(start_line)
+        .take(3)
+        .collect::<Vec<&str>>()
+        .join("\n")
 }
 
 fn push_evidence(target: &SignalTarget, evidence: &Evidence, signals: &mut PatternSignals) {

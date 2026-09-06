@@ -993,6 +993,21 @@ fn l2_ir_cost_bench_10_parse_redundancy() {
             parse_overhead * 1000.0
         );
     }
+
+    // why: this test had zero assert statements, so it could never fail even
+    // if the measured functions started erroring. Sanity-check the timings
+    // are real (finite, non-negative) instead of asserting nothing.
+    for (label, d) in [
+        ("parse", parse_only),
+        ("cfg", cfg_only),
+        ("dfg", dfg_only),
+        ("ssa", ssa_only),
+    ] {
+        assert!(
+            d.as_secs_f64().is_finite() && d.as_secs_f64() >= 0.0,
+            "{label} measurement should be a finite non-negative duration, got {d:?}"
+        );
+    }
 }
 
 // =============================================================================
@@ -1402,4 +1417,16 @@ fn l2_ir_cost_bench_11_summary_table() {
     eprintln!("║                                                                          ║");
     eprintln!("╚══════════════════════════════════════════════════════════════════════════╝");
     eprintln!();
+
+    // why: this test had zero assert statements, so it could never fail even
+    // if the underlying measurement broke (e.g. returned 0 or NaN). Sanity
+    // check the computed summary numbers instead of asserting nothing.
+    assert!(
+        full_st.is_finite() && full_st > 0.0,
+        "full-function-set timing should be a finite positive duration, got {full_st}"
+    );
+    assert!(
+        functions_in_budget > 0,
+        "functions_in_budget should be positive, got {functions_in_budget}"
+    );
 }

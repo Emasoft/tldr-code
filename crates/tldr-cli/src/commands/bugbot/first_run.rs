@@ -429,40 +429,14 @@ fn build_temporal_baseline(project_root: &Path) -> Result<()> {
 /// recognized source extensions. Skips hidden directories, `target/`,
 /// `node_modules/`, and `vendor/` directories.
 fn collect_source_files(project_root: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    collect_source_files_recursive(project_root, &mut files);
-    files
-}
-
-/// Recursive helper for `collect_source_files`.
-fn collect_source_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            // Skip hidden directories and common non-source dirs
-            if name.starts_with('.')
-                || name == "target"
-                || name == "node_modules"
-                || name == "vendor"
-                || name == "__pycache__"
-                || name == "dist"
-                || name == "build"
-            {
-                continue;
-            }
-        }
-
-        if path.is_dir() {
-            collect_source_files_recursive(&path, files);
-        } else if is_source_file(&path) {
-            files.push(path);
-        }
-    }
+    // why: a hand-rolled walk here duplicates (and can drift from) the
+    // shared ignore/vendor-dir rules in tldr_core::walker::ProjectWalker,
+    // which every other project-wide scan in tldr already goes through.
+    tldr_core::walker::ProjectWalker::new(project_root)
+        .iter()
+        .map(|entry| entry.into_path())
+        .filter(|path| is_source_file(path))
+        .collect()
 }
 
 /// Check if a file has a recognized source file extension.

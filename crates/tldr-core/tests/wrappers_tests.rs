@@ -683,10 +683,29 @@ def complex_func(x, y, z, a, b, c):
 /// Should handle gracefully
 #[test]
 fn test_run_secure_nonexistent_path() {
+    // why: `run_secure` always returns `Ok` — each sub-scan's own success/
+    // failure is captured inside `report.sub_results` (`safe_call`), so
+    // `let _ = result;` discarded the only place a real assertion could be
+    // made and could never catch a regression that started panicking or
+    // that started reporting the missing path as a clean scan.
     let result = run_secure("/nonexistent/path/12345", None, false);
-    // Should either succeed with no findings or return an error
-    // Documents current behavior
-    let _ = result;
+    let report = result.expect("run_secure must not itself return Err");
+    let secrets = report
+        .sub_results
+        .get("secrets")
+        .expect("secrets sub-result must be recorded");
+    // A nonexistent path is walked like an empty directory (no files to
+    // scan) rather than treated as an I/O error, so the sub-scan succeeds
+    // with zero findings — assert that concretely instead of ignoring it.
+    assert!(
+        secrets.success,
+        "secrets sub-scan should succeed with 0 findings"
+    );
+    assert!(
+        report.findings.is_empty(),
+        "a nonexistent path has no files to find secrets in: {:?}",
+        report.findings
+    );
 }
 
 /// Test to document behavior: run_todo with binary file

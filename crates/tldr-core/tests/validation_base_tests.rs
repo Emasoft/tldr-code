@@ -131,10 +131,17 @@ fn test_validate_file_path_traversal_in_project_root() {
     // Note: Can't actually go above temp dir, so this tests the mechanism
 
     // Try to escape from root of temp
-    let _result = validate_file_path("../", Some(project_dir));
+    let result = validate_file_path("../", Some(project_dir));
 
-    // This might succeed or fail depending on temp dir location
-    // but should not panic
+    // why: the old test discarded `_result` and only commented "should not
+    // panic" — it never checked the traversal was actually rejected. "../"
+    // from the project root always resolves above the project boundary, so
+    // this must be a PathTraversal error, not a silent success.
+    assert!(
+        matches!(result, Err(TldrError::PathTraversal(_))),
+        "escaping the project root with '../' must be rejected: {:?}",
+        result
+    );
 }
 
 #[test]

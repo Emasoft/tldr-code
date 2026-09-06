@@ -687,14 +687,18 @@ fn get_file_layer<'a>(
         current = dir.parent();
     }
 
-    // Also check if the file path starts with any known layer directory
-    for (layer_dir, layer) in file_layers {
-        if file.starts_with(layer_dir) {
-            return Some(layer);
-        }
-    }
-
-    None
+    // Also check if the file path starts with any known layer directory.
+    // why: HashMap iteration order is nondeterministic, so picking the
+    // first match could non-deterministically choose a shallower ancestor
+    // over a more specific one when multiple layer directories are
+    // prefixes of the same file (e.g. both "src" and "src/high" configured
+    // as layers). Deterministically prefer the longest (most specific)
+    // matching prefix instead of whichever the iterator visits first.
+    file_layers
+        .iter()
+        .filter(|(layer_dir, _)| file.starts_with(layer_dir))
+        .max_by_key(|(layer_dir, _)| layer_dir.as_os_str().len())
+        .map(|(_, layer)| layer)
 }
 
 /// Check a single import edge against a layer rule.

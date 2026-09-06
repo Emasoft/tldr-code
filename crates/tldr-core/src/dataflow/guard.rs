@@ -26,7 +26,10 @@
 //! Soundness invariant: narrowing never removes concrete values that could
 //! actually occur. When in doubt, the result is conservative (unchanged).
 
-use super::abstract_interp::{AbstractState, AbstractValue, Nullability};
+// why: guard.rs, available.rs, and abstract_interp.rs each carried a
+// byte-for-byte identical `is_identifier` — one canonical copy lives in
+// abstract_interp.rs (already `pub`); reuse it here instead of drifting again.
+use super::abstract_interp::{is_identifier, AbstractState, AbstractValue, Nullability};
 
 /// A parsed guard condition from a CFG branch edge.
 ///
@@ -110,26 +113,6 @@ pub enum GuardCondition {
         /// The variable being evaluated for falsiness.
         var: String,
     },
-}
-
-/// Check whether a string is a valid simple identifier.
-///
-/// A valid identifier starts with a Unicode alphabetic character or
-/// underscore, followed by zero or more Unicode alphanumeric characters or
-/// underscores (matches `char::is_alphabetic`/`is_alphanumeric`, not just
-/// ASCII). Does not accept dotted paths (e.g., `obj.field`).
-fn is_identifier(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_alphabetic() || c == '_' => {}
-        _ => return false,
-    }
-
-    chars.all(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// Parse an integer literal, including negative values like `-5`.

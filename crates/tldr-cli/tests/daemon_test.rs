@@ -1258,6 +1258,14 @@ mod warm_tests {
 
 mod stats_tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // why: test_stats_formats_token_savings/_json_output/_text_output all
+    // read/write the REAL `~/.tldr/stats.jsonl`, backing it up and restoring
+    // it. Run concurrently (default cargo test parallelism, and these are
+    // exercised together via `--ignored`) they race on the same file and can
+    // corrupt or lose the user's real stats/backup. Serialize them.
+    static STATS_FILE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     #[ignore = "stats command not yet implemented"]
@@ -1290,6 +1298,7 @@ mod stats_tests {
     #[test]
     #[ignore = "stats command not yet implemented"]
     fn test_stats_formats_token_savings() {
+        let _guard = STATS_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Create a test stats file
         let tldr_dir = home_dir().join(".tldr");
         fs::create_dir_all(&tldr_dir).ok();
@@ -1325,6 +1334,7 @@ mod stats_tests {
     #[test]
     #[ignore = "stats command not yet implemented"]
     fn test_stats_json_output() {
+        let _guard = STATS_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tldr_dir = home_dir().join(".tldr");
         fs::create_dir_all(&tldr_dir).ok();
 
@@ -1364,6 +1374,7 @@ mod stats_tests {
     #[test]
     #[ignore = "stats command not yet implemented"]
     fn test_stats_text_output() {
+        let _guard = STATS_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tldr_dir = home_dir().join(".tldr");
         fs::create_dir_all(&tldr_dir).ok();
 

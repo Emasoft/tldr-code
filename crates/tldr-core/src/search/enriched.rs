@@ -954,7 +954,7 @@ pub fn search_with_inner(
                 return Ok(EnrichedSearchReport {
                     query: pattern.clone(),
                     results: Vec::new(),
-                            total_results: 0,
+                    total_results: 0,
                     total_files_searched: total,
                     search_mode: if structure_cache.is_some() {
                         "regex+cached-structure".to_string()
@@ -1009,7 +1009,7 @@ pub fn search_with_inner(
                 return Ok(EnrichedSearchReport {
                     query: hybrid_query.clone(),
                     results: Vec::new(),
-                            total_results: 0,
+                    total_results: 0,
                     total_files_searched: total_files,
                     search_mode: "hybrid(bm25+regex)".to_string(),
                 });
@@ -1154,9 +1154,7 @@ pub fn search_with_inner(
                 if raw.score > *entry {
                     *entry = raw.score;
                 }
-                let terms = file_matched_terms
-                    .entry(raw.file_path.clone())
-                    .or_default();
+                let terms = file_matched_terms.entry(raw.file_path.clone()).or_default();
                 for t in &raw.matched_terms {
                     if !terms.contains(t) {
                         terms.push(t.clone());
@@ -1668,6 +1666,32 @@ fn try_enrich_with_callgraph(
     let forward = build_forward_graph(&call_graph);
     let reverse = build_reverse_graph(&call_graph);
 
+    // why: the enrichment loop below used to scan the ENTIRE `forward`/
+    // `reverse` maps (twice each, for the exact-match pass and the
+    // name-only fallback) per search result — O(results * edges). Index
+    // both maps by function name once, up front, so each result's lookup
+    // is O(matches for that name) instead of O(total edges).
+    let mut forward_by_name: HashMap<
+        &str,
+        Vec<(&crate::types::FunctionRef, &Vec<crate::types::FunctionRef>)>,
+    > = HashMap::new();
+    for (func_ref, callees) in &forward {
+        forward_by_name
+            .entry(func_ref.name.as_str())
+            .or_default()
+            .push((func_ref, callees));
+    }
+    let mut reverse_by_name: HashMap<
+        &str,
+        Vec<(&crate::types::FunctionRef, &Vec<crate::types::FunctionRef>)>,
+    > = HashMap::new();
+    for (func_ref, callers) in &reverse {
+        reverse_by_name
+            .entry(func_ref.name.as_str())
+            .or_default()
+            .push((func_ref, callers));
+    }
+
     // Enrich each result with callers/callees.
     // Match by name + file when possible, fall back to name-only.
     for result in &mut results {
@@ -1678,18 +1702,20 @@ fn try_enrich_with_callgraph(
         let result_file = result.file.to_string_lossy();
 
         // Find callees (what this function calls) — prefer file+name match
+        let name_matches = forward_by_name.get(result.name.as_str());
         let mut found_callees = false;
-        for (func_ref, callees) in &forward {
-            let ref_file = func_ref.file.to_string_lossy();
-            if func_ref.name == result.name
-                && (ref_file.is_empty()
+        if let Some(matches) = name_matches {
+            for (func_ref, callees) in matches {
+                let ref_file = func_ref.file.to_string_lossy();
+                if ref_file.is_empty()
                     || result_file.is_empty()
-                    || path_suffix_matches(&ref_file, &result_file))
-            {
-                result.callees = callees.iter().map(|f| f.name.clone()).collect();
-                result.callees.sort();
-                found_callees = true;
-                break;
+                    || path_suffix_matches(&ref_file, &result_file)
+                {
+                    result.callees = callees.iter().map(|f| f.name.clone()).collect();
+                    result.callees.sort();
+                    found_callees = true;
+                    break;
+                }
             }
         }
         // Fallback: name-only match. why: picking the "first hit" from a
@@ -1698,41 +1724,41 @@ fn try_enrich_with_callgraph(
         // random caller/callee list. Sort candidates by file path first so
         // the choice is stable and reproducible.
         if !found_callees {
-            let mut candidates: Vec<_> = forward
-                .iter()
-                .filter(|(func_ref, _)| func_ref.name == result.name)
-                .collect();
-            candidates.sort_by(|a, b| a.0.file.cmp(&b.0.file));
-            if let Some((_, callees)) = candidates.first() {
-                result.callees = callees.iter().map(|f| f.name.clone()).collect();
-                result.callees.sort();
+            if let Some(matches) = name_matches {
+                let mut candidates: Vec<_> = matches.clone();
+                candidates.sort_by(|a, b| a.0.file.cmp(&b.0.file));
+                if let Some((_, callees)) = candidates.first() {
+                    result.callees = callees.iter().map(|f| f.name.clone()).collect();
+                    result.callees.sort();
+                }
             }
         }
 
         // Find callers (what calls this function) — prefer file+name match
+        let name_matches = reverse_by_name.get(result.name.as_str());
         let mut found_callers = false;
-        for (func_ref, callers) in &reverse {
-            let ref_file = func_ref.file.to_string_lossy();
-            if func_ref.name == result.name
-                && (ref_file.is_empty()
+        if let Some(matches) = name_matches {
+            for (func_ref, callers) in matches {
+                let ref_file = func_ref.file.to_string_lossy();
+                if ref_file.is_empty()
                     || result_file.is_empty()
-                    || path_suffix_matches(&ref_file, &result_file))
-            {
-                result.callers = callers.iter().map(|f| f.name.clone()).collect();
-                result.callers.sort();
-                found_callers = true;
-                break;
+                    || path_suffix_matches(&ref_file, &result_file)
+                {
+                    result.callers = callers.iter().map(|f| f.name.clone()).collect();
+                    result.callers.sort();
+                    found_callers = true;
+                    break;
+                }
             }
         }
         if !found_callers {
-            let mut candidates: Vec<_> = reverse
-                .iter()
-                .filter(|(func_ref, _)| func_ref.name == result.name)
-                .collect();
-            candidates.sort_by(|a, b| a.0.file.cmp(&b.0.file));
-            if let Some((_, callers)) = candidates.first() {
-                result.callers = callers.iter().map(|f| f.name.clone()).collect();
-                result.callers.sort();
+            if let Some(matches) = name_matches {
+                let mut candidates: Vec<_> = matches.clone();
+                candidates.sort_by(|a, b| a.0.file.cmp(&b.0.file));
+                if let Some((_, callers)) = candidates.first() {
+                    result.callers = callers.iter().map(|f| f.name.clone()).collect();
+                    result.callers.sort();
+                }
             }
         }
     }
@@ -2633,7 +2659,10 @@ def thing():
         }
 
         let report = enriched_search("Bar", &project, Language::Python, opts(20)).unwrap();
-        assert!(!report.results.is_empty(), "Should return results for 'Bar'");
+        assert!(
+            !report.results.is_empty(),
+            "Should return results for 'Bar'"
+        );
 
         // The top two results must be the substring-name matches, in
         // either order. Docstring-only matches must rank below.

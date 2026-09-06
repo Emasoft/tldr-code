@@ -159,9 +159,15 @@ mod contracts {
             preconds
         );
 
+        // why: bare `.contains("0")` matches any digit-0 substring (e.g. "150"
+        // in an unrelated "age > 150" constraint), so the assertion could pass
+        // without the intended ">= 0" precondition ever being present.
         let has_range = preconds.iter().any(|p| {
             let constraint = p["constraint"].as_str().unwrap_or("");
-            constraint.contains("0") || constraint.contains("non-negative")
+            constraint.contains(">= 0")
+                || constraint.contains("> 0")
+                || constraint.contains("positive")
+                || constraint.contains("non-negative")
         });
         assert!(
             has_range,

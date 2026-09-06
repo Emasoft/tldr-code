@@ -2102,7 +2102,7 @@ impl LeakDetector {
 
             // Check if any path lacks a close
             for path in &paths {
-                if !self.path_has_close(path, &resource.name) {
+                if !self.path_has_close(cfg, path, &resource.name) {
                     leaks.push(LeakInfo {
                         resource: resource.name.clone(),
                         line: resource.line,
@@ -2160,8 +2160,14 @@ impl LeakDetector {
     }
 
     fn find_block_with_line(&self, cfg: &SimpleCfg, line: u32) -> Option<usize> {
-        for (id, block) in &cfg.blocks {
-            if block.lines.contains(&line) {
+        // why: `cfg.blocks` is a HashMap, so iterating it directly makes
+        // the choice between two blocks that both record `line` (edge
+        // case, but possible) non-deterministic across runs. Iterate in
+        // block-id order so the result is stable and reproducible.
+        let mut ids: Vec<&usize> = cfg.blocks.keys().collect();
+        ids.sort();
+        for id in ids {
+            if cfg.blocks[id].lines.contains(&line) {
                 return Some(*id);
             }
         }
@@ -2205,13 +2211,21 @@ impl LeakDetector {
         current_path.pop();
     }
 
-    fn path_has_close(&self, path: &[usize], resource_name: &str) -> bool {
-        // This is a simplified check - a real implementation would track
-        // the resource state through the CFG
-        // For now, we assume the path doesn't have a close
-        // (proper implementation would look for close calls in each block)
-        let _ = (path, resource_name);
-        false
+    /// why: this always returned `false`, so every resource not opened via
+    /// a context manager (`resource.closed == false`) was reported as a
+    /// leak on every path, even when every path explicitly `.close()`d it.
+    /// Scan each block's statement text for a call that mentions both the
+    /// resource name and `close` (covers `f.close()`, `close(f)`,
+    /// `f.Close()` for Go, etc.) — not a full data-flow proof, but it
+    /// eliminates the always-false false positive.
+    fn path_has_close(&self, cfg: &SimpleCfg, path: &[usize], resource_name: &str) -> bool {
+        path.iter().any(|block_id| {
+            cfg.blocks.get(block_id).is_some_and(|block| {
+                block.stmts.iter().any(|(_, _, _, text)| {
+                    text.contains(resource_name) && text.to_lowercase().contains("close")
+                })
+            })
+        })
     }
 
     fn format_path(&self, path: &[usize]) -> String {

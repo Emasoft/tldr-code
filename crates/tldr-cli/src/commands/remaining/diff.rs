@@ -1172,8 +1172,16 @@ fn char_jaccard_similarity(a: &str, b: &str) -> f64 {
         return if a == b { 1.0 } else { 0.0 };
     }
 
-    let bigrams_a: std::collections::HashSet<&[u8]> = a.as_bytes().windows(2).collect();
-    let bigrams_b: std::collections::HashSet<&[u8]> = b.as_bytes().windows(2).collect();
+    // why: bigrams built from raw `u8` windows split multi-byte UTF-8
+    // sequences mid-character for non-ASCII source text, so two strings
+    // differing only in ASCII text but sharing the same non-ASCII
+    // characters could compare as dissimilar (or the reverse) depending
+    // on where the byte windows happened to fall. Build bigrams from
+    // `char`s instead, which are always whole Unicode scalars.
+    let chars_a: Vec<char> = a.chars().collect();
+    let chars_b: Vec<char> = b.chars().collect();
+    let bigrams_a: std::collections::HashSet<&[char]> = chars_a.windows(2).collect();
+    let bigrams_b: std::collections::HashSet<&[char]> = chars_b.windows(2).collect();
 
     let intersection = bigrams_a.intersection(&bigrams_b).count();
     let union = bigrams_a.union(&bigrams_b).count();
@@ -1595,13 +1603,11 @@ struct LabeledTreeNode {
     line: u32,
 }
 
-/// Flattened node in postorder for Zhang-Shasha.
+/// Flattened node in postorder for the edit-script sequence alignment.
 #[derive(Debug, Clone)]
 struct PostorderNode {
     label: String,
     line: u32,
-    /// Index of leftmost leaf descendant in the postorder array
-    leftmost_leaf: usize,
 }
 
 /// Edit operation from Zhang-Shasha.
@@ -1768,72 +1774,34 @@ fn count_tree_nodes(tree: &LabeledTreeNode) -> usize {
 // Zhang-Shasha Tree Edit Distance
 // =============================================================================
 
-/// Flatten a labeled tree into postorder traversal, computing leftmost leaf descendants.
+/// Flatten a labeled tree into postorder traversal.
 fn flatten_postorder(tree: &LabeledTreeNode) -> Vec<PostorderNode> {
     let mut nodes = Vec::new();
     flatten_postorder_recursive(tree, &mut nodes);
     nodes
 }
 
-fn flatten_postorder_recursive(tree: &LabeledTreeNode, nodes: &mut Vec<PostorderNode>) -> usize {
-    if tree.children.is_empty() {
-        // Leaf node: leftmost leaf is itself
-        let idx = nodes.len();
-        nodes.push(PostorderNode {
-            label: tree.label.clone(),
-            line: tree.line,
-            leftmost_leaf: idx,
-        });
-        return idx;
-    }
-
+fn flatten_postorder_recursive(tree: &LabeledTreeNode, nodes: &mut Vec<PostorderNode>) {
     // Process children first (postorder)
-    let mut first_child_leftmost = usize::MAX;
-    for (i, child) in tree.children.iter().enumerate() {
-        let child_leftmost = flatten_postorder_recursive(child, nodes);
-        if i == 0 {
-            first_child_leftmost = child_leftmost;
-        }
+    for child in &tree.children {
+        flatten_postorder_recursive(child, nodes);
     }
 
-    // Now add this node
     nodes.push(PostorderNode {
         label: tree.label.clone(),
         line: tree.line,
-        leftmost_leaf: first_child_leftmost,
     });
-
-    // The leftmost leaf of this node is the leftmost leaf of its first child
-    first_child_leftmost
 }
 
-/// Compute keyroots from a postorder traversal.
-///
-/// A keyroot is a node whose leftmost-leaf is different from its parent's
-/// leftmost-leaf, OR the root node. In practice, we collect the rightmost
-/// node at each unique leftmost-leaf value.
-fn compute_keyroots(nodes: &[PostorderNode]) -> Vec<usize> {
-    let n = nodes.len();
-    if n == 0 {
-        return Vec::new();
-    }
-
-    // For each unique leftmost leaf value, keep the highest index (rightmost occurrence)
-    let mut lr_map: HashMap<usize, usize> = HashMap::new();
-    for (i, node) in nodes.iter().enumerate() {
-        lr_map.insert(node.leftmost_leaf, i);
-    }
-
-    let mut keyroots: Vec<usize> = lr_map.into_values().collect();
-    keyroots.sort();
-    keyroots
-}
-
-/// Run the Zhang-Shasha tree edit distance algorithm.
+/// Run the Zhang-Shasha-named tree edit distance entry point.
 ///
 /// Returns the edit operations (edit script).
 ///
-/// Costs: Delete = 1, Insert = 1, Relabel = 0 (same label) or 1 (different label).
+/// why: the real Zhang-Shasha keyroot/tree-distance matrix was computed here
+/// and never read — `ops` came only from `derive_edit_ops_dp`'s flat
+/// sequence-alignment DP below. That dead computation was O(n*m) wasted work
+/// per call with no effect on the result, so it (and the now-unused
+/// `compute_keyroots` helper) has been removed rather than kept as dead code.
 fn zhang_shasha(nodes_a: &[PostorderNode], nodes_b: &[PostorderNode]) -> Vec<EditOp> {
     let na = nodes_a.len();
     let nb = nodes_b.len();
@@ -1850,83 +1818,7 @@ fn zhang_shasha(nodes_a: &[PostorderNode], nodes_b: &[PostorderNode]) -> Vec<Edi
         return (0..na).map(|i| EditOp::Delete { index_a: i }).collect();
     }
 
-    let keyroots_a = compute_keyroots(nodes_a);
-    let keyroots_b = compute_keyroots(nodes_b);
-
-    // Tree distance matrix (1-indexed, 0 means empty tree)
-    let mut td = vec![vec![0usize; nb + 1]; na + 1];
-    // Track operations: 0=relabel/match, 1=delete, 2=insert, 3=tree-match
-    let mut td_ops = vec![vec![0u8; nb + 1]; na + 1];
-
-    for &kr_a in &keyroots_a {
-        for &kr_b in &keyroots_b {
-            let la = nodes_a[kr_a].leftmost_leaf;
-            let lb = nodes_b[kr_b].leftmost_leaf;
-
-            let rows = kr_a - la + 2;
-            let cols = kr_b - lb + 2;
-            let mut fd = vec![vec![0usize; cols]; rows];
-
-            // Base cases
-            for i in 1..rows {
-                fd[i][0] = fd[i - 1][0] + 1;
-            }
-            for j in 1..cols {
-                fd[0][j] = fd[0][j - 1] + 1;
-            }
-
-            for i in 1..rows {
-                for j in 1..cols {
-                    let idx_a = la + i - 1;
-                    let idx_b = lb + j - 1;
-
-                    let cost_relabel = if nodes_a[idx_a].label == nodes_b[idx_b].label {
-                        0
-                    } else {
-                        1
-                    };
-
-                    if nodes_a[idx_a].leftmost_leaf == la && nodes_b[idx_b].leftmost_leaf == lb {
-                        let delete = fd[i - 1][j] + 1;
-                        let insert = fd[i][j - 1] + 1;
-                        let relabel = fd[i - 1][j - 1] + cost_relabel;
-
-                        if relabel <= delete && relabel <= insert {
-                            fd[i][j] = relabel;
-                            td[idx_a + 1][idx_b + 1] = relabel;
-                            td_ops[idx_a + 1][idx_b + 1] = if cost_relabel == 0 { 0 } else { 3 };
-                        } else if delete <= insert {
-                            fd[i][j] = delete;
-                            td[idx_a + 1][idx_b + 1] = delete;
-                            td_ops[idx_a + 1][idx_b + 1] = 1;
-                        } else {
-                            fd[i][j] = insert;
-                            td[idx_a + 1][idx_b + 1] = insert;
-                            td_ops[idx_a + 1][idx_b + 1] = 2;
-                        }
-                    } else {
-                        let p = nodes_a[idx_a].leftmost_leaf - la;
-                        let q = nodes_b[idx_b].leftmost_leaf - lb;
-
-                        let delete = fd[i - 1][j] + 1;
-                        let insert = fd[i][j - 1] + 1;
-                        let tree_match = fd[p][q] + td[idx_a + 1][idx_b + 1];
-
-                        if tree_match <= delete && tree_match <= insert {
-                            fd[i][j] = tree_match;
-                        } else if delete <= insert {
-                            fd[i][j] = delete;
-                        } else {
-                            fd[i][j] = insert;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     // Extract edit script using sequence alignment on postorder nodes
-    // guided by the tree distance computation
     let mut ops = Vec::new();
     derive_edit_ops_dp(nodes_a, nodes_b, &mut ops);
     ops

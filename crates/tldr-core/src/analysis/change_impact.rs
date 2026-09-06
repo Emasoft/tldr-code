@@ -45,6 +45,22 @@ use crate::TldrResult;
 ///      none of the above hit.
 static GIT_BINARY: OnceLock<PathBuf> = OnceLock::new();
 
+/// Count the distinct (file, function) nodes referenced by a call graph's edges.
+///
+/// why: `ProjectCallGraph` only stores an edge set, so `call_graph_nodes` was
+/// previously populated with `edges().count()` (the edge count) instead of a
+/// real node count -- two callers of the same function, or one caller of two
+/// functions, both look like "2 edges" but are not "2 nodes". Distinct
+/// (file, func) pairs across both endpoints of every edge is the real count.
+fn count_call_graph_nodes(call_graph: &ProjectCallGraph) -> usize {
+    let mut nodes: HashSet<(&Path, &str)> = HashSet::new();
+    for edge in call_graph.edges() {
+        nodes.insert((edge.src_file.as_path(), edge.src_func.as_str()));
+        nodes.insert((edge.dst_file.as_path(), edge.dst_func.as_str()));
+    }
+    nodes.len()
+}
+
 fn resolve_git_binary() -> &'static PathBuf {
     GIT_BINARY.get_or_init(|| {
         if let Ok(override_path) = std::env::var("GIT_BINARY") {
@@ -371,6 +387,7 @@ pub fn change_impact_extended(
         if matches!(status, ChangeImpactStatus::NoChanges) {
             if let Ok(call_graph) = build_project_call_graph(project, language, None, true) {
                 let edge_count = call_graph.edges().count();
+                let node_count = count_call_graph_nodes(&call_graph);
                 return Ok(ChangeImpactReport {
                     changed_files: vec![],
                     affected_tests: vec![],
@@ -379,7 +396,7 @@ pub fn change_impact_extended(
                     detection_method: method.to_string(),
                     metadata: Some(ChangeImpactMetadata {
                         language: language.to_string(),
-                        call_graph_nodes: edge_count,
+                        call_graph_nodes: node_count,
                         call_graph_edges: edge_count,
                         analysis_depth: Some(depth),
                     }),
@@ -433,9 +450,10 @@ pub fn change_impact_extended(
         detection_method: method.to_string(),
         metadata: {
             let edge_count = call_graph.edges().count();
+            let node_count = count_call_graph_nodes(&call_graph);
             Some(ChangeImpactMetadata {
                 language: language.to_string(),
-                call_graph_nodes: edge_count, // Approximate using edge count
+                call_graph_nodes: node_count,
                 call_graph_edges: edge_count,
                 analysis_depth: Some(depth),
             })

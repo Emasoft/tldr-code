@@ -90,16 +90,7 @@ pub use scala::parse_scalac_output;
 pub use swift::{parse_swiftc_output, parse_swiftlint_output};
 pub use tsc::{parse_tsc_text, tsc_output_regex};
 
-use crate::diagnostics::Severity;
-
-/// Map a string severity to our Severity enum.
-/// Used by multiple parsers with similar severity naming.
-pub fn map_severity(s: &str) -> Severity {
-    match s.to_lowercase().as_str() {
-        "error" => Severity::Error,
-        "warning" | "warn" => Severity::Warning,
-        "information" | "info" | "note" => Severity::Information,
-        "hint" | "suggestion" => Severity::Hint,
-        _ => Severity::Warning, // Default to warning for unknown
-    }
-}
+// why: `map_severity` was dead code (never called by any parser in this crate
+// or downstream) — each parser already normalizes severity itself. Removed
+// rather than left unused so `cargo check` catches the next drift instead of
+// this file quietly growing more unreferenced helpers.

@@ -610,8 +610,20 @@ fn aggregate_file_sequences(
     args: &TemporalArgs,
 ) {
     for (key, calls) in file_sequences {
+        // why: legacy (e.g. Python) sequence keys are bare `<func>:<var>`
+        // with no file path, so scanning a directory with two files that
+        // define same-named functions/variables collided on this key and
+        // concatenated unrelated call sequences into one entry, producing
+        // spurious bigrams at the concatenation boundary. Keys already
+        // scoped by `sequences_from_callsite_map` (`<file>::<caller>`)
+        // are left untouched — they are already unique.
+        let scoped_key = if key.contains("::") {
+            key.clone()
+        } else {
+            format!("{}::{}", file_path_str, key)
+        };
         all_sequences
-            .entry(key.clone())
+            .entry(scoped_key)
             .or_default()
             .extend(calls.clone());
 
@@ -675,10 +687,34 @@ impl BigramCounter {
     }
 
     /// Add sequences from extraction
-    pub fn add_sequences(&mut self, sequences: &HashMap<String, Vec<String>>, file: &str) {
-        for calls in sequences.values() {
-            // Parse function name from key (func:var)
-            let line = 1u32; // Would need more tracking for accurate line numbers
+    ///
+    /// `first_line` maps `(caller, before, after)` to the line of the
+    /// first occurrence of that bigram, as tracked by
+    /// `extract_sequences_for_file`. why: this used to hardcode `line = 1`
+    /// for every example, unlike the directory scan path
+    /// (`aggregate_file_sequences`), which resolved a real line via the
+    /// same `first_line` map — so single-file `tldr temporal` output
+    /// always pointed every example at line 1.
+    pub fn add_sequences(
+        &mut self,
+        sequences: &HashMap<String, Vec<String>>,
+        file: &str,
+        first_line: &HashMap<(String, String, String), u32>,
+    ) {
+        for (key, calls) in sequences {
+            // Recover the caller (function) name to look up `first_line`.
+            // Call-graph-derived keys are `<file>::<caller>` (caller is
+            // the part AFTER "::"); legacy Python keys are `<func>:<var>`
+            // (caller is the part BEFORE the single colon) — the two
+            // namespaces use the colon differently, not just a repeated
+            // separator.
+            let caller = if let Some((_, c)) = key.rsplit_once("::") {
+                c.to_string()
+            } else if let Some((f, _)) = key.split_once(':') {
+                f.to_string()
+            } else {
+                String::new()
+            };
 
             for i in 0..calls.len().saturating_sub(1) {
                 let before = &calls[i];
@@ -698,6 +734,10 @@ impl BigramCounter {
                 *self.before_counts.entry(before.clone()).or_default() += 1;
 
                 // Add example
+                let line = first_line
+                    .get(&(caller.clone(), before.clone(), after.clone()))
+                    .copied()
+                    .unwrap_or(1);
                 self.examples
                     .entry(pair)
                     .or_default()
@@ -714,10 +754,11 @@ impl BigramCounter {
 pub fn mine_bigrams(
     sequences: &HashMap<String, Vec<String>>,
     file: &str,
+    first_line: &HashMap<(String, String, String), u32>,
     args: &TemporalArgs,
 ) -> (BigramCounter, Vec<TemporalConstraint>) {
     let mut counter = BigramCounter::new();
-    counter.add_sequences(sequences, file);
+    counter.add_sequences(sequences, file, first_line);
 
     let mut constraints = Vec::new();
 
@@ -926,7 +967,7 @@ fn analyze_temporal_file(path: &Path, args: &TemporalArgs) -> PatternsResult<Tem
     let sequences = file_seqs.sequences;
 
     // Mine bigrams
-    let (_, constraints) = mine_bigrams(&sequences, &file_path_str, args);
+    let (_, constraints) = mine_bigrams(&sequences, &file_path_str, &file_seqs.first_line, args);
 
     Ok((sequences, constraints))
 }
@@ -1323,7 +1364,7 @@ def read_config(path):
         );
 
         let mut counter = BigramCounter::new();
-        counter.add_sequences(&sequences, "test.py");
+        counter.add_sequences(&sequences, "test.py", &HashMap::new());
 
         assert_eq!(
             counter
@@ -1362,7 +1403,7 @@ def read_config(path):
             lang: None,
         };
 
-        let (_, constraints) = mine_bigrams(&sequences, "test.py", &args);
+        let (_, constraints) = mine_bigrams(&sequences, "test.py", &HashMap::new(), &args);
 
         assert!(!constraints.is_empty(), "Should find bigram constraints");
     }

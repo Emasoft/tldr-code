@@ -815,21 +815,23 @@ fn extract_rust_imports(node: &Node, source: &str, imports: &mut HashMap<String,
     // Strip "use " prefix and ";" suffix
     let trimmed = text.trim_start_matches("use ").trim_end_matches(';').trim();
 
-    // Handle use a::b::{c, d} or use a::b::c
-    if let Some(last) = trimmed.rsplit("::").next() {
-        if last.starts_with('{') {
-            // Grouped imports: use a::b::{c, d}
-            let base = trimmed.rsplit_once("::").map(|x| x.0).unwrap_or("");
-            let items = last.trim_matches(|c| c == '{' || c == '}');
-            for item in items.split(',') {
-                let item = item.trim();
-                if !item.is_empty() {
-                    imports.insert(item.to_string(), base.to_string());
-                }
+    // Handle use a::b::{c, d} or use a::b::c.
+    // why: locating the group by the position of the FIRST '{' (rather than
+    // rsplit("::").next()) is required for nested groups like
+    // `use a::{b::c, d}` — rsplit("::") would land on the last "::" inside
+    // the braces (before `d}`) and treat "d}" as a bare import name with a
+    // garbage base path, instead of recognizing the outer group at all.
+    if let Some(brace_idx) = trimmed.find('{') {
+        let base = trimmed[..brace_idx].trim_end_matches("::");
+        let items = trimmed[brace_idx..].trim_matches(|c| c == '{' || c == '}');
+        for item in items.split(',') {
+            let item = item.trim();
+            if !item.is_empty() {
+                imports.insert(item.to_string(), base.to_string());
             }
-        } else {
-            imports.insert(last.to_string(), trimmed.to_string());
         }
+    } else if let Some(last) = trimmed.rsplit("::").next() {
+        imports.insert(last.to_string(), trimmed.to_string());
     }
 }
 

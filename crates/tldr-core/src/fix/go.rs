@@ -784,8 +784,17 @@ fn analyze_missing_return(error: &ParsedError, source: &str) -> Option<Diagnosis
     let closing_brace = find_function_closing_brace(source, line_no);
     let closing_brace_line = closing_brace?;
 
-    // Determine indentation from the function body
-    let indent = if closing_brace_line >= 2 && closing_brace_line <= lines.len() {
+    // Determine indentation from the function body.
+    // why: for an empty function body, the line right before the closing
+    // brace IS the `func ... {` signature line itself (zero indent), so
+    // blindly copying its leading whitespace produced an unindented
+    // `return` statement. Fall back to the signature's own indent plus one
+    // tab (the body's expected indent level) whenever the "previous line"
+    // is actually the function line we already parsed.
+    let indent = if closing_brace_line >= 2
+        && closing_brace_line <= lines.len()
+        && closing_brace_line - 2 != line_no - 1
+    {
         let prev_line = lines[closing_brace_line - 2];
         let leading: String = prev_line
             .chars()
@@ -793,7 +802,11 @@ fn analyze_missing_return(error: &ParsedError, source: &str) -> Option<Diagnosis
             .collect();
         leading
     } else {
-        "\t".to_string()
+        let func_indent: String = func_line
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .collect();
+        format!("{}\t", func_indent)
     };
 
     let return_stmt = format!("{}return {}", indent, zero_value);

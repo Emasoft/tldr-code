@@ -452,7 +452,13 @@ class Animal {
 
     assert!(result.is_ok());
     let report = result.unwrap();
-    let _ = report;
+    // why: `let _ = report;` discarded the extraction result and only checked
+    // parsing didn't error — it never verified the class was actually found.
+    assert!(
+        report.nodes.iter().any(|n| n.name == "Animal"),
+        "extraction should find the `Animal` class: {:?}",
+        report.nodes
+    );
 }
 
 #[test]
@@ -1064,10 +1070,30 @@ class D(C):
     let result = extract_inheritance(temp_dir.path(), Some(Language::Python), &options);
 
     assert!(result.is_ok());
-    let _report = result.unwrap();
+    let report = result.unwrap();
 
-    // With depth 1, should include B, C, D (not A)
-    // Depending on implementation
+    // why: the old test bound `_report` and asserted nothing, so a regression
+    // in `filter_by_class` (e.g. depth ignored, or the wrong class filtered)
+    // would never fail this test. With depth 1 around C, the filtered graph
+    // must contain C's immediate neighbors (B, D) and must not contain A,
+    // which is two hops away.
+    let names: Vec<&str> = report.nodes.iter().map(|n| n.name.as_str()).collect();
+    assert!(
+        names.contains(&"C"),
+        "filtered graph must contain C: {names:?}"
+    );
+    assert!(
+        names.contains(&"B"),
+        "depth 1 must include parent B: {names:?}"
+    );
+    assert!(
+        names.contains(&"D"),
+        "depth 1 must include child D: {names:?}"
+    );
+    assert!(
+        !names.contains(&"A"),
+        "depth 1 must exclude A (two hops from C): {names:?}"
+    );
 }
 
 #[test]

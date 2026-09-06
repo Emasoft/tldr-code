@@ -968,7 +968,9 @@ pub fn build_project_call_graph_v2(
             .then_with(|| a.src_func.cmp(&b.src_func))
             .then_with(|| a.dst_file.cmp(&b.dst_file))
             .then_with(|| a.dst_func.cmp(&b.dst_func))
-            .then_with(|| format!("{:?}", a.call_type).cmp(&format!("{:?}", b.call_type)))
+            // why: CallType now derives Ord (cross_file_types.rs) so this compares
+            // directly instead of allocating a String on every pairwise comparison.
+            .then_with(|| a.call_type.cmp(&b.call_type))
     });
 
     Ok(ir)

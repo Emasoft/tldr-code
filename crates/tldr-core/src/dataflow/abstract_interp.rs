@@ -939,8 +939,18 @@ pub fn strip_strings(line: &str, language: &str) -> String {
         }
 
         // --- Normal code: keep as-is ---
-        result.push(c as char);
-        i += 1;
+        // why: `c as char` maps a raw byte value directly to a codepoint, so any
+        // multi-byte UTF-8 sequence outside a string literal gets split into
+        // several bogus single-byte "characters" and the output is not valid
+        // UTF-8 text anymore. Decode the real char at this byte offset instead.
+        if let Some(ch) = line[i..].chars().next() {
+            result.push(ch);
+            i += ch.len_utf8();
+        } else {
+            // Should be unreachable (i < len guarantees a char starts here for
+            // valid UTF-8), but never silently loop forever on malformed input.
+            i += 1;
+        }
     }
 
     result

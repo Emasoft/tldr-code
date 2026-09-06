@@ -105,9 +105,16 @@ def existing_func():
         .arg(file.to_str().unwrap())
         .arg("nonexistent_func");
 
-    // Should fail or return empty results
-    let _ = cmd.assert();
-    // Just checking it doesn't panic - specific behavior may vary
+    // why: `let _ = cmd.assert()` discards the `Assert` without checking
+    // anything, so this test could never fail. `Command::output()` still
+    // proves the process ran to completion (no crash/signal) without
+    // asserting a specific exit code, matching the "may vary" intent.
+    let output = cmd.output().expect("tldr taint should not fail to spawn");
+    assert!(
+        output.status.code().is_some(),
+        "tldr taint should exit normally, not crash: {:?}",
+        output
+    );
 }
 
 #[test]

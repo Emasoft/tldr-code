@@ -876,8 +876,12 @@ fn analyze_ts2307(error: &ParsedError, source: &str) -> Option<Diagnosis> {
 ///
 /// Common patterns:
 /// - Missing required arguments -> suggest adding defaults
-/// - Too many arguments -> suggest removing extras
-/// - API surface lookup for correct overload
+///
+/// why: the "too many arguments" case (`actual > expected`) falls through to
+/// the no-fix fallback below — `CallSiteInfo` only tracks the closing paren,
+/// not individual argument boundaries, so safely removing the extra
+/// arguments (respecting nested parens/strings/generics) isn't implemented.
+/// Documented here instead of claiming a fix that doesn't exist.
 fn analyze_ts2554(error: &ParsedError, source: &str) -> Option<Diagnosis> {
     let msg = &error.message;
 
@@ -1254,7 +1258,17 @@ struct CallSiteInfo {
 }
 
 fn find_call_site(line: &str) -> Option<CallSiteInfo> {
-    // Find the last `)` that closes a function call
+    // Find the last `)` that closes a function call.
+    // why: scanning the raw line let a trailing `//` comment containing its
+    // own parenthesis (e.g. `foo(a); // note (see docs)`) be mistaken for
+    // the call's closing paren. Strip a trailing line comment first so the
+    // scan only ever sees real code. This is a plain `//` search, not a
+    // string-literal-aware tokenizer, so a `//` inside a string still trims
+    // early — an accepted limitation, not the bug being fixed here.
+    let line = match line.find("//") {
+        Some(idx) => &line[..idx],
+        None => line,
+    };
     let mut depth = 0;
     let chars: Vec<char> = line.chars().collect();
 

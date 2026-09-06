@@ -1094,9 +1094,12 @@ fn test_must_analysis_diamond_single_branch_not_available() {
     // Due to MUST semantics (intersection), since block 2 doesn't generate the expr,
     // and block 2's avail_out would not contain the expr (it came from block 0 which has no expr),
     // the merge point should have empty avail_in
-    // Note: This test verifies the intersection logic works correctly
+    // why: `X || !result.all_exprs.is_empty()` is trivially true whenever any
+    // expression was extracted at all, regardless of what's actually available
+    // at the merge point — it never exercises the MUST-semantics claim the
+    // test name makes. Assert the merge point directly instead.
     assert!(
-        avail_at_merge.is_empty() || !result.all_exprs.is_empty(),
+        avail_at_merge.is_empty(),
         "MUST analysis: single-branch expression should not be available at merge"
     );
 }
@@ -1143,17 +1146,16 @@ fn test_must_analysis_diamond_both_branches_is_available() {
     // avail_in[3] = avail_out[1] INTERSECT avail_out[2]
     // Both should contain the expression, so intersection contains it
 
-    // If expressions were extracted from both branches
+    // why: the previous assertion only checked avail_out[1]/avail_out[2]
+    // individually (with `||`, satisfied by either branch alone) and never
+    // looked at avail_in[3] — the actual merge point this test is named for.
+    // Check the merge point directly: with the expression generated on both
+    // incoming branches, the MUST intersection must still contain it.
     if !result.all_exprs.is_empty() {
-        // Both branches generated an expression, so avail_out[1] and avail_out[2] should have it
-        let avail_out_1 = result.avail_out.get(&1).unwrap();
-        let avail_out_2 = result.avail_out.get(&2).unwrap();
-
-        // Both should have generated expressions
-        // The intersection at merge should contain the common expression
+        let avail_at_merge = result.avail_in.get(&3).unwrap();
         assert!(
-            !avail_out_1.is_empty() || !avail_out_2.is_empty(),
-            "Both branches should have expressions at their exits"
+            !avail_at_merge.is_empty(),
+            "MUST analysis: expression available on both branches should be available at merge"
         );
     }
 }

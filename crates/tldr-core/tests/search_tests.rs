@@ -116,28 +116,69 @@ mod regex_search_tests {
 
     #[test]
     fn search_skips_default_directories() {
-        // GIVEN: A project (that might have node_modules, __pycache__, etc.)
-        let project = fixtures_dir();
+        // why: the old version only asserted `Ok`, which passes even if the
+        // skip list were disabled entirely — it never proved a skipped
+        // directory's content was actually excluded. Plant a matching line
+        // inside a `node_modules/` directory and confirm it never surfaces.
+        let temp = tempfile::tempdir().unwrap();
+        let skipped_dir = temp.path().join("node_modules");
+        std::fs::create_dir_all(&skipped_dir).unwrap();
+        std::fs::write(
+            skipped_dir.join("lib.py"),
+            "def skip_marker_pattern():\n    pass\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join("main.py"),
+            "def skip_marker_pattern_kept():\n    pass\n",
+        )
+        .unwrap();
 
-        // WHEN: We search
-        let results = search("pattern", &project, None, 0, 100, 100, None);
+        let results = search("skip_marker_pattern", temp.path(), None, 0, 100, 100, None).unwrap();
 
-        // THEN: Default skip directories should be excluded
-        // This test passes if no error - the directories are skipped internally
-        assert!(results.is_ok());
+        assert!(
+            results
+                .iter()
+                .all(|r| !r.file.to_string_lossy().contains("node_modules")),
+            "node_modules should be skipped by default: {:?}",
+            results
+        );
+        assert!(
+            results.iter().any(|r| r.file.ends_with("main.py")),
+            "the non-skipped file should still be found: {:?}",
+            results
+        );
     }
 
     #[test]
+    #[ignore = "IgnoreSpec::is_ignored (crates/tldr-core/src/types.rs) is an \
+        unimplemented stub that always returns false ('TODO: Implement in \
+        Phase 2') — types.rs is owned by another batch/file, so this test is \
+        left correct-but-ignored until that stub is implemented; un-ignore it \
+        then, it will start actually validating the ignore spec."]
     fn search_respects_ignore_spec() {
-        // GIVEN: A project with ignore patterns
+        // why: the old version only asserted `Ok`, which passes whether or
+        // not the ignore spec did anything — it never proved `test_*.py`
+        // was actually excluded from the results.
         let project = fixtures_dir().join("simple-project");
         let ignore = IgnoreSpec::new(vec!["test_*.py".to_string()]);
 
-        // WHEN: We search with ignore spec
-        let results = search("def", &project, None, 0, 100, 100, Some(&ignore));
+        let without_ignore = search("def", &project, None, 0, 100, 100, None).unwrap();
+        assert!(
+            without_ignore
+                .iter()
+                .any(|r| r.file.to_string_lossy().contains("test_main.py")),
+            "sanity check: test_main.py should match `def` without an ignore spec"
+        );
 
-        // THEN: Search completes (ignore spec applied internally)
-        assert!(results.is_ok());
+        let results = search("def", &project, None, 0, 100, 100, Some(&ignore)).unwrap();
+        assert!(
+            results
+                .iter()
+                .all(|r| !r.file.to_string_lossy().contains("test_main.py")),
+            "test_*.py should be excluded by the ignore spec: {:?}",
+            results
+        );
     }
 
     #[test]

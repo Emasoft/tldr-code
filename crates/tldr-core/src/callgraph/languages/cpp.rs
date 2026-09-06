@@ -34,6 +34,7 @@ use std::path::Path;
 use tree_sitter::{Node, Tree};
 
 use super::base::{get_node_text, walk_tree};
+use super::common::extend_calls_if_any;
 use super::{CallGraphLanguageSupport, ParseError};
 use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
 
@@ -613,13 +614,10 @@ impl CallGraphLanguageSupport for CppHandler {
                                 &caller,
                             );
 
-                            if !calls.is_empty() {
-                                walker
-                                    .calls_by_func
-                                    .entry(caller)
-                                    .or_default()
-                                    .extend(calls);
-                            }
+                            // why: shared with the other language handlers via
+                            // common::extend_calls_if_any instead of re-implementing the
+                            // entry/or_default/extend dance here.
+                            extend_calls_if_any(walker.calls_by_func, caller, calls);
                         }
                     }
                     // Don't recurse further - we've handled this node
@@ -643,13 +641,7 @@ impl CallGraphLanguageSupport for CppHandler {
                                 walker.defined_classes,
                                 "<module>",
                             );
-                            if !calls.is_empty() {
-                                walker
-                                    .calls_by_func
-                                    .entry("<module>".to_string())
-                                    .or_default()
-                                    .extend(calls);
-                            }
+                            extend_calls_if_any(walker.calls_by_func, "<module>", calls);
                         }
                     }
                     return;

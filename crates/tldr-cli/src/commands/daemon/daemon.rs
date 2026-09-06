@@ -1150,13 +1150,18 @@ impl TLDRDaemon {
         entry.record_invocation(success, metrics_opt);
 
         let total_invocations = entry.invocations;
-        let flushed = total_invocations.is_multiple_of(HOOK_FLUSH_THRESHOLD as u64);
+        let due_for_flush = total_invocations.is_multiple_of(HOOK_FLUSH_THRESHOLD as u64);
 
-        // Flush stats periodically
-        if flushed {
-            // In full implementation, would persist stats to disk
-            // For now, just mark as flushed
-        }
+        // Flush stats periodically. why: previously this branch was a no-op
+        // comment and `flushed` was hardcoded true whenever the threshold
+        // hit, so callers were told stats were persisted when nothing was
+        // ever written to disk. Actually call persist_stats() and only
+        // report success when it succeeds.
+        let flushed = if due_for_flush {
+            self.persist_stats().await.is_ok()
+        } else {
+            false
+        };
 
         DaemonResponse::TrackResponse {
             status: "ok".to_string(),

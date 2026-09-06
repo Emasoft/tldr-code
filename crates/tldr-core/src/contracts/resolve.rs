@@ -46,7 +46,10 @@ pub fn resolve_python_package(package_name: &str) -> TldrResult<ResolvedPackage>
             TldrError::parse_error(
                 PathBuf::new(),
                 None,
-                format!("Failed to run python3 to resolve package '{}': {}", package_name, e),
+                format!(
+                    "Failed to run python3 to resolve package '{}': {}",
+                    package_name, e
+                ),
             )
         })?;
 
@@ -55,7 +58,11 @@ pub fn resolve_python_package(package_name: &str) -> TldrResult<ResolvedPackage>
         return Err(TldrError::parse_error(
             PathBuf::new(),
             None,
-            format!("Cannot import Python package '{}': {}", package_name, stderr.trim()),
+            format!(
+                "Cannot import Python package '{}': {}",
+                package_name,
+                stderr.trim()
+            ),
         ));
     }
 
@@ -76,8 +83,11 @@ pub fn resolve_python_package(package_name: &str) -> TldrResult<ResolvedPackage>
             })?
             .to_path_buf()
     } else {
-        // Single-file module (e.g., json.py) -> the file itself is the root
-        // Treat parent as root to include the file
+        // Single-file module (e.g., json.py): `root_dir` is later used as a directory
+        // (joined with "__init__.py" below), so it must be the file's parent directory,
+        // not the file itself — the comment previously claimed the file was treated as
+        // the root, but the code has always returned the parent, matching the other
+        // branch. Fixed the comment to describe what the code actually does.
         file_path
             .parent()
             .ok_or_else(|| {
@@ -238,9 +248,7 @@ pub fn extract_all_names_from_source(source: &str) -> Option<Vec<String>> {
                         let name = &source[left.byte_range()];
                         if name == "__all__" {
                             if let Some(right) = inner.child_by_field_name("right") {
-                                return Some(extract_string_list_elements(
-                                    &right, source,
-                                ));
+                                return Some(extract_string_list_elements(&right, source));
                             }
                         }
                     }
@@ -343,7 +351,9 @@ mod tests {
         assert!(!is_valid_python_identifier("123abc"));
         assert!(!is_valid_python_identifier("has space"));
         assert!(!is_valid_python_identifier("has;semicolon"));
-        assert!(!is_valid_python_identifier("import os; os.system('rm -rf /')"));
+        assert!(!is_valid_python_identifier(
+            "import os; os.system('rm -rf /')"
+        ));
         assert!(!is_valid_python_identifier(".dotstart"));
         assert!(!is_valid_python_identifier("dotend."));
     }

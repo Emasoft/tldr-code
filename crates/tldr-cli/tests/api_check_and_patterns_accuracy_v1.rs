@@ -28,9 +28,11 @@ use tempfile::TempDir;
 
 fn tldr_bin() -> PathBuf {
     // Mirror the convention used by the other integration tests in this
-    // crate: prefer the workspace `target/release/tldr` artefact built
-    // by `cargo build --release`, with a fallback to `cargo run` if
-    // the binary isn't present.
+    // crate: require the workspace `target/release/tldr` artefact built
+    // by `cargo build --release`. why: there is no `cargo run` fallback --
+    // `run_tldr` below asserts the binary exists and panics if it doesn't,
+    // so this comment must not claim a fallback that would mislead anyone
+    // debugging a failed assert into looking for code that isn't there.
     let mut candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     candidate.pop(); // crates/tldr-cli -> crates
     candidate.pop(); // crates -> repo root

@@ -10,10 +10,12 @@
 //! 4. JSON output schema validation - Ensure output matches spec types
 //! 5. Exit codes - Verify correct exit codes for success/error/findings
 //!
-//! Commands covered (9 total):
+//! Commands covered (7 total):
+//! why: previously claimed 9 (incl. diff_impact, equivalence), but only 7
+//! command modules actually exist in this file -- corrected to match.
 //! - LOW: todo, explain, secure
-//! - MEDIUM: definition, diff, diff_impact
-//! - HIGH: api_check, equivalence, vuln
+//! - MEDIUM: definition, diff
+//! - HIGH: api_check, vuln
 
 use assert_cmd::Command as AssertCommand;
 use predicates::prelude::*;
@@ -2358,17 +2360,20 @@ def safe_file_handling():
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "sample.py", PYTHON_API_MISUSE);
 
-        // Per spec, exit code 2 when findings detected
         let output = tldr_cmd()
             .args(["api-check", file_path.to_str().unwrap()])
             .output()
             .unwrap();
 
-        // Exit code 0 for success (findings present but not error)
-        // or exit code 2 for findings detected per spec
-        assert!(
-            output.status.code() == Some(0) || output.status.code() == Some(2),
-            "Exit code should be 0 or 2 when findings detected"
+        // why: the doc-comment claim of "exit code 2 when findings detected"
+        // is not what the command does -- verified by running it directly
+        // (`api-check` on a file with findings exits 0, findings are only
+        // reported in the JSON body). The old assert accepted 0 OR 2, which
+        // could never fail either way it actually behaves.
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "api-check exits 0 even when findings are present; findings are reported in JSON"
         );
     }
 

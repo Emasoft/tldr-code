@@ -764,20 +764,67 @@ fn test_git_log_since_days_filter() {
 
 #[test]
 fn test_git_worktree_detection() {
-    // This is an advanced git feature - worktrees
-    // We just test that is_git_repository works in main repo
-    let temp_dir = tempfile::tempdir().unwrap();
+    // why: the old version only inited a plain repo and checked
+    // `is_git_repository`, which never touched worktree code paths at all —
+    // a linked worktree uses a `.git` FILE (pointing at the main repo's
+    // `.git/worktrees/<name>`), not a `.git` DIRECTORY, so this actually
+    // exercises the code path a bare `git init` never does.
+    let main_dir = tempfile::tempdir().unwrap();
+    let worktree_dir = tempfile::tempdir().unwrap();
+    // `git worktree add` refuses to create the target dir itself.
+    std::fs::remove_dir(&worktree_dir).unwrap();
 
     let init_output = Command::new("git")
         .args(["init"])
-        .current_dir(&temp_dir)
+        .current_dir(&main_dir)
         .output();
-
     if init_output.is_err() {
         return;
     }
+    Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(&main_dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(&main_dir)
+        .output()
+        .unwrap();
+    fs::write(main_dir.path().join("file.txt"), "content").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&main_dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "Initial"])
+        .current_dir(&main_dir)
+        .output()
+        .unwrap();
 
-    assert!(is_git_repository(temp_dir.path()));
+    let worktree_add = Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "-b",
+            "wt-branch",
+            &worktree_dir.path().to_string_lossy(),
+        ])
+        .current_dir(&main_dir)
+        .output()
+        .unwrap();
+    assert!(
+        worktree_add.status.success(),
+        "git worktree add failed: {}",
+        String::from_utf8_lossy(&worktree_add.stderr)
+    );
+
+    assert!(is_git_repository(main_dir.path()));
+    assert!(
+        is_git_repository(worktree_dir.path()),
+        "a linked worktree (.git file, not directory) must still be detected as a git repository"
+    );
 }
 
 // Test for submodule detection
@@ -828,7 +875,44 @@ fn test_git_submodule_detection() {
         .output()
         .unwrap();
 
-    // Both should be detected as git repos
+    // why: the old version never ran `git submodule add`, so it only proved
+    // two independent repos are each detected — not that a submodule
+    // actually registered inside a parent repo (nested `.git` FILE plus a
+    // `.gitmodules` entry) is still recognized.
+    Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(&main_dir)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(&main_dir)
+        .output()
+        .unwrap();
+
+    let add_submodule = Command::new("git")
+        .args([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            &sub_dir.path().to_string_lossy(),
+            "subdir",
+        ])
+        .current_dir(&main_dir)
+        .output()
+        .unwrap();
+    assert!(
+        add_submodule.status.success(),
+        "git submodule add failed: {}",
+        String::from_utf8_lossy(&add_submodule.stderr)
+    );
+
+    assert!(main_dir.path().join(".gitmodules").exists());
     assert!(is_git_repository(main_dir.path()));
     assert!(is_git_repository(sub_dir.path()));
+    assert!(
+        is_git_repository(&main_dir.path().join("subdir")),
+        "a checked-out submodule (.git file, not directory) must still be detected as a git repository"
+    );
 }

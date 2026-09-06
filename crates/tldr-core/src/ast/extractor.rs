@@ -797,11 +797,16 @@ fn extract_cpp_functions(node: &Node, source: &str, functions: &mut Vec<String>)
 
     for child in node.children(&mut cursor) {
         if child.kind() == "function_definition" {
-            // Only count as free function if NOT inside a class/struct body
+            // Only count as free function if NOT inside a class/struct body AND not an
+            // out-of-line member definition (`void Foo::bar() {}` sits at namespace/
+            // global scope syntactically, so `is_inside_cpp_class` alone missed it and
+            // it was misclassified as a free function `bar`).
             if !is_inside_cpp_class(&child) {
                 if let Some(declarator) = child.child_by_field_name("declarator") {
-                    if let Some(name) = extract_cpp_function_name(&declarator, source) {
-                        functions.push(name);
+                    if !has_qualified_scope(&declarator) {
+                        if let Some(name) = extract_cpp_function_name(&declarator, source) {
+                            functions.push(name);
+                        }
                     }
                 }
             }
@@ -850,6 +855,19 @@ fn extract_cpp_function_name(node: &Node, source: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// True when a function's declarator resolves to a `Scope::name` qualified/scoped
+/// identifier — the syntax used by out-of-line member function definitions
+/// (`void Foo::bar() {}`), which are methods of `Foo`, not free functions.
+fn has_qualified_scope(node: &Node) -> bool {
+    match node.kind() {
+        "qualified_identifier" | "scoped_identifier" => true,
+        "function_declarator" | "pointer_declarator" | "reference_declarator" => node
+            .child_by_field_name("declarator")
+            .is_some_and(|d| has_qualified_scope(&d)),
+        _ => false,
+    }
 }
 
 fn extract_cpp_classes(node: &Node, source: &str, classes: &mut Vec<String>) {

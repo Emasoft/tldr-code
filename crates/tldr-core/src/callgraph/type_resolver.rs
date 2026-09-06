@@ -288,7 +288,13 @@ fn find_type_annotation(source: &str, var_name: &str, call_line: u32) -> Option<
 
     // Search backwards from call_line
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?;
+        // why: `?` aborted the whole backward search on the very first (largest,
+        // out-of-range) index whenever call_line exceeded the real line count, instead
+        // of clamping and continuing from the last valid line.
+        let line = match lines.get(line_num) {
+            Some(l) => l,
+            None => continue,
+        };
 
         // Pattern: `var_name: Type = ` or `var_name: Type`
         let pattern = format!("{}: ", var_name);
@@ -379,7 +385,13 @@ fn find_constructor_assignment(source: &str, var_name: &str, call_line: u32) -> 
 
     // Search backwards from call_line
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?;
+        // why: `?` aborted the whole backward search on the very first (largest,
+        // out-of-range) index whenever call_line exceeded the real line count, instead
+        // of clamping and continuing from the last valid line.
+        let line = match lines.get(line_num) {
+            Some(l) => l,
+            None => continue,
+        };
         let idx = match find_var_in_line(line, var_name) {
             Some(i) => i,
             None => continue,
@@ -539,7 +551,13 @@ fn find_typescript_annotation(source: &str, var_name: &str, call_line: u32) -> O
 
     // Search backwards from call_line
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?;
+        // why: `?` aborted the whole backward search on the very first (largest,
+        // out-of-range) index whenever call_line exceeded the real line count, instead
+        // of clamping and continuing from the last valid line.
+        let line = match lines.get(line_num) {
+            Some(l) => l,
+            None => continue,
+        };
 
         // Patterns: `const/let/var name: Type` or `name: Type` (in params/destructuring)
         for prefix in &["const ", "let ", "var ", ""] {
@@ -592,7 +610,13 @@ fn find_typescript_constructor(source: &str, var_name: &str, call_line: u32) -> 
 
     // Search backwards from call_line
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?;
+        // why: `?` aborted the whole backward search on the very first (largest,
+        // out-of-range) index whenever call_line exceeded the real line count, instead
+        // of clamping and continuing from the last valid line.
+        let line = match lines.get(line_num) {
+            Some(l) => l,
+            None => continue,
+        };
 
         // Patterns: `const/let/var name = new Type(...)` or `name = new Type(...)`
         for prefix in &["const ", "let ", "var ", ""] {
@@ -686,7 +710,11 @@ fn find_go_var_declaration(source: &str, var_name: &str, call_line: u32) -> Opti
     let lines: Vec<&str> = source.lines().collect();
 
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?.trim();
+        // why: same out-of-range abort as above — clamp by skipping instead of bailing.
+        let line = match lines.get(line_num) {
+            Some(l) => l.trim(),
+            None => continue,
+        };
 
         // Pattern: `var name Type` or `var name *Type`
         let pattern = format!("var {} ", var_name);
@@ -705,7 +733,11 @@ fn find_go_struct_literal(source: &str, var_name: &str, call_line: u32) -> Optio
     let lines: Vec<&str> = source.lines().collect();
 
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?.trim();
+        // why: same out-of-range abort as above — clamp by skipping instead of bailing.
+        let line = match lines.get(line_num) {
+            Some(l) => l.trim(),
+            None => continue,
+        };
 
         // Pattern: `name := Type{` or `name := Type{}`
         let pattern = format!("{} := ", var_name);
@@ -732,7 +764,11 @@ fn find_go_pointer_struct(source: &str, var_name: &str, call_line: u32) -> Optio
     let lines: Vec<&str> = source.lines().collect();
 
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?.trim();
+        // why: same out-of-range abort as above — clamp by skipping instead of bailing.
+        let line = match lines.get(line_num) {
+            Some(l) => l.trim(),
+            None => continue,
+        };
 
         // Pattern: `name := &Type{`
         let pattern = format!("{} := &", var_name);
@@ -938,7 +974,11 @@ fn find_rust_annotation(source: &str, var_name: &str, call_line: u32) -> Option<
     let lines: Vec<&str> = source.lines().collect();
 
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?.trim();
+        // why: same out-of-range abort as above — clamp by skipping instead of bailing.
+        let line = match lines.get(line_num) {
+            Some(l) => l.trim(),
+            None => continue,
+        };
 
         // Pattern: `let name: Type = ...` or `let mut name: Type = ...`
         for prefix in &["let ", "let mut "] {
@@ -991,7 +1031,11 @@ fn find_rust_associated_function(source: &str, var_name: &str, call_line: u32) -
     let lines: Vec<&str> = source.lines().collect();
 
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?.trim();
+        // why: same out-of-range abort as above — clamp by skipping instead of bailing.
+        let line = match lines.get(line_num) {
+            Some(l) => l.trim(),
+            None => continue,
+        };
 
         // Pattern: `let name = Type::` or `let mut name = Type::`
         for prefix in &["let ", "let mut "] {
@@ -1020,7 +1064,11 @@ fn find_rust_struct_literal(source: &str, var_name: &str, call_line: u32) -> Opt
     let lines: Vec<&str> = source.lines().collect();
 
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?.trim();
+        // why: same out-of-range abort as above — clamp by skipping instead of bailing.
+        let line = match lines.get(line_num) {
+            Some(l) => l.trim(),
+            None => continue,
+        };
 
         // Pattern: `let name = Type {` or `let mut name = Type {`
         for prefix in &["let ", "let mut "] {
@@ -1161,7 +1209,13 @@ fn extract_rhs_type(rhs: &str) -> Option<String> {
 fn find_generic_annotation(source: &str, var_name: &str, call_line: u32) -> Option<String> {
     let lines: Vec<&str> = source.lines().collect();
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?;
+        // why: `?` aborted the whole backward search on the very first (largest,
+        // out-of-range) index whenever call_line exceeded the real line count, instead
+        // of clamping and continuing from the last valid line.
+        let line = match lines.get(line_num) {
+            Some(l) => l,
+            None => continue,
+        };
         let idx = find_var_in_line(line, var_name)?;
         let mut tail = line[idx + var_name.len()..].trim_start();
         if let Some(rest) = tail.strip_prefix('?') {
@@ -1184,7 +1238,13 @@ fn find_generic_constructor_assignment(
 ) -> Option<String> {
     let lines: Vec<&str> = source.lines().collect();
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?;
+        // why: `?` aborted the whole backward search on the very first (largest,
+        // out-of-range) index whenever call_line exceeded the real line count, instead
+        // of clamping and continuing from the last valid line.
+        let line = match lines.get(line_num) {
+            Some(l) => l,
+            None => continue,
+        };
         let idx = find_var_in_line(line, var_name)?;
         let mut tail = line[idx + var_name.len()..].trim_start();
         if tail.starts_with(":=") {
@@ -1204,7 +1264,13 @@ fn find_generic_constructor_assignment(
 fn find_generic_typed_declaration(source: &str, var_name: &str, call_line: u32) -> Option<String> {
     let lines: Vec<&str> = source.lines().collect();
     for line_num in (0..call_line as usize).rev() {
-        let line = lines.get(line_num)?;
+        // why: `?` aborted the whole backward search on the very first (largest,
+        // out-of-range) index whenever call_line exceeded the real line count, instead
+        // of clamping and continuing from the last valid line.
+        let line = match lines.get(line_num) {
+            Some(l) => l,
+            None => continue,
+        };
         let idx = find_var_in_line(line, var_name)?;
         let left = line[..idx].trim_end();
         if left.is_empty() {

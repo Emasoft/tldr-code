@@ -153,16 +153,30 @@ fn get_source(target: &Target, lang_hint: Option<&str>) -> Result<(String, Strin
                 .ok_or_else(|| anyhow!("Could not detect language for {}", path.display()))?;
             Ok((source, lang))
         }
-        Target::Function(path, _func_name) => {
-            // For now, return full file - function extraction requires more work
-            // TODO: Extract function body using tree-sitter
-            let source = std::fs::read_to_string(path)
-                .map_err(|e| anyhow!("Failed to read {}: {}", path.display(), e))?;
+        Target::Function(path, func_name) => {
+            // why: previously returned the whole file regardless of
+            // func_name, so comparing `a.py::foo` against `b.py::bar`
+            // actually diced the two entire files, not the two functions.
+            let (tree, source, tldr_lang) = tldr_core::ast::parser::parse_file(path)
+                .map_err(|e| anyhow!("Failed to parse {}: {}", path.display(), e))?;
+            let func_node = tldr_core::ast::function_finder::find_function_node(
+                tree.root_node(),
+                func_name,
+                tldr_lang,
+                &source,
+            )
+            .ok_or_else(|| anyhow!("Function '{}' not found in {}", func_name, path.display()))?;
+            let body = tldr_core::ast::function_finder::get_function_body(func_node, tldr_lang)
+                .unwrap_or(func_node);
+            let text = body
+                .utf8_text(source.as_bytes())
+                .map_err(|e| anyhow!("Non-UTF8 function body in {}: {}", path.display(), e))?
+                .to_string();
             let lang = lang_hint
                 .map(String::from)
                 .or_else(|| detect_language(path))
                 .ok_or_else(|| anyhow!("Could not detect language"))?;
-            Ok((source, lang))
+            Ok((text, lang))
         }
         Target::Block(path, start, end) => {
             let source = std::fs::read_to_string(path)

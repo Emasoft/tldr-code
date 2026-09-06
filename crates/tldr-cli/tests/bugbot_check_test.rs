@@ -560,8 +560,12 @@ fn test_e2e_text_format() {
 #[test]
 #[ignore] // slow and environment-dependent
 fn test_e2e_dogfood_no_crash() {
-    let codebase =
-        PathBuf::from("/Users/cosimo/.opc-dev/opc/packages/tldr-code/tldr-rs-v2-canonical");
+    // why: was hardcoded to a specific developer's machine path, which made
+    // this test fail (or silently no-op against a nonexistent dir) on any
+    // other checkout. Dogfood against this repo's own workspace instead.
+    let mut codebase = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    codebase.pop(); // crates/tldr-cli -> crates
+    codebase.pop(); // crates -> repo root
 
     let output = tldr_bin()
         .args([

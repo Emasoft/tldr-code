@@ -39,6 +39,7 @@ use std::path::Path;
 use tree_sitter::{Node, Parser, Tree};
 
 use super::base::{get_node_text, walk_tree};
+use super::common::extend_calls_if_any;
 use super::{CallGraphLanguageSupport, ParseError};
 use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
 
@@ -1027,9 +1028,13 @@ impl CallGraphLanguageSupport for RubyHandler {
 
                         if !all_calls.is_empty() {
                             calls_by_func.insert(full_name.clone(), all_calls.clone());
-                            // Also store with simple name
+                            // Also store with simple name.
+                            // why: `insert` here silently overwrote the simple-name entry
+                            // whenever two classes defined a same-named method, losing the
+                            // first class's call list entirely. `extend_calls_if_any` merges
+                            // instead of replacing, so lookups by simple name see both.
                             if current_class.is_some() {
-                                calls_by_func.insert(name, all_calls);
+                                extend_calls_if_any(calls_by_func, name, all_calls);
                             }
                         }
                     }

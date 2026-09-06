@@ -428,7 +428,11 @@ pub(crate) fn resolve_caller_name(file_ir: &FileIR, call_site: &CallSite) -> Str
             continue;
         }
         let span = func.end_line.saturating_sub(func.line);
-        if span <= best_span {
+        // why: was `<=`, which on an exact span tie preferred the LAST matching func
+        // instead of the first — disagreeing with the identical "innermost enclosing
+        // function by minimal span" logic in enclosing_class_for_call (above), which
+        // uses strict `<`. Both now break ties the same way (first match wins).
+        if span < best_span {
             best_span = span;
             best = Some(func);
         }

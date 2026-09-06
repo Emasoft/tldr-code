@@ -1608,13 +1608,14 @@ fn find_block_for_line(cfg: &CfgInfo, line: u32) -> Option<BlockId> {
 /// This is a heuristic fallback - it assumes common patterns like
 /// binary operations when we see exactly 2 uses.
 fn infer_operator_from_uses(uses: &[&str]) -> Option<String> {
-    // If we have exactly 2 uses, assume some binary operation
-    // Default to "+" as a placeholder - this will be normalized anyway
-    if uses.len() >= 2 {
-        Some("+".to_string())
-    } else {
-        None
-    }
+    // why: guessing "+" for any 2+ uses fabricates an operator with no basis in
+    // the source, which then gets treated as a real expression and can produce
+    // false "redundant computation" / CSE matches between operands that were
+    // never actually combined with "+". Without the source line there is no
+    // way to recover the real operator, so report "unknown" instead of a
+    // fabricated guess.
+    let _ = uses;
+    None
 }
 
 /// Extract expressions with full Phase 4 data for intra-block CSE detection.

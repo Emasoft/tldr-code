@@ -334,6 +334,17 @@ impl Default for TimeoutContext {
 /// The closure runs in a separate thread; if it doesn't complete
 /// within the timeout, an error is returned.
 ///
+/// # Caveat: the worker thread is NOT cancelled on timeout
+///
+/// Rust has no safe API to forcibly kill a running thread, so when this
+/// function times out, `f` keeps running in the background until it
+/// finishes on its own (its result is then silently dropped by the `tx`
+/// send failing). Calling this repeatedly on work that reliably times out
+/// leaks worker threads for the lifetime of the process. Callers that need
+/// true cancellation must make `f` cooperative (check a shared
+/// `AtomicBool`/cancellation token periodically) — this helper cannot do
+/// that for an arbitrary closure.
+///
 /// # Arguments
 ///
 /// * `timeout` - Maximum duration to wait

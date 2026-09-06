@@ -681,7 +681,11 @@ impl HealthReport {
 /// If one analyzer fails, others continue. Failed analyzers have success=false.
 ///
 /// # T13 Mitigation: Shared Call Graph
-/// Call graph is built once and shared across dead_code, coupling, similarity.
+/// Call graph is built once and passed to `coupling` (the only sub-analyzer
+/// that still consumes it). `dead_code` uses `module_infos` + refcount
+/// analysis instead, and `similarity`/`clones` now uses tree-sitter AST-based
+/// clone detection — neither reads the shared call graph, despite the
+/// original T13 design sharing it across all three.
 ///
 /// # Example
 /// ```ignore

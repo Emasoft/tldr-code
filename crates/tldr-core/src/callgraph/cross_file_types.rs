@@ -41,7 +41,10 @@ use super::interner::{InternedId, StringInterner};
 /// - `Intra` -> `"intra"`
 /// - `Direct` -> `"direct"`
 /// - etc.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+// why: PartialOrd/Ord let the deterministic edge sort in builder_v2 compare
+// call_type directly instead of allocating a String per comparison via
+// `format!("{:?}", ...)` on every pairwise sort step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CallType {
     /// Same-file call to a known function or class defined in the same file.
@@ -1137,8 +1140,16 @@ impl FuncIndexProxy {
     ///
     /// Yields ((module, func), file) tuples as string references.
     pub fn iter(&self) -> impl Iterator<Item = ((&str, &str), &str)> {
-        // This requires resolving all IDs back to strings
-        std::iter::empty() // Placeholder - full implementation needs interner resolution
+        // why: silently returning an empty iterator here (instead of failing loudly like
+        // `insert`/`get` above) hides the same missing-interner-resolution limitation as a
+        // wrong-but-plausible result — a caller iterating this would see "no entries" and
+        // never learn the index was never resolvable. Fail fast, consistent with the rest
+        // of this type, until the interner-resolution redesign lands.
+        unimplemented!(
+            "FuncIndexProxy::iter - see FuncIndexProxyMut for a fully implemented version"
+        );
+        #[allow(unreachable_code)]
+        std::iter::empty()
     }
 }
 

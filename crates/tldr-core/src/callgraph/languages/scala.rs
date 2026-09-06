@@ -38,6 +38,7 @@ use std::path::Path;
 use tree_sitter::{Node, Parser, Tree};
 
 use super::base::{get_node_text, walk_tree};
+use super::common::extend_calls_if_any;
 use super::{CallGraphLanguageSupport, ParseError};
 use crate::callgraph::cross_file_types::{CallSite, CallType, ClassDef, FuncDef, ImportDef};
 
@@ -694,8 +695,12 @@ impl CallGraphLanguageSupport for ScalaHandler {
 
                         if !calls.is_empty() {
                             calls_by_func.insert(full_name.clone(), calls.clone());
-                            // Also store with simple name
-                            calls_by_func.insert(name, calls);
+                            // Also store with simple name.
+                            // why: `insert` here silently overwrote the simple-name entry
+                            // whenever two classes/objects defined a same-named method,
+                            // losing the earlier one's call list entirely. `extend_calls_if_any`
+                            // merges instead of replacing, so lookups by simple name see both.
+                            extend_calls_if_any(calls_by_func, name, calls);
                         }
                     }
                 }

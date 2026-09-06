@@ -604,19 +604,25 @@ mod uninitialized_tests {
     /// Test: Parameter is considered initialized
     #[test]
     fn test_parameter_initialized() {
-        // Parameters should be treated as initialized at function entry
+        // Parameters should be treated as initialized at function entry.
+        // why: the previous version called the local no-params wrapper and
+        // then threw the result away (`let _ = uninit;`), so this test could
+        // never fail regardless of whether parameter tracking worked. Call
+        // the real `detect_uninitialized` with "x" listed as a parameter and
+        // assert it is NOT flagged as uninitialized.
         let cfg = linear_cfg();
         let refs = vec![
             make_use("x", 1), // use of parameter
         ];
 
         let reaching = compute_reaching_definitions(&cfg, &refs);
-        // Note: detect_uninitialized would need parameter info
-        let uninit = detect_uninitialized(&reaching, &cfg, &refs);
+        let uninit =
+            detect_uninitialized_with_params(&reaching, &cfg, &refs, &["x".to_string()], &[]);
 
-        // For now this will fail since we don't track parameters
-        // Phase 9 will handle this properly
-        let _ = uninit;
+        assert!(
+            uninit.is_empty(),
+            "Parameter 'x' should be treated as initialized at function entry"
+        );
     }
 
     /// Test: Multiple uninitialized variables

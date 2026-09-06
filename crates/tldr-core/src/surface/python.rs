@@ -36,12 +36,14 @@ pub fn extract_python_api_surface(
     limit: Option<usize>,
 ) -> TldrResult<ApiSurface> {
     let mut apis = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
 
     // Check if this is a C built-in module (no parseable source)
     if super::resolve::is_builtin_marker_path(&resolved.root_dir) {
         // Use introspection-based extraction for C built-in modules
-        let c_ext_apis = extract_c_extension_apis(&resolved.package_name)?;
+        let (c_ext_apis, c_ext_warning) = extract_c_extension_apis(&resolved.package_name)?;
         apis.extend(c_ext_apis);
+        warnings.extend(c_ext_warning);
 
         // Filter through __all__ if present
         if let Some(ref all_names) = resolved.public_names {
@@ -67,7 +69,7 @@ pub fn extract_python_api_surface(
             total,
             apis,
             files_skipped: 0,
-            warnings: Vec::new(),
+            warnings,
         });
     }
 
@@ -89,7 +91,8 @@ pub fn extract_python_api_surface(
 
     // Handle C extensions via Python inspect helper
     if has_c_extensions(&resolved.root_dir) {
-        let c_ext_apis = extract_c_extension_apis(&resolved.package_name)?;
+        let (c_ext_apis, c_ext_warning) = extract_c_extension_apis(&resolved.package_name)?;
+        warnings.extend(c_ext_warning);
         // Only add C extension APIs for symbols not already found in source
         for api in c_ext_apis {
             if !apis
@@ -160,7 +163,7 @@ pub fn extract_python_api_surface(
         total,
         apis,
         files_skipped: 0,
-        warnings: Vec::new(),
+        warnings,
     })
 }
 
@@ -1186,7 +1189,11 @@ print(json.dumps(apis))
 "#;
 
 /// Extract API entries from a C extension module using Python's inspect module.
-fn extract_c_extension_apis(package_name: &str) -> TldrResult<Vec<ApiEntry>> {
+/// Returns the extracted API entries plus an optional warning describing why
+/// the helper produced nothing (non-zero exit / unparsable output), so the
+/// caller can surface it via `ApiSurface.warnings` instead of silently
+/// looking identical to "no C extension API here".
+fn extract_c_extension_apis(package_name: &str) -> TldrResult<(Vec<ApiEntry>, Option<String>)> {
     use std::process::Command;
 
     let output = Command::new("python3")
@@ -1206,12 +1213,33 @@ fn extract_c_extension_apis(package_name: &str) -> TldrResult<Vec<ApiEntry>> {
         })?;
 
     if !output.status.success() {
-        // C extension inspection is best-effort -- don't fail the whole extraction
-        return Ok(Vec::new());
+        // C extension inspection is best-effort -- don't fail the whole extraction,
+        // but surface it: `ApiSurface.warnings` exists for exactly this case, and a
+        // silent empty Vec used to look identical to "no C extension API here".
+        return Ok((
+            Vec::new(),
+            Some(format!(
+                "C extension helper for '{}' exited with {}: {}",
+                package_name,
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let entries: Vec<serde_json::Value> = serde_json::from_str(stdout.trim()).unwrap_or_default();
+    let entries: Vec<serde_json::Value> = match serde_json::from_str(stdout.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok((
+                Vec::new(),
+                Some(format!(
+                    "Failed to parse C extension helper output for '{}': {}",
+                    package_name, e
+                )),
+            ));
+        }
+    };
 
     let mut apis = Vec::new();
     for entry in entries {
@@ -1279,7 +1307,7 @@ fn extract_c_extension_apis(package_name: &str) -> TldrResult<Vec<ApiEntry>> {
         });
     }
 
-    Ok(apis)
+    Ok((apis, None))
 }
 
 #[cfg(test)]

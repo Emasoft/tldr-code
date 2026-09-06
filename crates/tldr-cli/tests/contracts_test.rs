@@ -228,7 +228,11 @@ mod contracts_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_help() {
         tldr_assert_cmd()
             .args(["contracts", "--help"])
@@ -240,7 +244,11 @@ mod contracts_command {
     }
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_guard_clause_detection() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("guards.py");
@@ -278,7 +286,11 @@ mod contracts_command {
     }
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_assert_extraction() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("asserts.py");
@@ -308,7 +320,11 @@ mod contracts_command {
     }
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_isinstance_type_constraints() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("isinstance.py");
@@ -336,7 +352,11 @@ mod contracts_command {
     }
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_postcondition_inference() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("postcond.py");
@@ -369,7 +389,11 @@ mod contracts_command {
     }
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_confidence_scoring() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("confidence.py");
@@ -394,7 +418,11 @@ mod contracts_command {
     }
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_type_annotations_low_confidence() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("annotations.py");
@@ -424,7 +452,11 @@ mod contracts_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_json_output_format() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("test.py");
@@ -452,7 +484,11 @@ mod contracts_command {
     }
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_text_output_format() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("test.py");
@@ -478,7 +514,11 @@ mod contracts_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_no_conditions_detected() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("simple.py");
@@ -501,7 +541,11 @@ mod contracts_command {
     }
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_nested_conditions() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("nested.py");
@@ -523,7 +567,11 @@ def nested(x, y):
     }
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_multiple_return_statements() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("multi_return.py");
@@ -550,7 +598,11 @@ def multi_return(x):
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_file_not_found() {
         tldr_assert_cmd()
             .args(["contracts", "/nonexistent/file.py", "some_function"])
@@ -560,7 +612,11 @@ def multi_return(x):
     }
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_function_not_found() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("test.py");
@@ -576,7 +632,11 @@ def multi_return(x):
     }
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_parse_error() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("invalid.py");
@@ -590,7 +650,11 @@ def multi_return(x):
     }
 
     #[test]
-    #[ignore = "contracts command not yet implemented"]
+    // why: the `contracts` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "contracts command output/behavior mismatch, needs test update"]
     fn test_contracts_missing_required_args() {
         tldr_assert_cmd()
             .args(["contracts"])
@@ -942,7 +1006,11 @@ mod specs_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "specs command not yet implemented"]
+    // why: the `specs` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "specs command output/behavior mismatch, needs test update"]
     fn test_specs_help() {
         tldr_assert_cmd()
             .args(["specs", "--help"])
@@ -954,7 +1022,11 @@ mod specs_command {
     }
 
     #[test]
-    #[ignore = "specs command not yet implemented"]
+    // why: the `specs` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "specs command output/behavior mismatch, needs test update"]
     fn test_specs_input_output_extraction() {
         let temp = TempDir::new().unwrap();
         let test_path = temp.path().join("test_module.py");
@@ -990,7 +1062,11 @@ mod specs_command {
     }
 
     #[test]
-    #[ignore = "specs command not yet implemented"]
+    // why: the `specs` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "specs command output/behavior mismatch, needs test update"]
     fn test_specs_exception_extraction() {
         let temp = TempDir::new().unwrap();
         let test_path = temp.path().join("test_module.py");
@@ -1026,7 +1102,11 @@ mod specs_command {
     }
 
     #[test]
-    #[ignore = "specs command not yet implemented"]
+    // why: the `specs` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "specs command output/behavior mismatch, needs test update"]
     fn test_specs_property_extraction() {
         let temp = TempDir::new().unwrap();
         let test_path = temp.path().join("test_module.py");
@@ -1062,7 +1142,11 @@ mod specs_command {
     }
 
     #[test]
-    #[ignore = "specs command not yet implemented"]
+    // why: the `specs` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "specs command output/behavior mismatch, needs test update"]
     fn test_specs_literal_evaluation() {
         let temp = TempDir::new().unwrap();
         let test_path = temp.path().join("test_literals.py");
@@ -1090,7 +1174,11 @@ def test_with_literals():
     }
 
     #[test]
-    #[ignore = "specs command not yet implemented"]
+    // why: the `specs` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "specs command output/behavior mismatch, needs test update"]
     fn test_specs_function_filter() {
         let temp = TempDir::new().unwrap();
         let test_path = temp.path().join("test_module.py");
@@ -1122,7 +1210,11 @@ def test_with_literals():
     }
 
     #[test]
-    #[ignore = "specs command not yet implemented"]
+    // why: the `specs` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "specs command output/behavior mismatch, needs test update"]
     fn test_specs_summary_counts() {
         let temp = TempDir::new().unwrap();
         let test_path = temp.path().join("test_module.py");
@@ -1148,7 +1240,11 @@ def test_with_literals():
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "specs command not yet implemented"]
+    // why: the `specs` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "specs command output/behavior mismatch, needs test update"]
     fn test_specs_text_output() {
         let temp = TempDir::new().unwrap();
         let test_path = temp.path().join("test_module.py");
@@ -1174,7 +1270,11 @@ def test_with_literals():
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "specs command not yet implemented"]
+    // why: the `specs` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "specs command output/behavior mismatch, needs test update"]
     fn test_specs_directory_recursive() {
         let temp = TempDir::new().unwrap();
         let tests_dir = temp.path().join("tests");
@@ -1208,7 +1308,11 @@ def test_with_literals():
     }
 
     #[test]
-    #[ignore = "specs command not yet implemented"]
+    // why: the `specs` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "specs command output/behavior mismatch, needs test update"]
     fn test_specs_no_test_functions() {
         let temp = TempDir::new().unwrap();
         let test_path = temp.path().join("not_tests.py");
@@ -1232,7 +1336,11 @@ def test_with_literals():
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "specs command not yet implemented"]
+    // why: the `specs` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "specs command output/behavior mismatch, needs test update"]
     fn test_specs_path_not_found() {
         tldr_assert_cmd()
             .args(["specs", "--from-tests", "/nonexistent/path"])
@@ -1242,7 +1350,11 @@ def test_with_literals():
     }
 
     #[test]
-    #[ignore = "specs command not yet implemented"]
+    // why: the `specs` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "specs command output/behavior mismatch, needs test update"]
     fn test_specs_missing_from_tests() {
         tldr_assert_cmd().args(["specs"]).assert().failure().stderr(
             predicate::str::contains("--from-tests").or(predicate::str::contains("required")),
@@ -1522,7 +1634,11 @@ mod dead_stores_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "dead-stores command not yet implemented"]
+    // why: the `dead-stores` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "dead-stores command output/behavior mismatch, needs test update"]
     fn test_dead_stores_help() {
         tldr_assert_cmd()
             .args(["dead-stores", "--help"])
@@ -1534,7 +1650,11 @@ mod dead_stores_command {
     }
 
     #[test]
-    #[ignore = "dead-stores command not yet implemented"]
+    // why: the `dead-stores` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "dead-stores command output/behavior mismatch, needs test update"]
     fn test_dead_stores_basic_detection() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("dead.py");
@@ -1577,7 +1697,11 @@ mod dead_stores_command {
     }
 
     #[test]
-    #[ignore = "dead-stores command not yet implemented"]
+    // why: the `dead-stores` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "dead-stores command output/behavior mismatch, needs test update"]
     fn test_dead_stores_phi_function_handling() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("phi.py");
@@ -1616,7 +1740,11 @@ def with_phi(x):
     }
 
     #[test]
-    #[ignore = "dead-stores command not yet implemented"]
+    // why: the `dead-stores` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "dead-stores command output/behavior mismatch, needs test update"]
     fn test_dead_stores_ssa_names() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("ssa.py");
@@ -1654,7 +1782,11 @@ def with_phi(x):
     }
 
     #[test]
-    #[ignore = "dead-stores command not yet implemented"]
+    // why: the `dead-stores` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "dead-stores command output/behavior mismatch, needs test update"]
     fn test_dead_stores_compare_mode() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("compare.py");
@@ -1686,7 +1818,11 @@ def with_phi(x):
     }
 
     #[test]
-    #[ignore = "dead-stores command not yet implemented"]
+    // why: the `dead-stores` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "dead-stores command output/behavior mismatch, needs test update"]
     fn test_dead_stores_no_dead_stores() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("clean.py");
@@ -1715,7 +1851,11 @@ def all_used(a, b):
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "dead-stores command not yet implemented"]
+    // why: the `dead-stores` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "dead-stores command output/behavior mismatch, needs test update"]
     fn test_dead_stores_loop_variables() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("loop.py");
@@ -1738,7 +1878,11 @@ def loop_example(n):
     }
 
     #[test]
-    #[ignore = "dead-stores command not yet implemented"]
+    // why: the `dead-stores` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "dead-stores command output/behavior mismatch, needs test update"]
     fn test_dead_stores_multiple_assignments() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("multi.py");
@@ -1772,7 +1916,11 @@ def multiple_assigns(x):
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "dead-stores command not yet implemented"]
+    // why: the `dead-stores` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "dead-stores command output/behavior mismatch, needs test update"]
     fn test_dead_stores_file_not_found() {
         tldr_assert_cmd()
             .args(["dead-stores", "/nonexistent/file.py", "some_function"])
@@ -1782,7 +1930,11 @@ def multiple_assigns(x):
     }
 
     #[test]
-    #[ignore = "dead-stores command not yet implemented"]
+    // why: the `dead-stores` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "dead-stores command output/behavior mismatch, needs test update"]
     fn test_dead_stores_function_not_found() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("test.py");
@@ -1798,7 +1950,11 @@ def multiple_assigns(x):
     }
 
     #[test]
-    #[ignore = "dead-stores command not yet implemented"]
+    // why: the `dead-stores` command IS implemented; several of these tests
+    // fail against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "dead-stores command output/behavior mismatch, needs test update"]
     fn test_dead_stores_ssa_error() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("invalid.py");
@@ -1824,7 +1980,11 @@ mod chop_command {
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_help() {
         tldr_assert_cmd()
             .args(["chop", "--help"])
@@ -1837,7 +1997,11 @@ mod chop_command {
     }
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_forward_backward_intersection() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("flow.py");
@@ -1882,7 +2046,11 @@ mod chop_command {
     }
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_path_exists() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("flow.py");
@@ -1907,7 +2075,11 @@ mod chop_command {
     }
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_no_path_exists() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("independent.py");
@@ -1942,7 +2114,11 @@ def independent(a, b):
     }
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_same_line() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("flow.py");
@@ -1968,7 +2144,11 @@ def independent(a, b):
     }
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_lines_sorted() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("flow.py");
@@ -1994,7 +2174,11 @@ def independent(a, b):
     }
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_explanation() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("flow.py");
@@ -2027,7 +2211,11 @@ def independent(a, b):
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_control_flow_dependency() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("control.py");
@@ -2054,7 +2242,11 @@ def control_dep(x):
     }
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_transitive_dependency() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("transitive.py");
@@ -2090,7 +2282,11 @@ def transitive(a):
     // -------------------------------------------------------------------------
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_file_not_found() {
         tldr_assert_cmd()
             .args(["chop", "/nonexistent/file.py", "func", "1", "5"])
@@ -2100,7 +2296,11 @@ def transitive(a):
     }
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_function_not_found() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("test.py");
@@ -2116,7 +2316,11 @@ def transitive(a):
     }
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_line_outside_function() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("small.py");
@@ -2136,7 +2340,11 @@ def small():
     }
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_invalid_line_numbers() {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("test.py");
@@ -2149,7 +2357,11 @@ def small():
     }
 
     #[test]
-    #[ignore = "chop command not yet implemented"]
+    // why: the `chop` command IS implemented; several of these tests fail
+    // against its actual output/behavior rather than "not implemented"
+    // (confirmed by running with --ignored). Left ignored pending per-test
+    // updates to match real output.
+    #[ignore = "chop command output/behavior mismatch, needs test update"]
     fn test_chop_missing_required_args() {
         tldr_assert_cmd()
             .args(["chop", "file.py", "func", "1"]) // Missing target_line

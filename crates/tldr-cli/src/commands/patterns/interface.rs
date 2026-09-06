@@ -1821,9 +1821,10 @@ fn flatten_class_methods_to_functions(
 /// entry and folds the impl's methods into the matching entry. impl
 /// blocks with no struct/enum/trait counterpart in the same file (e.g.
 /// `impl SomeTrait for ExternalType { ... }` where `ExternalType` lives
-/// elsewhere) are dropped entirely — we cannot attach them to anything in
-/// this file's interface and surfacing them with the trait/type name as a
-/// "class" was misleading.
+/// elsewhere) survive as their own `ClassInfo` entry, keyed by the
+/// external type's name — there is nothing local to fold them into. (This
+/// doc previously claimed such impls were "dropped entirely"; they were
+/// not — see the NOTE at the end of this function.)
 fn merge_rust_impl_entries(classes: &mut Vec<ClassInfo>) {
     // why: `struct_like_indices` and `name_counts` were computed here but
     // never read for any decision — both ended in a bare `let _ = ...;`

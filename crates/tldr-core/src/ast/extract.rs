@@ -345,13 +345,12 @@ fn extract_python_functions_detailed(
                 }
             }
             "class_definition" => {
-                // Don't recurse into classes for top-level functions
-                if !is_method {
-                    continue;
-                }
-                if let Some(body) = child.child_by_field_name("body") {
-                    extract_python_functions_detailed(&body, source, functions, true);
-                }
+                // Don't recurse into classes for top-level functions.
+                // why: when already inside a class (is_method), a nested class's methods
+                // must NOT be recursed into here either — that appended them to the
+                // enclosing class's `functions`/`methods` list with no owner distinction,
+                // leaking a nested class's methods into the wrong class.
+                continue;
             }
             _ => {
                 if !is_method {
@@ -1810,11 +1809,10 @@ fn extract_ts_functions_detailed(
                 }
             }
             "class_declaration" | "class" => {
-                if is_method {
-                    if let Some(body) = child.child_by_field_name("body") {
-                        extract_ts_functions_detailed(&body, source, functions, true);
-                    }
-                }
+                // why: recursing here when already inside a class (is_method) appended a
+                // nested class's methods to the enclosing class's method list with no
+                // owner distinction — same leak as the Python extractor. Skip nested
+                // classes entirely instead of misattributing their methods.
             }
             "lexical_declaration" | "variable_declaration" => {
                 // Handle: const foo = () => {} or const foo = function() {}

@@ -128,12 +128,19 @@ fn extract_from_javascript_file(
         .unwrap_or(file_path)
         .to_path_buf();
     let flow_type_exports = collect_flow_type_exports(&source);
+    let commonjs_export_lines = collect_commonjs_export_lines(&source);
 
     let mut apis = Vec::new();
 
     // Extract top-level functions
     for func in &module_info.functions {
-        if !include_private && !is_exported(&source, func.line_number as usize) {
+        if !include_private
+            && !is_exported_with_export_lines(
+                &source,
+                func.line_number as usize,
+                &commonjs_export_lines,
+            )
+        {
             continue;
         }
 
@@ -178,7 +185,13 @@ fn extract_from_javascript_file(
         if flow_type_exports.contains(&class.name) {
             continue;
         }
-        if !include_private && !is_exported(&source, class.line_number as usize) {
+        if !include_private
+            && !is_exported_with_export_lines(
+                &source,
+                class.line_number as usize,
+                &commonjs_export_lines,
+            )
+        {
             continue;
         }
 
@@ -249,7 +262,13 @@ fn extract_from_javascript_file(
 
     // Extract constants from module_info
     for constant in &module_info.constants {
-        if !include_private && !is_exported(&source, constant.line_number as usize) {
+        if !include_private
+            && !is_exported_with_export_lines(
+                &source,
+                constant.line_number as usize,
+                &commonjs_export_lines,
+            )
+        {
             continue;
         }
 
@@ -662,6 +681,54 @@ fn collect_js_import_statements(source: &str) -> Vec<String> {
     statements
 }
 
+/// Parse a named (`{ a, b as c }`) or namespace (`* as ns`) import clause and
+/// push the resulting bindings. Returns `true` if `imports` matched one of
+/// those shapes (caller should `continue`), `false` otherwise (plain default).
+fn push_js_named_or_namespace_bindings(
+    imports: &str,
+    from_module: &str,
+    bindings: &mut Vec<JsImportBinding>,
+) -> bool {
+    let imports = imports.trim();
+    if let Some(named) = imports
+        .strip_prefix('{')
+        .and_then(|body| body.strip_suffix('}'))
+    {
+        for item in named.split(',') {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            let (imported_name, local_name) = item
+                .split_once(" as ")
+                .map_or((item, item), |(left, right)| (left.trim(), right.trim()));
+            if imported_name.is_empty() || local_name.is_empty() {
+                continue;
+            }
+            bindings.push(JsImportBinding {
+                local_name: local_name.to_string(),
+                imported_name: Some(imported_name.to_string()),
+                from_module: from_module.to_string(),
+            });
+        }
+        return true;
+    }
+
+    if let Some(namespace) = imports.strip_prefix("* as ") {
+        let local_name = namespace.trim();
+        if !local_name.is_empty() {
+            bindings.push(JsImportBinding {
+                local_name: local_name.to_string(),
+                imported_name: None,
+                from_module: from_module.to_string(),
+            });
+        }
+        return true;
+    }
+
+    false
+}
+
 fn parse_js_import_bindings(
     source: &str,
     file_path: &Path,
@@ -686,39 +753,31 @@ fn parse_js_import_bindings(
         };
 
         let imports = imports.trim();
-        if let Some(named) = imports
-            .strip_prefix('{')
-            .and_then(|body| body.strip_suffix('}'))
-        {
-            for item in named.split(',') {
-                let item = item.trim();
-                if item.is_empty() {
-                    continue;
-                }
-                let (imported_name, local_name) = item
-                    .split_once(" as ")
-                    .map_or((item, item), |(left, right)| (left.trim(), right.trim()));
-                if imported_name.is_empty() || local_name.is_empty() {
-                    continue;
-                }
+
+        // Mixed default + named/namespace: `import Default, { Named } from './x'`
+        // or `import Default, * as ns from './x'`. Without this, the whole
+        // "Default, { Named }" fell through to the plain-default branch below
+        // and was recorded as one (wrong) default local name.
+        // why: split on the first comma only when what follows it is clearly
+        // a named/namespace clause, so a default import whose local name
+        // itself contains a comma-free identifier is unaffected.
+        if let Some((default_part, rest_part)) = imports.split_once(',') {
+            let default_part = default_part.trim();
+            let rest_part = rest_part.trim();
+            if !default_part.is_empty()
+                && (rest_part.starts_with('{') || rest_part.starts_with("* as "))
+            {
                 bindings.push(JsImportBinding {
-                    local_name: local_name.to_string(),
-                    imported_name: Some(imported_name.to_string()),
+                    local_name: default_part.to_string(),
+                    imported_name: Some("default".to_string()),
                     from_module: from_module.clone(),
                 });
+                push_js_named_or_namespace_bindings(rest_part, &from_module, &mut bindings);
+                continue;
             }
-            continue;
         }
 
-        if let Some(namespace) = imports.strip_prefix("* as ") {
-            let local_name = namespace.trim();
-            if !local_name.is_empty() {
-                bindings.push(JsImportBinding {
-                    local_name: local_name.to_string(),
-                    imported_name: None,
-                    from_module: from_module.clone(),
-                });
-            }
+        if push_js_named_or_namespace_bindings(imports, &from_module, &mut bindings) {
             continue;
         }
 
@@ -1211,7 +1270,37 @@ fn compute_js_module_path(file_path: &Path, root_dir: &Path, package_name: &str)
 /// - `export default ...`
 /// - `module.exports = ...`
 /// - `exports.X = ...`
+#[cfg(test)]
 fn is_exported(source: &str, line_number: usize) -> bool {
+    let export_lines = collect_commonjs_export_lines(source);
+    is_exported_with_export_lines(source, line_number, &export_lines)
+}
+
+/// Collect just the CommonJS export-declaration lines (`module.exports...`,
+/// `exports.X`) once per file, so callers checking many symbols don't each
+/// rescan the whole file.
+fn collect_commonjs_export_lines(source: &str) -> Vec<&str> {
+    source
+        .lines()
+        .map(str::trim)
+        .filter(|trimmed| {
+            trimmed.starts_with("module.exports")
+                || trimmed.starts_with("exports =")
+                || trimmed.starts_with("exports=")
+                || trimmed.starts_with("exports.")
+        })
+        .collect()
+}
+
+/// Same as [`is_exported`] but takes the pre-collected CommonJS export lines
+/// (see `collect_commonjs_export_lines`).
+///
+/// why: `is_exported` used to `source.lines()` twice per call — once to find
+/// the symbol's own line, once to rescan the WHOLE file for CommonJS export
+/// references — and callers invoked it once per function/class/constant,
+/// making it O(symbols x lines) instead of O(lines). The CommonJS-lines
+/// subset is collected once per file and reused across every symbol check.
+fn is_exported_with_export_lines(source: &str, line_number: usize, export_lines: &[&str]) -> bool {
     let lines: Vec<&str> = source.lines().collect();
     if line_number == 0 || line_number > lines.len() {
         return false;
@@ -1234,10 +1323,8 @@ fn is_exported(source: &str, line_number: usize) -> bool {
 
     // Check if the function/class name appears in a later module.exports or exports.X line
     // This handles the pattern: function foo() { ... } \n module.exports = { foo };
-    // For this we scan the entire source for CommonJS export references
     if let Some(name) = extract_name_from_line(line) {
-        for src_line in source.lines() {
-            let trimmed = src_line.trim();
+        for trimmed in export_lines {
             if (trimmed.starts_with("module.exports")
                 || trimmed.starts_with("exports =")
                 || trimmed.starts_with("exports="))

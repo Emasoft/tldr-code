@@ -353,29 +353,74 @@ impl SwiftHandler {
         defined_funcs: &HashSet<String>,
         caller: &str,
     ) -> Vec<CallSite> {
+        // why: `walk_tree` visits every descendant unconditionally, so a nested/local
+        // function declared inside this body had every one of ITS calls attributed to
+        // the enclosing function too — `walk_for_calls` never recursed into a nested
+        // function_declaration to give it its own entry, and this walk didn't stop at
+        // its boundary either. Recurse manually and stop at a nested function/init
+        // declaration's boundary; `walk_for_calls` is responsible for descending into
+        // those and attributing their own calls to their own qualified name.
         let mut calls = Vec::new();
+        self.collect_calls_excluding_nested_functions(
+            node,
+            source,
+            defined_funcs,
+            caller,
+            &mut calls,
+        );
+        calls
+    }
 
-        for child in walk_tree(*node) {
-            if child.kind() == "call_expression" {
-                let line = child.start_position().row as u32 + 1;
-
-                if let Some((target, receiver, call_type)) =
-                    self.resolve_call_target(&child, source, defined_funcs)
-                {
-                    calls.push(CallSite::new(
-                        caller.to_string(),
-                        target,
-                        call_type,
-                        Some(line),
-                        None,
-                        receiver,
-                        None,
-                    ));
+    fn collect_calls_excluding_nested_functions(
+        &self,
+        node: &Node,
+        source: &[u8],
+        defined_funcs: &HashSet<String>,
+        caller: &str,
+        calls: &mut Vec<CallSite>,
+    ) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "function_declaration" | "init_declaration" => {
+                    // Boundary: this nested declaration's own calls are attributed to
+                    // it by `walk_for_calls`'s recursion, not to `caller`.
+                    continue;
+                }
+                "call_expression" => {
+                    let line = child.start_position().row as u32 + 1;
+                    if let Some((target, receiver, call_type)) =
+                        self.resolve_call_target(&child, source, defined_funcs)
+                    {
+                        calls.push(CallSite::new(
+                            caller.to_string(),
+                            target,
+                            call_type,
+                            Some(line),
+                            None,
+                            receiver,
+                            None,
+                        ));
+                    }
+                    self.collect_calls_excluding_nested_functions(
+                        &child,
+                        source,
+                        defined_funcs,
+                        caller,
+                        calls,
+                    );
+                }
+                _ => {
+                    self.collect_calls_excluding_nested_functions(
+                        &child,
+                        source,
+                        defined_funcs,
+                        caller,
+                        calls,
+                    );
                 }
             }
         }
-
-        calls
     }
 
     /// Extract calls from the entire source using tree-sitter AST walking.
@@ -468,6 +513,13 @@ impl SwiftHandler {
                             &qualified_name,
                         );
                         all_calls.extend(body_calls);
+
+                        // why: give a nested/local function its own call-graph entry
+                        // instead of letting `extract_calls_from_subtree` above
+                        // attribute its calls to this enclosing function. `current_type`
+                        // is passed as None because a local function isn't a method of
+                        // the enclosing type.
+                        self.walk_for_calls(&body, source, defined_funcs, calls_by_func, None);
                     }
 
                     // Extract calls from default parameter values
@@ -514,6 +566,10 @@ impl SwiftHandler {
                         &qualified_name,
                     );
                     all_calls.extend(body_calls);
+
+                    // why: same nested-function fix as function_declaration above — give
+                    // a local function declared inside an initializer its own entry.
+                    self.walk_for_calls(&body, source, defined_funcs, calls_by_func, None);
                 }
 
                 // why: init declarations accept default parameter values too
@@ -521,12 +577,8 @@ impl SwiftHandler {
                 // function_declaration below. Without this, calls made inside
                 // an initializer's default parameter values were silently
                 // dropped from the call graph.
-                let default_calls = self.extract_default_param_calls(
-                    node,
-                    source,
-                    defined_funcs,
-                    &qualified_name,
-                );
+                let default_calls =
+                    self.extract_default_param_calls(node, source, defined_funcs, &qualified_name);
                 all_calls.extend(default_calls);
 
                 if !all_calls.is_empty() {
@@ -536,7 +588,10 @@ impl SwiftHandler {
                         .extend(all_calls.iter().cloned());
 
                     if qualified_name != func_name {
-                        calls_by_func.entry(func_name).or_default().extend(all_calls);
+                        calls_by_func
+                            .entry(func_name)
+                            .or_default()
+                            .extend(all_calls);
                     }
                 }
             }

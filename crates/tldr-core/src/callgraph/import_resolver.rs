@@ -894,8 +894,34 @@ impl<'a> ReExportTracer<'a> {
             None => return reexports,
         };
 
-        // Simple parsing for "from .X import Y" patterns
+        // Join parenthesized multi-line "from .x import (\n  A,\n  B,\n)" statements into
+        // a single logical line before matching — otherwise a continuation line never
+        // starts with "from " and is silently skipped, dropping every re-export it names.
+        // why: without this join, `from .x import (` matches but has no closing paren on
+        // the same line, so `import_part` is just "(" and every name inside is lost.
+        let mut logical_lines: Vec<String> = Vec::new();
+        let mut buf = String::new();
+        let mut paren_depth: i32 = 0;
         for line in content.lines() {
+            if paren_depth <= 0 {
+                buf.clear();
+            } else {
+                buf.push(' ');
+            }
+            buf.push_str(line);
+            paren_depth += line.matches('(').count() as i32 - line.matches(')').count() as i32;
+            if paren_depth <= 0 {
+                logical_lines.push(std::mem::take(&mut buf));
+            }
+        }
+        if paren_depth > 0 {
+            // Unbalanced parens (e.g. a paren inside a string/comment) — fall back to
+            // whatever was accumulated so we don't silently drop the tail of the file.
+            logical_lines.push(buf);
+        }
+
+        // Simple parsing for "from .X import Y" patterns
+        for line in &logical_lines {
             let trimmed = line.trim();
             if !trimmed.starts_with("from ") {
                 continue;
@@ -904,7 +930,14 @@ impl<'a> ReExportTracer<'a> {
             // Parse "from .X import Y" or "from .X import Y as Z"
             if let Some(import_pos) = trimmed.find(" import ") {
                 let from_part = &trimmed[5..import_pos].trim();
-                let import_part = &trimmed[import_pos + 8..].trim();
+                // Strip the wrapping "(...)" now that multi-line imports are joined above;
+                // a trailing comment or trailing comma is left for the per-item trim below.
+                let import_part = trimmed[import_pos + 8..]
+                    .trim()
+                    .trim_start_matches('(')
+                    .trim_end_matches(')')
+                    .trim();
+                let import_part = &import_part;
 
                 // Handle relative imports
                 if from_part.starts_with('.') {
@@ -926,6 +959,10 @@ impl<'a> ReExportTracer<'a> {
                     // Parse imported names
                     for item in import_part.split(',') {
                         let item = item.trim();
+                        // Skip the empty tail left by a trailing comma before the closing paren.
+                        if item.is_empty() {
+                            continue;
+                        }
 
                         // Handle "Name as Alias"
                         let (original_name, alias) = if let Some(as_pos) = item.find(" as ") {

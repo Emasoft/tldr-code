@@ -219,10 +219,27 @@ pub fn analyze_complexity(
             .collect()
     };
 
-    // Collect all function complexity data
+    // Collect all function complexity data.
+    // why: the doc above promises parse errors are "skipped (logged)", but
+    // `.ok()` silently dropped the `Err` with no logging at all — a failing
+    // file just vanished from the report with no trace of why. Log each
+    // failure to stderr before discarding it, matching the documented
+    // contract and this crate's existing eprintln!-based warning style.
     let all_functions_nested: Vec<Vec<FunctionComplexity>> = file_paths
         .par_iter()
-        .filter_map(|file_path| analyze_file_complexity(file_path, opts.include_cognitive).ok())
+        .filter_map(
+            |file_path| match analyze_file_complexity(file_path, opts.include_cognitive) {
+                Ok(functions) => Some(functions),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: skipping {} due to parse error: {}",
+                        file_path.display(),
+                        e
+                    );
+                    None
+                }
+            },
+        )
         .collect();
 
     let mut all_functions: Vec<FunctionComplexity> =
@@ -279,9 +296,8 @@ pub fn analyze_complexity(
     // per-function complexity rows (`functions`/`hotspots`) intentionally
     // remain the metrics-derived subset (functions for which cyclomatic
     // metrics could be computed); only the headline count is canonicalized.
-    let canonical_lang = language.unwrap_or_else(|| {
-        Language::from_directory(path).unwrap_or(Language::Python)
-    });
+    let canonical_lang =
+        language.unwrap_or_else(|| Language::from_directory(path).unwrap_or(Language::Python));
     let canonical_count = count_functions_canonical(path, canonical_lang) as usize;
     let report_functions_analyzed = if canonical_count > 0 {
         canonical_count

@@ -760,8 +760,14 @@ fn detect_cycles(deps: &BTreeMap<PathBuf, Vec<PathBuf>>, max_length: usize) -> V
 ///
 /// Performs depth-first search from `node`, tracking the recursion stack.
 /// When we find a back-edge (edge to a node in rec_set), we extract the cycle.
+///
+/// why: this was plain recursive DFS (one Rust stack frame per edge on the
+/// current DFS path). A large/deep dependency graph (thousands of modules
+/// with a long import chain) can blow the real call stack and crash the
+/// process. Rewritten as an explicit-stack iterative DFS with identical
+/// back-edge/cycle-extraction semantics, bounded only by heap memory.
 fn dfs_find_cycles(
-    node: &PathBuf,
+    start: &PathBuf,
     deps: &BTreeMap<PathBuf, Vec<PathBuf>>,
     visited: &mut HashSet<PathBuf>,
     rec_stack: &mut Vec<PathBuf>,
@@ -769,39 +775,52 @@ fn dfs_find_cycles(
     cycles: &mut HashSet<DepCycle>,
     max_length: usize,
 ) {
-    // Mark as visited and add to recursion stack
-    visited.insert(node.clone());
-    rec_stack.push(node.clone());
-    rec_set.insert(node.clone());
+    // Each explicit-stack frame is (node, index of the next neighbor to visit).
+    let mut frames: Vec<(PathBuf, usize)> = vec![(start.clone(), 0)];
+    visited.insert(start.clone());
+    rec_stack.push(start.clone());
+    rec_set.insert(start.clone());
 
-    // Process all neighbors (dependencies)
-    if let Some(neighbors) = deps.get(node) {
-        for neighbor in neighbors {
-            if rec_set.contains(neighbor) {
-                // Back-edge found! Extract the cycle from the recursion stack
-                if let Some(start_idx) = rec_stack.iter().position(|n| n == neighbor) {
-                    let cycle_path: Vec<PathBuf> = rec_stack[start_idx..].to_vec();
+    while let Some(&(ref node, idx)) = frames.last() {
+        let node = node.clone();
+        let neighbors = deps.get(&node);
+        let neighbor = neighbors.and_then(|n| n.get(idx)).cloned();
 
-                    // Only include cycles within max_length
-                    if cycle_path.len() <= max_length {
-                        let cycle = DepCycle::new(cycle_path);
-                        // HashSet with DepCycle's canonical-based Eq handles deduplication
-                        cycles.insert(cycle);
+        match neighbor {
+            Some(neighbor) => {
+                // Advance this frame's neighbor cursor before descending/looping.
+                frames.last_mut().unwrap().1 += 1;
+
+                if rec_set.contains(&neighbor) {
+                    // Back-edge found! Extract the cycle from the recursion stack.
+                    if let Some(start_idx) = rec_stack.iter().position(|n| *n == neighbor) {
+                        let cycle_path: Vec<PathBuf> = rec_stack[start_idx..].to_vec();
+
+                        // Only include cycles within max_length
+                        if cycle_path.len() <= max_length {
+                            let cycle = DepCycle::new(cycle_path);
+                            // HashSet with DepCycle's canonical-based Eq handles deduplication
+                            cycles.insert(cycle);
+                        }
                     }
+                } else if !visited.contains(&neighbor) {
+                    // Descend into the unvisited neighbor.
+                    visited.insert(neighbor.clone());
+                    rec_stack.push(neighbor.clone());
+                    rec_set.insert(neighbor.clone());
+                    frames.push((neighbor, 0));
                 }
-            } else if !visited.contains(neighbor) {
-                // Recurse to unvisited neighbor
-                dfs_find_cycles(
-                    neighbor, deps, visited, rec_stack, rec_set, cycles, max_length,
-                );
+                // If visited but not in rec_set, it's a cross-edge or
+                // forward-edge, not a back-edge -- nothing to do.
             }
-            // If visited but not in rec_set, it's a cross-edge or forward-edge, not a back-edge
+            None => {
+                // Exhausted this node's neighbors -- backtrack.
+                frames.pop();
+                rec_stack.pop();
+                rec_set.remove(&node);
+            }
         }
     }
-
-    // Remove from recursion stack when backtracking
-    rec_stack.pop();
-    rec_set.remove(node);
 }
 
 // =============================================================================

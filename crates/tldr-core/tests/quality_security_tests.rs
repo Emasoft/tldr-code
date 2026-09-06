@@ -3,9 +3,12 @@
 use std::path::PathBuf;
 
 use tldr_core::quality::maintainability::maintainability_index;
-use tldr_core::quality::smells::{detect_smells, SmellType, ThresholdPreset};
+use tldr_core::quality::smells::{
+    detect_smells_with_walker_opts, SmellType, SmellsReport, SmellsWalkerOpts, ThresholdPreset,
+};
 use tldr_core::security::secrets::{scan_secrets, Severity};
 use tldr_core::security::vuln::{scan_vulnerabilities, VulnType};
+use tldr_core::TldrResult;
 
 fn fixtures_dir() -> PathBuf {
     // why: CARGO_MANIFEST_DIR is crates/tldr-core, whose own tests/fixtures/
@@ -13,6 +16,30 @@ fn fixtures_dir() -> PathBuf {
     // the repo root's nonexistent tests/fixtures/, so every test in this
     // file silently no-op'd via its "fixture not found" early return.
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
+/// why: `detect_smells` excludes any path under a `tests/`/`spec/` directory
+/// component by default (PR-review default, see `SmellsWalkerOpts::include_tests`
+/// doc). This suite's own fixtures live under `tests/fixtures/`, so every
+/// `smells_tests::*` case using the plain `detect_smells` API silently found
+/// zero smells regardless of fixture content — `include_tests: true` is
+/// required for these fixtures to ever be analyzed at all.
+fn detect_smells_incl_test_fixtures(
+    path: &std::path::Path,
+    threshold: ThresholdPreset,
+    smell_type: Option<SmellType>,
+    suggest: bool,
+) -> TldrResult<SmellsReport> {
+    detect_smells_with_walker_opts(
+        path,
+        threshold,
+        smell_type,
+        suggest,
+        SmellsWalkerOpts {
+            include_tests: true,
+            ..Default::default()
+        },
+    )
 }
 
 // =============================================================================
@@ -30,7 +57,7 @@ mod smells_tests {
             return;
         }
 
-        let result = detect_smells(
+        let result = detect_smells_incl_test_fixtures(
             &project,
             ThresholdPreset::Default,
             Some(SmellType::GodClass),
@@ -56,7 +83,7 @@ mod smells_tests {
             return;
         }
 
-        let result = detect_smells(
+        let result = detect_smells_incl_test_fixtures(
             &project,
             ThresholdPreset::Default,
             Some(SmellType::LongParameterList),
@@ -81,10 +108,14 @@ mod smells_tests {
             return;
         }
 
-        let result = detect_smells(&project, ThresholdPreset::Default, None, true);
+        let result =
+            detect_smells_incl_test_fixtures(&project, ThresholdPreset::Default, None, true);
         assert!(result.is_ok());
 
         let report = result.unwrap();
+        // why: a loop over an empty Vec asserts nothing — the fixture must
+        // actually trigger at least one smell for this to be a real check.
+        assert!(!report.smells.is_empty(), "fixture should trigger a smell");
         for smell in &report.smells {
             assert!(
                 smell.suggestion.is_some(),
@@ -100,8 +131,10 @@ mod smells_tests {
             return;
         }
 
-        let strict = detect_smells(&project, ThresholdPreset::Strict, None, false);
-        let relaxed = detect_smells(&project, ThresholdPreset::Relaxed, None, false);
+        let strict =
+            detect_smells_incl_test_fixtures(&project, ThresholdPreset::Strict, None, false);
+        let relaxed =
+            detect_smells_incl_test_fixtures(&project, ThresholdPreset::Relaxed, None, false);
 
         if let (Ok(strict), Ok(relaxed)) = (strict, relaxed) {
             assert!(

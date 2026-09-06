@@ -566,7 +566,7 @@ def empty():
 "#;
 
         // WHEN: We try to slice from a line
-        let _slice = get_slice(
+        let slice = get_slice(
             source,
             "empty",
             3,
@@ -576,8 +576,21 @@ def empty():
         )
         .unwrap();
 
-        // THEN: Should handle gracefully
-        // Result depends on implementation - could be empty or contain the line
+        // why: the old test only unwrapped and left a comment saying the
+        // result "depends on implementation" — a regression that returned
+        // nonsense line numbers (out of range, or a huge slice for a 3-line
+        // body with no data dependencies) would never fail this test.
+        assert!(
+            slice.len() <= 1,
+            "a `pass`-only function has no data dependencies, so the slice \
+             should contain at most the line itself: {slice:?}"
+        );
+        for &l in &slice {
+            assert!(
+                (1..=4).contains(&l),
+                "slice line {l} is outside the 4-line source"
+            );
+        }
     }
 
     #[test]

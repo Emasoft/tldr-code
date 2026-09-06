@@ -66,7 +66,11 @@ fn find_c_files(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            // why: `path.is_dir()` follows symlinks, so a symlinked directory
+            // (including one that cycles back to an ancestor) recurses forever.
+            // Skip symlinks outright — real subdirectories are unaffected.
+            let is_symlink = entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(false);
+            if path.is_dir() && !is_symlink {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if !name.starts_with('.') {
                         let (sub_headers, sub_sources) = find_c_files(&path);

@@ -323,11 +323,16 @@ pub fn build_memory_ssa(cfg: &CfgInfo, ssa: &SsaFunction) -> TldrResult<MemorySs
     }
 
     // Phase 5: Rename memory versions
-    // Process blocks in dominator tree order
+    // Process blocks in dominator tree order.
+    // Group ops by block once up front (see `rename_memory_versions`'s doc).
+    let mut ops_by_block: HashMap<usize, Vec<&MemoryOp>> = HashMap::new();
+    for op in &memory_ops {
+        ops_by_block.entry(op.block).or_default().push(op);
+    }
     rename_memory_versions(
         cfg.entry_block,
         cfg,
-        &memory_ops,
+        &ops_by_block,
         &phi_versions,
         &dom_tree,
         &mut builder,
@@ -616,7 +621,7 @@ fn place_memory_phis(
 fn rename_memory_versions(
     block_id: usize,
     cfg: &CfgInfo,
-    memory_ops: &[MemoryOp],
+    ops_by_block: &HashMap<usize, Vec<&MemoryOp>>,
     phi_versions: &HashMap<usize, MemoryVersion>,
     dom_tree: &super::dominators::DominatorTree,
     builder: &mut MemorySsaBuilder,
@@ -629,11 +634,13 @@ fn rename_memory_versions(
         builder.push_version(phi_version);
     }
 
-    // Process memory operations in this block
-    let block_ops: Vec<_> = memory_ops
-        .iter()
-        .filter(|op| op.block == block_id)
-        .collect();
+    // Process memory operations in this block.
+    // why: was `memory_ops.iter().filter(|op| op.block == block_id)` — a full
+    // O(ops) scan on EVERY recursive call, making the whole traversal
+    // O(blocks x ops) instead of O(ops). `ops_by_block` is grouped once by
+    // the caller, so this lookup is O(1) amortized.
+    static EMPTY: Vec<&MemoryOp> = Vec::new();
+    let block_ops = ops_by_block.get(&block_id).unwrap_or(&EMPTY);
 
     for op in block_ops {
         match op.kind {
@@ -662,7 +669,7 @@ fn rename_memory_versions(
     // Recursively process dominated children
     if let Some(node) = dom_tree.nodes.get(&block_id) {
         for &child in &node.children {
-            rename_memory_versions(child, cfg, memory_ops, phi_versions, dom_tree, builder);
+            rename_memory_versions(child, cfg, ops_by_block, phi_versions, dom_tree, builder);
         }
     }
 

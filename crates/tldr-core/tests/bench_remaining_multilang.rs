@@ -809,8 +809,10 @@ def new_function(a, b):
                 );
             }
             Err(e) => {
-                // Hotspots may fail in some CI environments without proper git setup
-                eprintln!("analyze_hotspots error (may be expected in CI): {}", e);
+                // why: TestRepo always creates a real, committed git repo above, so a
+                // failure here is a genuine regression, not a CI environment quirk —
+                // swallowing it into an eprintln made the test unable to fail.
+                panic!("analyze_hotspots failed on a valid git repo: {}", e);
             }
         }
     }
@@ -837,8 +839,16 @@ def new_function(a, b):
             .with_recency_halflife(14.0)
             .with_include_bots(false);
 
-        // Verify builder pattern works (no panic)
-        let _ = format!("{:?}", options);
+        // why: the old test only formatted the struct with `{:?}`, which can never
+        // fail — it verified nothing about what each `.with_*` setter actually stores.
+        assert_eq!(options.days, 60);
+        assert_eq!(options.top, 5);
+        assert_eq!(options.min_commits, 3);
+        assert!(options.by_function);
+        assert!(options.show_trend);
+        assert_eq!(options.threshold, Some(0.5));
+        assert_eq!(options.recency_halflife, 14.0);
+        assert!(!options.include_bots);
     }
 
     #[test]
@@ -1417,15 +1427,19 @@ def safe_function(path):
 
         if code == 0 {
             let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-            // With statement should be recognized as safe -- no leaks
-            if let Some(leaks) = json.get("leaks").and_then(|l| l.as_array()) {
-                // A with-statement should not be flagged
-                assert!(
-                    leaks.is_empty(),
-                    "context manager should not produce leak findings, got {} leaks",
-                    leaks.len()
-                );
-            }
+            // With statement should be recognized as safe -- no leaks.
+            // why: `if let Some(leaks) = json.get("leaks")...` with no else
+            // vacuously passed if the "leaks" field was ever dropped from the
+            // schema; require it to be present and an array.
+            let leaks = json
+                .get("leaks")
+                .and_then(|l| l.as_array())
+                .unwrap_or_else(|| panic!("expected \"leaks\" array field, got: {}", json));
+            assert!(
+                leaks.is_empty(),
+                "context manager should not produce leak findings, got {} leaks",
+                leaks.len()
+            );
         } else {
             eprintln!("resources safe test code {}: {}", code, stderr);
         }

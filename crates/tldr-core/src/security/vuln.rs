@@ -458,7 +458,16 @@ pub fn scan_vulnerabilities(
     use rayon::prelude::*;
     let scan_results: Vec<Vec<VulnFinding>> = files
         .par_iter()
-        .map(|file_path| scan_file_vulns(file_path, vuln_type).unwrap_or_default())
+        .map(|file_path| {
+            // why: unwrap_or_default() used to swallow per-file I/O errors (permission
+            // denied, race with a deleted file) with zero trace, making a partial scan
+            // look identical to a clean one. Log so the drop is visible without failing
+            // the whole batch for one bad file.
+            scan_file_vulns(file_path, vuln_type).unwrap_or_else(|e| {
+                eprintln!("tldr: skipping {}: {e}", file_path.display());
+                Vec::new()
+            })
+        })
         .collect();
     for file_findings in scan_results {
         if !file_findings.is_empty() {
@@ -730,14 +739,14 @@ fn scan_file_vulns(path: &Path, vuln_filter: Option<VulnType>) -> TldrResult<Vec
                     .unwrap_or(content.lines().count() as u32);
                 (start, end)
             };
-            let statements: HashMap<u32, String> = content
+            // why: was `content.lines().enumerate().filter(...)` over the WHOLE
+            // file per function, making this O(functions x lines) instead of
+            // O(lines). `body_slice` already gives the byte range for just this
+            // function in O(1); walk only that slice's lines instead.
+            let statements: HashMap<u32, String> = body_slice(fn_start, fn_end)
                 .lines()
                 .enumerate()
-                .filter(|(i, _)| {
-                    let line_num = (i + 1) as u32;
-                    line_num >= fn_start && line_num <= fn_end
-                })
-                .map(|(i, line)| ((i + 1) as u32, line.to_string()))
+                .map(|(i, line)| (fn_start + i as u32, line.to_string()))
                 .collect();
             let info = match compute_taint_with_tree(
                 &cfg,

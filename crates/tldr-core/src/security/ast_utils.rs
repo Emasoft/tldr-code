@@ -540,6 +540,20 @@ pub fn extract_member_access_receiver_and_field(
         if node.kind() != pat.node_kind {
             continue;
         }
+        // why: Ruby's `instance_variable` pattern (`@name`) is a leaf node —
+        // no receiver child, no separate member child, the WHOLE node text
+        // IS the field (`@name`) and the receiver is implicitly `self`. The
+        // previous code always fell through to `node.child(0)?` /
+        // `node.child(count - 1)?`, both `None` on a childless leaf, so this
+        // branch (documented above as "covers only instance_variable") could
+        // never actually return `Some(..)`. Handle the leaf-node case
+        // explicitly before falling back to the positional-child schema.
+        if pat.object_field.is_none() && pat.member_field.is_none() && node.child_count() == 0 {
+            let field_text = node_text(node, source).to_string();
+            let receiver_text = "self".to_string();
+            return Some((receiver_text, field_text));
+        }
+
         let object = pat
             .object_field
             .and_then(|f| node.child_by_field_name(f))

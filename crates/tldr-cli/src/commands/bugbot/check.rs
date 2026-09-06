@@ -395,13 +395,16 @@ impl BugbotCheckArgs {
         findings.extend(dead_findings);
         findings.extend(l2_engine_findings);
 
-        // Step 8a: Dedup and prioritize (CK-4)
-        use super::l2::dedup::dedup_and_prioritize;
-        findings = dedup_and_prioritize(findings, self.max_findings);
-
-        // Step 8b: Composition Engine (PM-41)
+        // Step 8a: Composition Engine (PM-41) — run BEFORE dedup/truncation.
+        // why: dedup_and_prioritize can drop findings once max_findings is hit;
+        // running it first could remove one half of a pair that composition
+        // would have merged into a higher-severity composed finding.
         use super::l2::composition::compose_findings;
         findings = compose_findings(findings);
+
+        // Step 8b: Dedup and prioritize (CK-4)
+        use super::l2::dedup::dedup_and_prioritize;
+        findings = dedup_and_prioritize(findings, self.max_findings);
 
         // Re-sort after composition (composed findings may have different severity)
         findings.sort_by(|a, b| {

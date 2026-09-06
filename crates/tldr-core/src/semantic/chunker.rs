@@ -39,7 +39,6 @@ use std::path::Path;
 
 use tree_sitter::{Node, Tree};
 
-use crate::ast::parser::parse_file;
 use crate::semantic::types::{ChunkGranularity, ChunkOptions, CodeChunk};
 use crate::{Language, TldrError, TldrResult};
 
@@ -223,8 +222,11 @@ pub fn chunk_file<P: AsRef<Path>>(path: P, options: &ChunkOptions) -> TldrResult
         }
     };
 
-    // Parse the file
-    let parse_result = parse_file(path);
+    // Parse from the content already read above instead of `parse_file(path)`,
+    // which would re-read + re-decode the same file from disk a second time.
+    // why: without this, every chunked file is read from disk twice.
+    let parse_result = crate::ast::parser::parse_with_path(&content, language, Some(path))
+        .map(|tree| (tree, content.clone(), language));
 
     match options.granularity {
         ChunkGranularity::File => {

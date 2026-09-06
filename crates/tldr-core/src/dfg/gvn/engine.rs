@@ -463,16 +463,32 @@ impl GVNEngine {
             }
         };
 
-        let slice_node = match node.child_by_field_name("subscript") {
-            Some(n) => n,
-            None => {
-                let id = self.fresh_vn();
-                return (HashKey::Unique { id }, false);
-            }
-        };
+        // why: `child_by_field_name` returns only the FIRST node bound to the
+        // (multi-valued) "subscript" field, so a multi-index subscript like
+        // `a[i, j]` was hashed using only `i` — silently treating `a[i, j]`
+        // and `a[i, k]` as the same value. Collect every "subscript" child so
+        // all indices participate in the hash.
+        let mut cursor = node.walk();
+        let slice_nodes: Vec<Node> = node
+            .children_by_field_name("subscript", &mut cursor)
+            .collect();
+        if slice_nodes.is_empty() {
+            let id = self.fresh_vn();
+            return (HashKey::Unique { id }, false);
+        }
 
         let (value_key, _) = self.hash_node(&value_node);
-        let (slice_key, _) = self.hash_node(&slice_node);
+        let slice_keys: Vec<HashKey> = slice_nodes.iter().map(|n| self.hash_node(n).0).collect();
+        let slice_key = if slice_keys.len() == 1 {
+            slice_keys.into_iter().next().unwrap()
+        } else {
+            // Multiple indices: fold them into one key so their order and
+            // count both participate (avoids `a[i, j]` == `a[j, i]` collisions).
+            HashKey::BoolOp {
+                op: "SubscriptIndices".to_string(),
+                operands: slice_keys,
+            }
+        };
 
         (
             HashKey::Subscript {

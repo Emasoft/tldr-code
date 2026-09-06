@@ -332,8 +332,8 @@ mod dice_coefficient_tests {
 
     /// Test: Dice coefficient for identical code
     /// Contract: dice(A, A) = 1.0
+    // why: similarity module is implemented and used elsewhere in the crate; run these tests for real
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_dice_identical_code() {
         // GIVEN: Two files with identical code
         let test_dir = TestDir::new().unwrap();
@@ -359,7 +359,6 @@ mod dice_coefficient_tests {
     /// Test: Dice coefficient is symmetric
     /// Contract: dice(A, B) = dice(B, A)
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_dice_symmetry() {
         // GIVEN: Two different files
         let test_dir = TestDir::new().unwrap();
@@ -381,7 +380,7 @@ mod dice_coefficient_tests {
     /// Test: Dice coefficient for disjoint code
     /// Contract: dice(A, B) = 0 if A and B share no tokens
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "similarity module implemented but this case is still incorrect — real bug, tracked separately"]
     fn test_dice_disjoint_code() {
         // GIVEN: Two files with no shared tokens
         let test_dir = TestDir::new().unwrap();
@@ -403,7 +402,6 @@ mod dice_coefficient_tests {
     /// Test: Dice handles empty input
     /// Contract: Empty fragment results in dice = 0.0
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_dice_empty_input() {
         // GIVEN: Empty file vs normal file
         let test_dir = TestDir::new().unwrap();
@@ -424,7 +422,6 @@ mod dice_coefficient_tests {
     /// Test: Dice coefficient for similar code
     /// Contract: Similar code has high Dice (0.7-0.9)
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_dice_similar_code() {
         // GIVEN: Two similar files
         let test_dir = TestDir::new().unwrap();
@@ -446,7 +443,7 @@ mod dice_coefficient_tests {
     /// Test: Dice uses multiset (token counts matter)
     /// Contract: 2 * |intersection| / (|A| + |B|) with counts
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "similarity module implemented but this case is still incorrect — real bug, tracked separately"]
     fn test_dice_multiset_handling() {
         // GIVEN: File with repeated tokens vs file without
         let repeated = r#"
@@ -483,7 +480,6 @@ def func():
     /// Test: Dice is non-negative
     /// Contract: dice >= 0.0
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_dice_non_negative() {
         // GIVEN: Any two files
         let test_dir = TestDir::new().unwrap();
@@ -511,7 +507,6 @@ mod jaccard_coefficient_tests {
     /// Test: Jaccard for identical code
     /// Contract: jaccard(A, A) = 1.0
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_jaccard_identical_code() {
         // GIVEN: Identical files
         let test_dir = TestDir::new().unwrap();
@@ -533,7 +528,7 @@ mod jaccard_coefficient_tests {
     /// Test: Jaccard for disjoint code
     /// Contract: jaccard(A, B) = 0 if disjoint
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "similarity module implemented but this case is still incorrect — real bug, tracked separately"]
     fn test_jaccard_disjoint_code() {
         // GIVEN: Files with minimal overlap
         let test_dir = TestDir::new().unwrap();
@@ -554,7 +549,6 @@ mod jaccard_coefficient_tests {
     /// Test: Jaccard <= Dice (always more conservative)
     /// Contract: jaccard = dice / (2 - dice)
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_jaccard_less_than_dice() {
         // GIVEN: Any two files
         let test_dir = TestDir::new().unwrap();
@@ -581,7 +575,6 @@ mod jaccard_coefficient_tests {
     /// Test: Jaccard/Dice relationship formula
     /// Contract: jaccard = dice / (2 - dice)
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_jaccard_dice_relationship() {
         // GIVEN: Two files
         let test_dir = TestDir::new().unwrap();
@@ -609,7 +602,6 @@ mod jaccard_coefficient_tests {
     /// Test: Jaccard is symmetric
     /// Contract: jaccard(A, B) = jaccard(B, A)
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_jaccard_symmetry() {
         // GIVEN: Two files
         let test_dir = TestDir::new().unwrap();
@@ -638,7 +630,6 @@ mod cosine_similarity_tests {
     /// Test: Cosine for identical code
     /// Contract: cosine(A, A) = 1.0
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_cosine_identical_code() {
         // GIVEN: Identical files
         let test_dir = TestDir::new().unwrap();
@@ -661,7 +652,7 @@ mod cosine_similarity_tests {
     /// Test: Cosine for disjoint code
     /// Contract: cosine(A, B) = 0 if no shared terms
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "similarity module implemented but this case is still incorrect — real bug, tracked separately"]
     fn test_cosine_disjoint_code() {
         // GIVEN: Files with no shared tokens
         let test_dir = TestDir::new().unwrap();
@@ -683,7 +674,6 @@ mod cosine_similarity_tests {
     /// Test: Cosine is in valid range
     /// Contract: 0 <= cosine <= 1 for non-negative vectors
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_cosine_valid_range() {
         // GIVEN: Any two files
         let test_dir = TestDir::new().unwrap();
@@ -710,7 +700,6 @@ mod cosine_similarity_tests {
     /// Test: Cosine weights rare tokens higher
     /// Contract: IDF gives more weight to distinctive terms
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_cosine_weights_rare_tokens() {
         // This test would ideally show that rare tokens have more impact
         // For now, just verify cosine is computed
@@ -732,7 +721,6 @@ mod cosine_similarity_tests {
     /// Test: Cosine handles empty input
     /// Contract: cosine = 0 for empty document
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_cosine_empty_input() {
         // GIVEN: Empty vs normal file
         let test_dir = TestDir::new().unwrap();
@@ -767,7 +755,6 @@ mod function_level_tests {
     /// Test: Parse function target syntax
     /// Contract: file.py::function_name is valid
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_parse_function_target() {
         // GIVEN: Function target string
         let target = "src/auth.py::login";
@@ -784,7 +771,7 @@ mod function_level_tests {
     /// Test: Function-level comparison
     /// Contract: Compare only function bodies
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "similarity module implemented but this case is still incorrect — real bug, tracked separately"]
     fn test_function_level_comparison() {
         // GIVEN: Files with multiple functions
         let test_dir = TestDir::new().unwrap();
@@ -821,7 +808,7 @@ mod function_level_tests {
     /// Test: Function not found error
     /// Contract: Return error if function doesn't exist
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "similarity module implemented but this case is still incorrect — real bug, tracked separately"]
     fn test_function_not_found_error() {
         // GIVEN: File without target function
         let test_dir = TestDir::new().unwrap();
@@ -845,7 +832,7 @@ mod function_level_tests {
     /// Test: Fragment info includes function name
     /// Contract: SimilarityFragment.function is set
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "similarity module implemented but this case is still incorrect — real bug, tracked separately"]
     fn test_fragment_includes_function_name() {
         // GIVEN: Function comparison
         let test_dir = TestDir::new().unwrap();
@@ -880,7 +867,6 @@ mod file_level_tests {
     /// Test: File-level comparison (default)
     /// Contract: Entire file content is compared
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_file_level_comparison() {
         // GIVEN: Two files
         let test_dir = TestDir::new().unwrap();
@@ -905,7 +891,6 @@ mod file_level_tests {
     /// Test: File token count is correct
     /// Contract: fragment.tokens reflects entire file
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_file_token_count() {
         // GIVEN: File
         let test_dir = TestDir::new().unwrap();
@@ -923,7 +908,6 @@ mod file_level_tests {
     /// Test: File line count is correct
     /// Contract: fragment.lines reflects file line count
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_file_line_count() {
         // GIVEN: File with known line count
         let content = "line1\nline2\nline3\nline4\nline5\n";
@@ -941,7 +925,6 @@ mod file_level_tests {
     /// Test: Comparing same file
     /// Contract: File compared to itself has similarity 1.0
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_file_compared_to_self() {
         // GIVEN: Single file
         let test_dir = TestDir::new().unwrap();
@@ -969,7 +952,6 @@ mod block_level_tests {
     /// Test: Parse block target syntax
     /// Contract: file.py:start:end is valid
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_parse_block_target() {
         // GIVEN: Block target string
         let target = "src/code.py:10:50";
@@ -986,7 +968,7 @@ mod block_level_tests {
     /// Test: Block-level comparison
     /// Contract: Compare only specified lines
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "similarity module implemented but this case is still incorrect — real bug, tracked separately"]
     fn test_block_level_comparison() {
         // GIVEN: File with distinct blocks
         let test_dir = TestDir::new().unwrap();
@@ -1013,7 +995,7 @@ mod block_level_tests {
 
     /// Test: Block with different content has low similarity
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "similarity module implemented but this case is still incorrect — real bug, tracked separately"]
     fn test_block_different_content() {
         // GIVEN: File with distinct blocks
         let test_dir = TestDir::new().unwrap();
@@ -1041,7 +1023,6 @@ mod block_level_tests {
     /// Test: Invalid line range error
     /// Contract: start > end returns error
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_invalid_line_range() {
         // GIVEN: Invalid line range (start > end)
         let target = "file.py:50:10"; // 50 > 10
@@ -1061,7 +1042,6 @@ mod block_level_tests {
     /// Test: Line range out of bounds is clamped
     /// Contract: end > file_lines is clamped with warning
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_line_range_clamped() {
         // GIVEN: File with fewer lines than requested
         let short_file = "line1\nline2\nline3\n";
@@ -1086,7 +1066,7 @@ mod block_level_tests {
     /// Test: Fragment includes line range
     /// Contract: SimilarityFragment.line_range is set
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "similarity module implemented but this case is still incorrect — real bug, tracked separately"]
     fn test_fragment_includes_line_range() {
         // GIVEN: Block comparison
         let test_dir = TestDir::new().unwrap();
@@ -1116,7 +1096,7 @@ mod ngram_tests {
     /// Test: Default n-gram size is 1 (unigrams)
     /// Contract: ngram_size = 1 by default
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "similarity module implemented but this case is still incorrect — real bug, tracked separately"]
     fn test_default_ngram_size() {
         // GIVEN: Default options
         let options = SimilarityOptions::default();
@@ -1128,7 +1108,6 @@ mod ngram_tests {
     /// Test: Bigram similarity (n=2)
     /// Contract: Captures token pairs
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_bigram_similarity() {
         // GIVEN: Two files
         let test_dir = TestDir::new().unwrap();
@@ -1150,7 +1129,6 @@ mod ngram_tests {
     /// Test: Higher n = stricter matching
     /// Contract: Larger n-grams capture more context, may lower similarity
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_higher_n_stricter() {
         // GIVEN: Two similar files
         let test_dir = TestDir::new().unwrap();
@@ -1181,7 +1159,7 @@ mod ngram_tests {
     /// Test: N-gram with short input
     /// Contract: If tokens < n, return 0 similarity
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "similarity module implemented but this case is still incorrect — real bug, tracked separately"]
     fn test_ngram_short_input() {
         // GIVEN: Very short files
         let test_dir = TestDir::new().unwrap();
@@ -1206,7 +1184,6 @@ mod ngram_tests {
     /// Test: Config includes ngram_size
     /// Contract: Report reflects ngram_size used
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_ngram_in_config() {
         // GIVEN: Custom ngram size
         let test_dir = TestDir::new().unwrap();
@@ -1237,7 +1214,7 @@ mod pairwise_matrix_tests {
     /// Test: Compute all pairwise similarities
     /// Contract: Returns n*(n-1)/2 unique pairs
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "pairwise similarity computation is genuinely unimplemented (similarity.rs:555)"]
     fn test_pairwise_all_pairs() {
         // GIVEN: Directory with 3 files
         let test_dir = TestDir::new().unwrap();
@@ -1256,7 +1233,7 @@ mod pairwise_matrix_tests {
     /// Test: Matrix entries are valid
     /// Contract: All scores in [0, 1]
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "pairwise similarity computation is genuinely unimplemented (similarity.rs:555)"]
     fn test_pairwise_valid_scores() {
         // GIVEN: Directory with files
         let test_dir = TestDir::new().unwrap();
@@ -1277,7 +1254,7 @@ mod pairwise_matrix_tests {
     /// Test: Threshold filtering
     /// Contract: Only pairs above threshold are included
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "pairwise similarity computation is genuinely unimplemented (similarity.rs:555)"]
     fn test_pairwise_threshold_filter() {
         // GIVEN: Files with varying similarity
         let test_dir = TestDir::new().unwrap();
@@ -1301,7 +1278,7 @@ mod pairwise_matrix_tests {
     /// Test: Single file returns empty matrix
     /// Contract: Need 2+ files for pairs
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "pairwise similarity computation is genuinely unimplemented (similarity.rs:555)"]
     fn test_pairwise_single_file() {
         // GIVEN: Single file
         let test_dir = TestDir::new().unwrap();
@@ -1318,7 +1295,7 @@ mod pairwise_matrix_tests {
     /// Test: Pairs are sorted by similarity
     /// Contract: Most similar first (optional but nice)
     #[test]
-    #[ignore = "similarity module not yet implemented"]
+    #[ignore = "pairwise similarity computation is genuinely unimplemented (similarity.rs:555)"]
     fn test_pairwise_sorted() {
         // GIVEN: Multiple files
         let test_dir = TestDir::new().unwrap();
@@ -1354,7 +1331,6 @@ mod score_interpretation_tests {
     /// Test: Identical code interpretation
     /// Contract: >= 0.95 = "Near-identical"
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_interpretation_near_identical() {
         // GIVEN: Score >= 0.95
         let interpretation = interpret_similarity_score(0.98);
@@ -1370,7 +1346,6 @@ mod score_interpretation_tests {
     /// Test: High similarity interpretation
     /// Contract: 0.85-0.95 = "High similarity"
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_interpretation_high_similarity() {
         // GIVEN: Score in [0.85, 0.95)
         let interpretation = interpret_similarity_score(0.88);
@@ -1386,7 +1361,6 @@ mod score_interpretation_tests {
     /// Test: Moderate similarity interpretation
     /// Contract: 0.70-0.85 = "Moderate similarity"
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_interpretation_moderate_similarity() {
         // GIVEN: Score in [0.70, 0.85)
         let interpretation = interpret_similarity_score(0.75);
@@ -1402,7 +1376,6 @@ mod score_interpretation_tests {
     /// Test: Low similarity interpretation
     /// Contract: 0.50-0.70 = "Some similarity"
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_interpretation_some_similarity() {
         // GIVEN: Score in [0.50, 0.70)
         let interpretation = interpret_similarity_score(0.55);
@@ -1418,7 +1391,6 @@ mod score_interpretation_tests {
     /// Test: Very low similarity interpretation
     /// Contract: < 0.30 = "Very different"
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_interpretation_very_different() {
         // GIVEN: Score < 0.30
         let interpretation = interpret_similarity_score(0.15);
@@ -1434,7 +1406,6 @@ mod score_interpretation_tests {
     /// Test: Interpretation included in report
     /// Contract: Report has interpretation field
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_interpretation_in_report() {
         // GIVEN: Similarity computation
         let test_dir = TestDir::new().unwrap();
@@ -1455,7 +1426,6 @@ mod score_interpretation_tests {
     /// Test: Boundary condition at 0.95
     /// Contract: 0.95 exactly should be "near-identical"
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_interpretation_boundary_095() {
         let interpretation = interpret_similarity_score(0.95);
         assert!(
@@ -1467,7 +1437,6 @@ mod score_interpretation_tests {
     /// Test: Boundary condition at 0.70
     /// Contract: 0.70 exactly should be "moderate"
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_interpretation_boundary_070() {
         let interpretation = interpret_similarity_score(0.70);
         assert!(
@@ -1489,7 +1458,6 @@ mod token_breakdown_tests {
     /// Test: Token breakdown is computed
     /// Contract: Report includes shared/unique token counts
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_token_breakdown_computed() {
         // GIVEN: Two files
         let test_dir = TestDir::new().unwrap();
@@ -1507,7 +1475,6 @@ mod token_breakdown_tests {
     /// Test: Shared tokens count
     /// Contract: shared_tokens <= min(tokens1, tokens2)
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_shared_tokens_valid() {
         // GIVEN: Two files
         let test_dir = TestDir::new().unwrap();
@@ -1529,7 +1496,6 @@ mod token_breakdown_tests {
     /// Test: Unique tokens formula
     /// Contract: total_unique = shared + unique1 + unique2
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_unique_tokens_formula() {
         // GIVEN: Two files
         let test_dir = TestDir::new().unwrap();
@@ -1550,7 +1516,6 @@ mod token_breakdown_tests {
     /// Test: Identical files have no unique tokens
     /// Contract: unique_to_fragment1 = unique_to_fragment2 = 0
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_identical_no_unique() {
         // GIVEN: Identical files
         let test_dir = TestDir::new().unwrap();
@@ -1581,7 +1546,6 @@ mod multi_language_similarity_tests {
 
     /// Test: Python similarity
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_python_similarity() {
         let test_dir = TestDir::new().unwrap();
         let path_a = test_dir.add_file("a.py", PYTHON_FUNC_A).unwrap();
@@ -1598,7 +1562,6 @@ mod multi_language_similarity_tests {
 
     /// Test: TypeScript similarity
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_typescript_similarity() {
         let test_dir = TestDir::new().unwrap();
         let path_a = test_dir.add_file("a.ts", TS_FUNC_A).unwrap();
@@ -1615,7 +1578,6 @@ mod multi_language_similarity_tests {
 
     /// Test: Go similarity
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_go_similarity() {
         let test_dir = TestDir::new().unwrap();
         let path_a = test_dir.add_file("a.go", GO_FUNC_A).unwrap();
@@ -1632,7 +1594,6 @@ mod multi_language_similarity_tests {
 
     /// Test: Rust similarity
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_rust_similarity() {
         let test_dir = TestDir::new().unwrap();
         let path_a = test_dir.add_file("a.rs", RUST_FUNC_A).unwrap();
@@ -1649,7 +1610,6 @@ mod multi_language_similarity_tests {
 
     /// Test: Auto-detect language
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_auto_detect_language() {
         let test_dir = TestDir::new().unwrap();
         let path = test_dir.add_file("code.py", PYTHON_FUNC_A).unwrap();
@@ -1674,7 +1634,6 @@ mod edge_case_similarity_tests {
 
     /// Test: Empty file similarity
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_empty_file() {
         let test_dir = TestDir::new().unwrap();
         let path_empty = test_dir.add_file("empty.py", "").unwrap();
@@ -1689,7 +1648,6 @@ mod edge_case_similarity_tests {
     /// Test: Both files empty
     /// Contract: Both empty = similarity undefined or 1.0
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_both_files_empty() {
         let test_dir = TestDir::new().unwrap();
         let path_a = test_dir.add_file("a.py", "").unwrap();
@@ -1705,7 +1663,6 @@ mod edge_case_similarity_tests {
 
     /// Test: File not found error
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_file_not_found() {
         let test_dir = TestDir::new().unwrap();
         let path_existing = test_dir.add_file("exists.py", PYTHON_FUNC_A).unwrap();
@@ -1719,7 +1676,6 @@ mod edge_case_similarity_tests {
 
     /// Test: Binary file handling
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_binary_file() {
         let test_dir = TestDir::new().unwrap();
         let path_normal = test_dir.add_file("code.py", PYTHON_FUNC_A).unwrap();
@@ -1737,7 +1693,6 @@ mod edge_case_similarity_tests {
 
     /// Test: Very long file
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_long_file_performance() {
         // Generate a long file
         let long_content: String = (0..1000)
@@ -1770,7 +1725,6 @@ mod serialization_tests {
 
     /// Test: Report serializes to JSON
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_json_serialization() {
         let test_dir = TestDir::new().unwrap();
         let path_a = test_dir.add_file("a.py", PYTHON_FUNC_A).unwrap();
@@ -1786,7 +1740,6 @@ mod serialization_tests {
 
     /// Test: Report deserializes from JSON
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_json_deserialization() {
         let test_dir = TestDir::new().unwrap();
         let path_a = test_dir.add_file("a.py", PYTHON_FUNC_A).unwrap();
@@ -1806,7 +1759,6 @@ mod serialization_tests {
 
     /// Test: Config is included in JSON
     #[test]
-    #[ignore = "similarity module not yet implemented"]
     fn test_config_in_json() {
         let test_dir = TestDir::new().unwrap();
         let path = test_dir.add_file("a.py", PYTHON_FUNC_A).unwrap();

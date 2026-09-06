@@ -1145,22 +1145,6 @@ pub fn compute_rpo(cfg: &CfgInfo) -> Vec<usize> {
     let mut visited = HashSet::new();
     let mut postorder = Vec::new();
 
-    fn dfs(
-        block_id: usize,
-        successors: &HashMap<usize, Vec<usize>>,
-        visited: &mut HashSet<usize>,
-        postorder: &mut Vec<usize>,
-    ) {
-        if visited.insert(block_id) {
-            if let Some(succs) = successors.get(&block_id) {
-                for &succ in succs {
-                    dfs(succ, successors, visited, postorder);
-                }
-            }
-            postorder.push(block_id);
-        }
-    }
-
     // Build successor map
     let mut successors: HashMap<usize, Vec<usize>> = HashMap::new();
     for block in &cfg.blocks {
@@ -1170,7 +1154,30 @@ pub fn compute_rpo(cfg: &CfgInfo) -> Vec<usize> {
         successors.entry(edge.from).or_default().push(edge.to);
     }
 
-    dfs(cfg.entry_block, &successors, &mut visited, &mut postorder);
+    // why: the previous implementation recursed one Rust stack frame per CFG
+    // block along the deepest path, so a large real-world function (long
+    // chain of blocks / deep call graph) could blow the stack. An explicit
+    // work stack with an "emit on second visit" marker gives the same
+    // postorder without recursion depth bounded by CFG size.
+    let mut stack: Vec<(usize, bool)> = vec![(cfg.entry_block, false)];
+    while let Some((block_id, expanded)) = stack.pop() {
+        if expanded {
+            postorder.push(block_id);
+            continue;
+        }
+        if !visited.insert(block_id) {
+            continue;
+        }
+        stack.push((block_id, true));
+        if let Some(succs) = successors.get(&block_id) {
+            for &succ in succs {
+                if !visited.contains(&succ) {
+                    stack.push((succ, false));
+                }
+            }
+        }
+    }
+
     postorder.reverse();
     postorder
 }

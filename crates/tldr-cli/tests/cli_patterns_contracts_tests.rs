@@ -346,8 +346,14 @@ fn test_coupling_same_file() {
         .output()
         .expect("Failed to execute tldr coupling same file");
 
-    // Should either succeed or give a meaningful error
-    let _ = output.status;
+    // why: `let _ = output.status` discarded the result unconditionally,
+    // so this test could never fail. Assert the process actually ran to
+    // completion (no crash/signal) instead of asserting nothing.
+    assert!(
+        output.status.code().is_some(),
+        "tldr coupling should exit normally, not crash: {:?}",
+        output
+    );
 }
 
 // =============================================================================
@@ -784,8 +790,14 @@ fn test_contracts_nonexistent_function() {
         .output()
         .expect("Failed to execute tldr contracts on nonexistent function");
 
-    // May succeed with empty result or fail with error
-    let _ = output.status;
+    // why: `let _ = output.status` discarded the result unconditionally,
+    // so this test could never fail. Assert the process actually ran to
+    // completion (no crash/signal) instead of asserting nothing.
+    assert!(
+        output.status.code().is_some(),
+        "tldr contracts should exit normally, not crash: {:?}",
+        output
+    );
 }
 
 #[test]
@@ -803,8 +815,14 @@ fn test_chop_invalid_line_numbers() {
         .output()
         .expect("Failed to execute tldr chop with invalid lines");
 
-    // May succeed or fail depending on implementation
-    let _ = output.status;
+    // why: `let _ = output.status` discarded the result unconditionally,
+    // so this test could never fail. Assert the process actually ran to
+    // completion (no crash/signal) instead of asserting nothing.
+    assert!(
+        output.status.code().is_some(),
+        "tldr chop should exit normally, not crash: {:?}",
+        output
+    );
 }
 
 // =============================================================================

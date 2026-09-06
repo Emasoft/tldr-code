@@ -1805,7 +1805,12 @@ fn test_vuln_javascript_xss() {
 
     assert!(report.files_scanned >= 1, "Should scan at least 1 JS file");
 
-    // innerHTML and document.write are XSS sinks
+    // innerHTML and document.write are XSS sinks.
+    // NOTE: hardening this to a hard `assert!(!findings.is_empty())` (as done
+    // for the Go/Java/Python siblings below) currently FAILS — the JS XSS
+    // detector does not yet fire on this fixture. That is a real detector
+    // gap (out of scope for this batch: touches the vuln/taint engine, not
+    // this test file), left as-is rather than papered over.
     if !report.findings.is_empty() {
         let has_xss = report.findings.iter().any(|f| f.vuln_type == VulnType::Xss);
         assert!(has_xss, "Finding should be XSS type");
@@ -1826,6 +1831,11 @@ fn test_vuln_javascript_command_injection() {
 
     assert!(report.files_scanned >= 1, "Should scan at least 1 JS file");
 
+    // NOTE: hardening this to a hard `assert!(!findings.is_empty())` (as done
+    // for the Go/Java/Python siblings below) currently FAILS — the JS command
+    // injection detector does not yet fire on this fixture. That is a real
+    // detector gap (out of scope for this batch: touches the vuln/taint
+    // engine, not this test file), left as-is rather than papered over.
     if !report.findings.is_empty() {
         let has_cmdi = report
             .findings
@@ -1845,13 +1855,14 @@ fn test_vuln_go_sql_injection() {
 
     assert!(report.files_scanned >= 1, "Should scan at least 1 Go file");
 
-    if !report.findings.is_empty() {
-        let has_sqli = report
-            .findings
-            .iter()
-            .any(|f| f.vuln_type == VulnType::SqlInjection);
-        assert!(has_sqli, "Finding should be SqlInjection");
-    }
+    // why: was gated behind `if !findings.is_empty()`, vacuously passing on a
+    // silent detection regression; this fixture is built to trigger it.
+    assert!(!report.findings.is_empty(), "Should detect SQL injection");
+    let has_sqli = report
+        .findings
+        .iter()
+        .any(|f| f.vuln_type == VulnType::SqlInjection);
+    assert!(has_sqli, "Finding should be SqlInjection");
 }
 
 #[test]
@@ -1871,13 +1882,14 @@ fn test_vuln_java_sql_injection() {
         "Should scan at least 1 Java file"
     );
 
-    if !report.findings.is_empty() {
-        let has_sqli = report
-            .findings
-            .iter()
-            .any(|f| f.vuln_type == VulnType::SqlInjection);
-        assert!(has_sqli, "Finding should be SqlInjection");
-    }
+    // why: was gated behind `if !findings.is_empty()`, vacuously passing on a
+    // silent detection regression; this fixture is built to trigger it.
+    assert!(!report.findings.is_empty(), "Should detect SQL injection");
+    let has_sqli = report
+        .findings
+        .iter()
+        .any(|f| f.vuln_type == VulnType::SqlInjection);
+    assert!(has_sqli, "Finding should be SqlInjection");
 }
 
 #[test]
@@ -1895,13 +1907,14 @@ fn test_vuln_all_types_scan() {
         report.files_scanned
     );
 
-    // Summary should count by type
-    if !report.findings.is_empty() {
-        assert!(
-            !report.summary.by_type.is_empty(),
-            "Summary should group findings by type"
-        );
-    }
+    // Summary should count by type.
+    // why: was gated behind `if !findings.is_empty()`, vacuously passing on a
+    // silent detection regression; these fixtures are built to trigger both.
+    assert!(!report.findings.is_empty(), "Should detect vulnerabilities");
+    assert!(
+        !report.summary.by_type.is_empty(),
+        "Summary should group findings by type"
+    );
 }
 
 #[test]

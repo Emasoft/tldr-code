@@ -444,9 +444,18 @@ fn function_info_to_data(
         .map(|v| v.iter().cloned().collect())
         .unwrap_or_default();
 
-    // Estimate LOC (very rough approximation)
-    // In a real implementation, we'd calculate this from the AST
-    let loc = func.params.len() * 2 + 5; // Rough heuristic
+    // why: `params.len() * 2 + 5` was a fabricated stand-in for LOC that
+    // feeds the 0.2-weighted LOC-similarity term with numbers that have no
+    // relation to the function's real size — two functions with the same
+    // param count always got the same "LOC" regardless of actual body
+    // length. `FunctionInfo.line_end`/`line_number` give the real span when
+    // the extractor populated them (0 when it didn't — legacy path); fall
+    // back to the old heuristic only in that case rather than losing data.
+    let loc = if func.line_end >= func.line_number {
+        (func.line_end - func.line_number + 1) as usize
+    } else {
+        func.params.len() * 2 + 5
+    };
 
     Some(FunctionData {
         func_ref: FunctionRef {

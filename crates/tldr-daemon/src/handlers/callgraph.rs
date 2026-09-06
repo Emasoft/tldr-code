@@ -47,7 +47,14 @@ pub async fn calls(
             // Run in blocking context (M10)
             tokio::task::spawn_blocking(move || {
                 build_project_call_graph(&project, language, None, true)
-                    .unwrap_or_else(|_| ProjectCallGraph::new())
+                    // why: a swallowed build error was cached as an empty graph forever
+                    // (get_or_build_call_graph caches the closure's return value), so a
+                    // parse/IO failure silently looked like "project has no calls" on every
+                    // future request. Log it so the failure is at least observable.
+                    .unwrap_or_else(|e| {
+                        tracing::error!("build_project_call_graph failed: {e}");
+                        ProjectCallGraph::new()
+                    })
             })
             .await
             .unwrap_or_else(|_| ProjectCallGraph::new())
@@ -111,7 +118,14 @@ pub async fn impact(
             let project = project.clone();
             tokio::task::spawn_blocking(move || {
                 build_project_call_graph(&project, language, None, true)
-                    .unwrap_or_else(|_| ProjectCallGraph::new())
+                    // why: a swallowed build error was cached as an empty graph forever
+                    // (get_or_build_call_graph caches the closure's return value), so a
+                    // parse/IO failure silently looked like "project has no calls" on every
+                    // future request. Log it so the failure is at least observable.
+                    .unwrap_or_else(|e| {
+                        tracing::error!("build_project_call_graph failed: {e}");
+                        ProjectCallGraph::new()
+                    })
             })
             .await
             .unwrap_or_else(|_| ProjectCallGraph::new())
@@ -158,7 +172,14 @@ pub async fn dead(
             let project = project.clone();
             tokio::task::spawn_blocking(move || {
                 build_project_call_graph(&project, language, None, true)
-                    .unwrap_or_else(|_| ProjectCallGraph::new())
+                    // why: a swallowed build error was cached as an empty graph forever
+                    // (get_or_build_call_graph caches the closure's return value), so a
+                    // parse/IO failure silently looked like "project has no calls" on every
+                    // future request. Log it so the failure is at least observable.
+                    .unwrap_or_else(|e| {
+                        tracing::error!("build_project_call_graph failed: {e}");
+                        ProjectCallGraph::new()
+                    })
             })
             .await
             .unwrap_or_else(|_| ProjectCallGraph::new())
@@ -255,7 +276,14 @@ pub async fn arch(
             let project = project.clone();
             tokio::task::spawn_blocking(move || {
                 build_project_call_graph(&project, language, None, true)
-                    .unwrap_or_else(|_| ProjectCallGraph::new())
+                    // why: a swallowed build error was cached as an empty graph forever
+                    // (get_or_build_call_graph caches the closure's return value), so a
+                    // parse/IO failure silently looked like "project has no calls" on every
+                    // future request. Log it so the failure is at least observable.
+                    .unwrap_or_else(|e| {
+                        tracing::error!("build_project_call_graph failed: {e}");
+                        ProjectCallGraph::new()
+                    })
             })
             .await
             .unwrap_or_else(|_| ProjectCallGraph::new())

@@ -192,52 +192,36 @@ impl JavaHandler {
                 "method_invocation" => {
                     let line = child.start_position().row as u32 + 1;
 
-                    // Parse method invocation: obj.method() or method()
-                    let mut object_name: Option<String> = None;
-                    let mut method_name: Option<String> = None;
-                    let mut saw_dot = false;
-                    let mut first_identifier: Option<String> = None;
+                    // Parse method invocation: obj.method() or method().
+                    // why: tree-sitter-java's `method_invocation` carries explicit `object`
+                    // and `name` fields (verified via to_sexp()) — the old code instead
+                    // scanned raw children for the first two `identifier` nodes, so for a
+                    // chained call `obj.method1().method2()` the outer invocation's
+                    // `object` child is itself a `method_invocation` (not an `identifier`),
+                    // fell through the match arm, and the receiver was silently dropped:
+                    // `method2()` was misclassified as a bare, unattributed direct call.
+                    let method_name: Option<String> = child
+                        .child_by_field_name("name")
+                        .map(|n| get_node_text(&n, source).to_string());
 
-                    for i in 0..child.child_count() {
-                        if let Some(c) = child.child(i) {
-                            match c.kind() {
-                                "identifier" => {
-                                    let text = get_node_text(&c, source).to_string();
-                                    if first_identifier.is_none() {
-                                        first_identifier = Some(text);
-                                    } else if saw_dot {
-                                        // This is the method name after a dot
-                                        object_name = first_identifier.take();
-                                        method_name = Some(text);
-                                    } else {
-                                        method_name = Some(text);
-                                    }
+                    let object_name: Option<String> =
+                        child.child_by_field_name("object").and_then(|obj| {
+                            match obj.kind() {
+                                "this" => Some("this".to_string()),
+                                "super" => Some("super".to_string()),
+                                "method_invocation" => {
+                                    // Chained call, e.g. `obj.method1().method2()`: represent
+                                    // the receiver as the inner call so the chain is still
+                                    // visible instead of being dropped.
+                                    let inner_name = obj
+                                        .child_by_field_name("name")
+                                        .map(|n| get_node_text(&n, source).to_string())
+                                        .unwrap_or_else(|| get_node_text(&obj, source).to_string());
+                                    Some(format!("{}()", inner_name))
                                 }
-                                "." => {
-                                    saw_dot = true;
-                                }
-                                "this" => {
-                                    object_name = Some("this".to_string());
-                                }
-                                "super" => {
-                                    object_name = Some("super".to_string());
-                                }
-                                "field_access" => {
-                                    // obj.field.method() - get the full receiver
-                                    object_name = Some(get_node_text(&c, source).to_string());
-                                }
-                                "argument_list" => {
-                                    // Skip argument list
-                                }
-                                _ => {}
+                                _ => Some(get_node_text(&obj, source).to_string()),
                             }
-                        }
-                    }
-
-                    // If no method_name found, first_identifier is the method
-                    if method_name.is_none() {
-                        method_name = first_identifier;
-                    }
+                        });
 
                     if let Some(method) = method_name {
                         if let Some(obj) = object_name {

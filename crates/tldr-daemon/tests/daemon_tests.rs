@@ -162,44 +162,13 @@ mod message_tests {
     }
 }
 
-// =============================================================================
-// State management tests (conceptual - actual tests in daemon crate)
-// =============================================================================
-
-mod state_tests {
-
-    #[test]
-    fn state_structure() {
-        // DaemonState should track:
-        // - project path
-        // - socket path
-        // - version
-        // - last_activity (atomic timestamp)
-        // - idle_timeout
-        // - call_graph_cache
-        // - bm25_cache
-        // - request_count
-        // - error_count
-
-        // These are tested in the daemon crate's unit tests
-        let _ = ();
-    }
-
-    #[test]
-    fn idle_timeout_concept() {
-        // After idle_timeout (default 5 minutes), daemon should exit
-        // This is tested in daemon crate
-        let _ = ();
-    }
-
-    #[test]
-    fn cache_invalidation_concept() {
-        // Caches should be invalidated when:
-        // - explicitly requested
-        // - files are modified (future: file watcher)
-        let _ = ();
-    }
-}
+// why: the old `state_tests` module held 3 tests whose bodies were only
+// `let _ = ();` — they could never fail and the comments themselves said
+// "these are tested in the daemon crate's unit tests" (confirmed true:
+// see crates/tldr-daemon/src/state.rs's own `#[cfg(test)]` module, e.g.
+// `test_get_or_build_call_graph_caches_per_language`). Per the no-conceptual-
+// tests rule, a placeholder duplicating real coverage elsewhere is deleted,
+// not kept as dead weight.
 
 // =============================================================================
 // Performance tests

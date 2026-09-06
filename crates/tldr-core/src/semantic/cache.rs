@@ -40,7 +40,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Seek, SeekFrom};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -356,10 +356,21 @@ impl EmbeddingCache {
         let cache_file = self.config.cache_dir.join("cache.json");
         let temp_file = self.config.cache_dir.join("cache.json.tmp");
 
-        // Write to temp file with exclusive lock
+        // Write to temp file with exclusive lock.
+        // why: File::create() truncates immediately, before the lock is held, so
+        // two processes flushing concurrently can both truncate/write the same
+        // shared temp path and interleave. Open without truncating, take the
+        // lock first, and only then truncate — the truncate+write happens
+        // entirely inside the locked section.
         {
-            let file = File::create(&temp_file)?;
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .open(&temp_file)?;
             file.lock_exclusive()?; // Exclusive lock for writing
+            file.set_len(0)?;
+            file.seek(SeekFrom::Start(0))?;
             let writer = BufWriter::new(&file);
             serde_json::to_writer(writer, &self.entries).map_err(|e| {
                 crate::TldrError::ParseError {

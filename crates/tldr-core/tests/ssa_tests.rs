@@ -489,8 +489,14 @@ def loop_func():
         let ssa = construct_minimal_ssa(&cfg, &dfg).unwrap();
 
         // THEN: Should have phi functions for loop variables
-        let _phi_count: usize = ssa.blocks.iter().map(|b| b.phi_functions.len()).sum();
-        // Loops typically need phi functions
+        // why: the old test computed `_phi_count` and asserted nothing — a
+        // regression that stopped emitting phi functions for loop-carried
+        // variables (`total`) would never fail this test.
+        let phi_count: usize = ssa.blocks.iter().map(|b| b.phi_functions.len()).sum();
+        assert!(
+            phi_count > 0,
+            "a loop reassigning `total` on each iteration needs at least one phi function"
+        );
     }
 
     #[test]
@@ -573,8 +579,15 @@ def foo():
         let ssa = construct_minimal_ssa(&cfg, &dfg).unwrap();
 
         // THEN: Blocks should have instructions
-        let _total_instructions: usize = ssa.blocks.iter().map(|b| b.instructions.len()).sum();
-        // Instructions may or may not be present depending on implementation
+        // why: the old test computed `_total_instructions` and asserted
+        // nothing — a regression that stopped populating SSA instructions
+        // entirely for a function with a real assignment and return would
+        // never fail this test.
+        let total_instructions: usize = ssa.blocks.iter().map(|b| b.instructions.len()).sum();
+        assert!(
+            total_instructions > 0,
+            "a function with `x = 1; return x` must produce at least one SSA instruction"
+        );
     }
 
     #[test]
@@ -593,9 +606,19 @@ def foo(cond):
         let ssa = construct_minimal_ssa(&cfg, &dfg).unwrap();
 
         // THEN: Blocks should track successors and predecessors
-        for _block in &ssa.blocks {
-            // Successors and predecessors should be populated based on CFG
-        }
+        // why: the old test looped over `ssa.blocks` with only a comment and
+        // no body — it could never fail even if successors/predecessors
+        // were never populated. This if/else has 4 blocks (entry, if-branch,
+        // else-branch, join), so both edge lists must be non-empty overall.
+        assert!(ssa.blocks.len() > 1, "if/else must produce multiple blocks");
+        assert!(
+            ssa.blocks.iter().any(|b| !b.successors.is_empty()),
+            "at least one block must have a successor"
+        );
+        assert!(
+            ssa.blocks.iter().any(|b| !b.predecessors.is_empty()),
+            "at least one block must have a predecessor"
+        );
     }
 }
 

@@ -532,10 +532,18 @@ fn test_error_handling_signals_calculate_confidence() {
 }
 
 #[test]
-#[ignore = "BUG: detect_naming_case is not exported from patterns module"]
 fn test_naming_case_detection() {
-    // This test is blocked because detect_naming_case is not re-exported
-    // from patterns/mod.rs even though it's pub in signals.rs
+    // why: `detect_naming_case` was never re-exported at `patterns::mod`
+    // top level, but it IS `pub` on the `pub mod signals` — reachable at
+    // `tldr_core::patterns::signals::detect_naming_case` (this file already
+    // imports other signal types that way above). The old `#[ignore]`
+    // stopped this test from ever running at all.
+    use tldr_core::patterns::signals::{detect_naming_case, NamingCase};
+
+    assert_eq!(detect_naming_case("my_function"), NamingCase::SnakeCase);
+    assert_eq!(detect_naming_case("myFunction"), NamingCase::CamelCase);
+    assert_eq!(detect_naming_case("MyClass"), NamingCase::PascalCase);
+    assert_eq!(detect_naming_case("MAX_VALUE"), NamingCase::UpperSnakeCase);
 }
 
 #[test]

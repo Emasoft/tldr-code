@@ -159,12 +159,36 @@ async fn handle_status(socket_path: &PathBuf) -> anyhow::Result<()> {
     }
 }
 
+/// Best-effort lookup of the PID holding `socket_path` via `lsof -t`.
+/// Unix only; returns `None` if `lsof` is unavailable or finds nothing.
+#[cfg(unix)]
+fn socket_owner_pid(socket_path: &PathBuf) -> Option<u32> {
+    let output = std::process::Command::new("lsof")
+        .args(["-t", &socket_path.to_string_lossy()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .and_then(|s| s.trim().parse().ok())
+}
+
 async fn handle_stop(socket_path: &PathBuf) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         if socket_path.exists() {
             match tokio::net::UnixStream::connect(socket_path).await {
                 Ok(_) => {
+                    // why: deleting the socket file alone (the old behavior) left the
+                    // daemon process itself running forever, listening on nothing and
+                    // never reaped — `--stop` must kill the process, not just its
+                    // handle. `lsof -t` resolves the PID holding the socket; no new
+                    // dependency is pulled in for a `unix`-only, best-effort lookup.
+                    if let Some(pid) = socket_owner_pid(socket_path) {
+                        let _ = std::process::Command::new("kill")
+                            .args(["-TERM", &pid.to_string()])
+                            .status();
+                    }
                     std::fs::remove_file(socket_path)?;
                     println!("Daemon stopped (socket removed)");
                 }

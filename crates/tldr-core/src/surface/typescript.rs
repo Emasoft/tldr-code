@@ -979,6 +979,12 @@ fn walk_for_exported_consts(
             if text.starts_with("const ") {
                 extract_const_declarators(&child, source, results);
             }
+        } else {
+            // why: without this, a const inside a nested node (e.g. a
+            // `module`/`namespace` body) was never visited -- only direct
+            // children of the tree root were, unlike the sibling
+            // `walk_for_enums` which recurses into every node.
+            walk_for_exported_consts(&child, source, results);
         }
     }
 }

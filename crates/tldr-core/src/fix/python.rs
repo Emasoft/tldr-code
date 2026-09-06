@@ -645,11 +645,38 @@ fn find_last_import_line(source: &str) -> Option<usize> {
 }
 
 /// Check if a specific import already exists in the source.
+///
+/// `import_line` is always the single-statement form (`"import os"`) from
+/// `STDLIB_IMPORTS`. Matching only that exact text as a whole line missed
+/// the module already being imported via a comma list (`import os, sys`) or
+/// an alias (`import os as o`), so a duplicate `import os` would be inserted
+/// on top of an existing, equivalent import.
 fn has_import(source: &str, import_line: &str) -> bool {
     let import_trimmed = import_line.trim();
+    let Some(module) = import_trimmed.strip_prefix("import ") else {
+        // Non-"import X" form (shouldn't occur for STDLIB_IMPORTS) — fall
+        // back to the original exact-line check.
+        return source.lines().any(|line| line.trim() == import_trimmed);
+    };
+    let module = module.trim();
+
     for line in source.lines() {
-        if line.trim() == import_trimmed {
+        let trimmed = line.trim();
+        if trimmed == import_trimmed {
             return true;
+        }
+        if let Some(rest) = trimmed.strip_prefix("import ") {
+            // `import a, os, sys` / `import os as o` — check each
+            // comma-separated name, ignoring any `as <alias>`.
+            if rest.split(',').any(|part| {
+                part.trim()
+                    .split_whitespace()
+                    .next()
+                    .map(|name| name == module)
+                    .unwrap_or(false)
+            }) {
+                return true;
+            }
         }
     }
     false

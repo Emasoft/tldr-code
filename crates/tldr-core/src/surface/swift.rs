@@ -525,7 +525,14 @@ fn generate_swift_method_example(class_name: &str, method_name: &str, params: &[
         .map(|param| format!("{}: {}", param.name, param.name))
         .collect::<Vec<_>>()
         .join(", ");
-    format!("{}.{}({})", class_name.lowercase_first(), method_name, args)
+    // why: an empty class name (effective_swift_class_name couldn't resolve
+    // one) used to produce a malformed ".method(...)" example with a
+    // dangling leading dot.
+    if class_name.is_empty() {
+        format!("{}({})", method_name, args)
+    } else {
+        format!("{}.{}({})", class_name.lowercase_first(), method_name, args)
+    }
 }
 
 trait LowercaseFirst {

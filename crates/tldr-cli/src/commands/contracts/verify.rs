@@ -437,17 +437,32 @@ fn analyze_file_contracts(
 }
 
 /// Extract function names from source code.
-fn extract_function_names(source: &str, _language: Language) -> ContractsResult<Vec<String>> {
-    // Simple regex-based extraction for Python
+///
+/// why: this previously only recognized Python `def ` syntax regardless of
+/// `language`, so calling `run_contracts` for e.g. a Rust or JS file would
+/// silently find zero functions and always return an empty report. This is
+/// still a line-prefix heuristic (not an AST parse), but it now keys the
+/// prefix on `language` so non-Python callers get a real function list.
+fn extract_function_names(source: &str, language: Language) -> ContractsResult<Vec<String>> {
+    let prefix: &str = match language {
+        Language::Python => "def ",
+        Language::Rust => "fn ",
+        Language::Go => "func ",
+        Language::JavaScript | Language::TypeScript => "function ",
+        _ => "def ",
+    };
+
     let mut names = Vec::new();
     for line in source.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("def ") {
-            if let Some(name_end) = trimmed.find('(') {
-                let name = &trimmed[4..name_end].trim();
-                if !name.is_empty() {
-                    names.push(name.to_string());
-                }
+        let rest = match trimmed.strip_prefix(prefix) {
+            Some(r) => r,
+            None => continue,
+        };
+        if let Some(name_end) = rest.find('(') {
+            let name = rest[..name_end].trim();
+            if !name.is_empty() {
+                names.push(name.to_string());
             }
         }
     }

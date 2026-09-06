@@ -1730,29 +1730,30 @@ fn test_skip_serializing_if_behavior() {
 fn test_language_from_directory_real() {
     use std::fs;
 
-    let tmp = std::env::temp_dir().join("tldr_test_lang_dir");
-    let _ = fs::remove_dir_all(&tmp);
-    fs::create_dir_all(&tmp).unwrap();
+    // why: a fixed shared name under std::env::temp_dir() collides across
+    // parallel `cargo test` threads and across concurrent CI jobs on the
+    // same runner — a `tempfile::tempdir()` is unique per call, so no
+    // cross-test interference is possible.
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmp.path();
 
     // Create mixed files
     fs::write(tmp.join("main.py"), "").unwrap();
     fs::write(tmp.join("lib.py"), "").unwrap();
     fs::write(tmp.join("app.js"), "").unwrap();
 
-    let detected = Language::from_directory(&tmp);
+    let detected = Language::from_directory(tmp);
     // Python has more files (2 vs 1)
     assert_eq!(detected, Some(Language::Python));
-
-    let _ = fs::remove_dir_all(&tmp);
 }
 
 #[test]
 fn test_language_from_directory_skips_hidden() {
     use std::fs;
 
-    let tmp = std::env::temp_dir().join("tldr_test_hidden");
-    let _ = fs::remove_dir_all(&tmp);
-    fs::create_dir_all(&tmp).unwrap();
+    // why: same fixed-shared-name race as test_language_from_directory_real.
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tmp.path();
     fs::create_dir_all(tmp.join(".git")).unwrap();
     fs::create_dir_all(tmp.join(".tldr")).unwrap();
 
@@ -1763,9 +1764,7 @@ fn test_language_from_directory_skips_hidden() {
     // Create non-hidden file
     fs::write(tmp.join("main.go"), "").unwrap();
 
-    let detected = Language::from_directory(&tmp);
+    let detected = Language::from_directory(tmp);
     // Should detect Go (hidden dirs skipped)
     assert_eq!(detected, Some(Language::Go));
-
-    let _ = fs::remove_dir_all(&tmp);
 }

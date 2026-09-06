@@ -572,15 +572,19 @@ def get_user():
     assert!(result.is_ok());
     let report = result.unwrap();
 
-    // Should detect SQL injection
-    let _sql_injections: Vec<_> = report
+    // why: the old test filtered into `_sql_injections` and asserted nothing
+    // about the result — a regression that stopped detecting this pattern
+    // entirely would never fail the test.
+    let sql_injections: Vec<_> = report
         .findings
         .iter()
         .filter(|f| matches!(f.vuln_type, VulnType::SqlInjection))
         .collect();
-
-    // Note: Detection may vary based on implementation details
-    // This test documents expected behavior
+    assert!(
+        !sql_injections.is_empty(),
+        "should detect SQL injection from request.args -> cursor.execute: {:?}",
+        report.findings
+    );
 }
 
 #[test]
@@ -606,14 +610,18 @@ def run_command():
     assert!(result.is_ok());
     let report = result.unwrap();
 
-    // Should detect command injection
-    let _cmd_injections: Vec<_> = report
+    // why: same issue as test_scan_vulnerabilities_sql_injection above — the
+    // filtered `_cmd_injections` was never asserted on.
+    let cmd_injections: Vec<_> = report
         .findings
         .iter()
         .filter(|f| matches!(f.vuln_type, VulnType::CommandInjection))
         .collect();
-
-    // Note: Detection may vary based on implementation details
+    assert!(
+        !cmd_injections.is_empty(),
+        "should detect command injection from request.args -> os.system: {:?}",
+        report.findings
+    );
 }
 
 // =============================================================================
