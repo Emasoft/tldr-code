@@ -37,9 +37,17 @@ labels: [scan-2026-09-05, encoding]
   `cargo test -p tldr-core --no-fail-fast -j 2 -- --test-threads=2` => 82 binaries,
   7214 passed, 1 failed. The one failure is `ruby_io_popen_with_user_input_via_compute_taint`,
   which is in the classified baseline, and the totals are byte-identical to the pre-change gate
-  run. So the breaking change broke nothing IN THIS WORKSPACE. That is a weaker statement than
-  it looks: the break is to a PUBLIC API with zero in-repo callers (next bullet), so an
-  unchanged in-repo suite is exactly what a real downstream break would also produce.
+  run (`cargo_exit=101`, which is the single failing test and NOT a compile or harness error —
+  82 `test result:` lines are present and `grep -cE '^error\[E[0-9]+\]'` is 0; a compile error
+  would yield far fewer than 82 result lines).
+  **Do not read those identical totals as evidence the API change is safe — they are the null
+  result this run was guaranteed to produce.** The changed functions have zero non-test callers
+  anywhere in the workspace, so the only binary whose behaviour could possibly have moved is
+  `encoding_base_tests`, which I edited myself to assert the new outcome. The other 81 binaries
+  were never at risk. What this run establishes is narrow and worth exactly that much: the edit
+  compiles and broke no unrelated code by accident. It says NOTHING about the safety of the
+  breaking change for an external consumer, because a genuine downstream break produces this
+  same all-green result.
 - **Acceptance line 2 CANNOT BE MET, and the reason is worth more than the line.** It asks for a
   `tldr structure` JSON run to list the file in an issues section. Nothing wires that up:
   `read_source_file`, `read_source_file_or_skip` and `EncodingIssues` have **zero non-test
