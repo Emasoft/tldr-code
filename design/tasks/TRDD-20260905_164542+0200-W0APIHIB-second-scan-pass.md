@@ -3,7 +3,7 @@ trdd-id: W0APIHIB
 title: Second scan pass needs-build and cross-file fixes
 column: planned
 created: 2026-09-05T16:45:42+0200
-updated: 2026-09-06T02:18:00+0200
+updated: 2026-09-06T02:41:17+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -11,6 +11,27 @@ labels: [scan-2026-09-05, second-pass]
 ---
 
 # Second scan pass needs-build and cross-file fixes
+
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06
+
+- LANDED as commit ca239be ("fix: second scan pass across 104 files (TRDD-W0APIHIB)"), pushed
+  to origin/main. 87 files: 80 modified under crates/, plus 7 new test fixtures under
+  crates/tldr-core/tests/fixtures/quality/ and crates/tldr-core/tests/fixtures/security/.
+- Those 7 fixtures are required by crates/tldr-core/tests/quality_security_tests.rs, which
+  loads them via fixtures_dir().join("quality") and .join("security") at 5 call sites.
+- Evidence at commit time: `cargo check --workspace --all-targets` exits 0, zero errors, 12
+  warnings. The 3 remaining "never used" warnings are in
+  crates/tldr-cli/tests/language_command_matrix.rs and
+  crates/tldr-cli/tests/exhaustive_matrix.rs, both UNMODIFIED by this pass — pre-existing.
+- The full workspace test suite is NOT yet evidence for this pass. It was killed twice by
+  system memory pressure (swap 8.9 GB used of 10.2 GB) before running a single test. It is now
+  being re-run PER PACKAGE with constrained parallelism (-j 2, --test-threads=2), starting
+  with tldr-core.
+- NEXT ACTION: when the per-package runs finish, compare their FAILED set against
+  reports/colony/classified-failures.txt (repo-root-relative) using `comm -23`, and report
+  these 4 names individually rather than swallowing them:
+  coupling_path_preserves_user_supplied, concurrent_add_entry_is_bounded_cas_safe,
+  cache::tests::bench_cache_key_construction, tools::tests::bench_call_tool_cache_hit_clone_cost.
 
 ## Why
 The first scan pass was static-review only (fail-fast/no-fallback scope, per the scan's own
