@@ -26,6 +26,10 @@
 //!     Ok(FileReadResult::Binary) => {
 //!         // Skip binary file
 //!     }
+//!     Ok(FileReadResult::Skipped { warning }) => {
+//!         // Not analysable, but the reason is known — surface it
+//!         eprintln!("Skipped: {}", warning);
+//!     }
 //!     Err(e) => {
 //!         // Handle IO error
 //!     }
@@ -56,6 +60,19 @@ pub enum FileReadResult {
     },
     /// File appears to be binary (contains null bytes)
     Binary,
+    /// File was recognised but deliberately NOT analysed, with a reason.
+    ///
+    /// why this exists separately from `Lossy` and `Binary`: a UTF-16 file used to be
+    /// returned as `Lossy { content: "", warning: "... skipping" }`, so callers were handed
+    /// an empty string as if it were analysable text — the file counted as analysed with
+    /// zero symbols while the message claimed it was skipped. Returning `Binary` instead
+    /// loses the message, since binary files are recorded by name only and the file is then
+    /// mislabelled as binary. This variant is the honest third case: no content for the
+    /// caller, and a reason that survives into the report.
+    Skipped {
+        /// Why the file was not analysed
+        warning: String,
+    },
 }
 
 impl FileReadResult {
@@ -64,21 +81,32 @@ impl FileReadResult {
         match self {
             FileReadResult::Ok(s) => Some(s),
             FileReadResult::Lossy { content, .. } => Some(content),
-            FileReadResult::Binary => None,
+            // why Skipped yields None: handing back an empty string is exactly the bug this
+            // variant replaces — it makes an unanalysed file look analysed-and-empty.
+            FileReadResult::Binary | FileReadResult::Skipped { .. } => None,
         }
     }
 
     /// Check if this result has a warning.
     pub fn has_warning(&self) -> bool {
-        matches!(self, FileReadResult::Lossy { .. })
+        matches!(
+            self,
+            FileReadResult::Lossy { .. } | FileReadResult::Skipped { .. }
+        )
     }
 
     /// Get the warning message if any.
     pub fn warning(&self) -> Option<&str> {
         match self {
             FileReadResult::Lossy { warning, .. } => Some(warning),
+            FileReadResult::Skipped { warning } => Some(warning),
             _ => None,
         }
+    }
+
+    /// Check if the file was recognised but deliberately not analysed.
+    pub fn is_skipped(&self) -> bool {
+        matches!(self, FileReadResult::Skipped { .. })
     }
 
     /// Check if file is binary.
@@ -100,6 +128,13 @@ pub struct EncodingIssues {
     pub binary_files: Vec<String>,
     /// Files with UTF-8 BOM (stripped)
     pub bom_files: Vec<String>,
+    /// Files recognised but deliberately not analysed, each with its reason.
+    ///
+    /// why this is separate from `binary_files`: that list holds names only, so a UTF-16 file
+    /// recorded there loses the "UTF-16 encoded (unsupported)" message AND is mislabelled as
+    /// binary. Keeping the reason is the whole point of the skip.
+    #[serde(default)]
+    pub skipped_files: Vec<EncodingIssue>,
 }
 
 impl EncodingIssues {
@@ -126,14 +161,24 @@ impl EncodingIssues {
         self.bom_files.push(file.into());
     }
 
+    /// Record a file that was recognised but deliberately not analysed.
+    pub fn add_skipped(&mut self, file: impl Into<String>, issue: impl Into<String>) {
+        self.skipped_files.push(EncodingIssue {
+            file: file.into(),
+            issue: issue.into(),
+        });
+    }
+
     /// Check if any issues were recorded.
     pub fn has_issues(&self) -> bool {
-        !self.lossy_files.is_empty() || !self.binary_files.is_empty()
+        !self.lossy_files.is_empty()
+            || !self.binary_files.is_empty()
+            || !self.skipped_files.is_empty()
     }
 
     /// Get total number of issues.
     pub fn total(&self) -> usize {
-        self.lossy_files.len() + self.binary_files.len()
+        self.lossy_files.len() + self.binary_files.len() + self.skipped_files.len()
     }
 }
 
@@ -183,9 +228,14 @@ pub fn read_source_file(path: &Path) -> Result<FileReadResult, TldrError> {
     let bytes = std::fs::read(path)?;
 
     // Check for UTF-16 BOM (unsupported, would need conversion)
+    //
+    // why Skipped and not Lossy: the old Lossy arm returned an EMPTY content string with a
+    // warning saying "skipping", so callers analysed "" and the file was reported as analysed
+    // with zero symbols while the message claimed otherwise. Skipped gives the caller no
+    // content at all, and keeps the reason (which returning Binary would have thrown away
+    // while also mislabelling the file as binary).
     if bytes.starts_with(UTF16_LE_BOM) || bytes.starts_with(UTF16_BE_BOM) {
-        return Ok(FileReadResult::Lossy {
-            content: String::new(),
+        return Ok(FileReadResult::Skipped {
             warning: format!(
                 "File {} appears to be UTF-16 encoded (unsupported), skipping",
                 path.display()
@@ -263,6 +313,12 @@ pub fn read_source_file_or_skip(
         Ok(FileReadResult::Binary) => {
             if let Some(issues) = issues {
                 issues.add_binary(path.display().to_string());
+            }
+            None
+        }
+        Ok(FileReadResult::Skipped { warning }) => {
+            if let Some(issues) = issues {
+                issues.add_skipped(path.display().to_string(), &warning);
             }
             None
         }

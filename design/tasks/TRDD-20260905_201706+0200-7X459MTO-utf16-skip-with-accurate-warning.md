@@ -3,7 +3,7 @@ trdd-id: 7X459MTO
 title: Skip UTF-16 sources without analysing them while keeping the UTF-16 warning
 column: planned
 created: 2026-09-05T20:17:06+0200
-updated: 2026-09-05T21:33:13+0200
+updated: 2026-09-06T03:53:20+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -11,6 +11,33 @@ labels: [scan-2026-09-05, encoding]
 ---
 
 # Skip UTF-16 sources without analysing them while keeping the UTF-16 warning
+
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06
+
+- IMPLEMENTED via shape 1: `FileReadResult::Skipped { warning }`. `content()` returns `None`
+  for it (that is the fix — the old `Lossy { content: "", .. }` handed callers an empty string
+  as analysable text), `warning()` and `has_warning()` include it, `is_skipped()` added, and
+  `EncodingIssues` gained `skipped_files: Vec<EncodingIssue>` with `add_skipped`, counted by
+  `has_issues()` and `total()`. `read_source_file_or_skip` records the reason and returns
+  `None`. `#[serde(default)]` on the new field so older JSON still deserialises.
+- Acceptance line 1 MET: `cargo test -p tldr-core --test encoding_base_tests` => 48 passed,
+  0 failed, and both UTF-16 tests now assert BOTH halves — `content()` is `None` AND the
+  warning contains "UTF-16". `cargo check -p tldr-core --all-targets` exits 0.
+- **Acceptance line 2 CANNOT BE MET, and the reason is worth more than the line.** It asks for a
+  `tldr structure` JSON run to list the file in an issues section. Nothing wires that up:
+  `read_source_file`, `read_source_file_or_skip` and `EncodingIssues` have **zero non-test
+  callers anywhere in the workspace** (checked across `crates/`, excluding the module's own
+  file and tests). No command consumes `EncodingIssues`, so there is no issues section to
+  appear in.
+- So this fix corrects a real defect in a PUBLIC library API (`pub mod encoding` in
+  tldr-core's lib.rs, so external consumers can call it) that no in-repo path currently
+  exercises. The bug was real and is fixed; the user-visible symptom the body describes cannot
+  occur today because the code is unreached.
+- FOLLOW-UP, belongs on TRDD-V11BVG55 ("Retire or fix dead/misleading public API surfaces
+  flagged by the scan"): decide whether the encoding module should be WIRED IN (commands route
+  file reads through it and emit `EncodingIssues`) or RETIRED. Do not wire it speculatively
+  just to satisfy acceptance line 2 — that is a change across every command's read path and
+  output schema, and it needs its own decision.
 
 ## Why
 

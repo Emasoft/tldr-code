@@ -367,10 +367,14 @@ fn test_read_source_file_utf16_le_bom() {
 
     let result = read_source_file(file.path()).unwrap();
 
-    // UTF-16 is not supported, returns Lossy with empty content
-    assert!(matches!(result, FileReadResult::Lossy { .. }));
+    // UTF-16 is not supported: the file is SKIPPED, and the reason survives.
+    // Both halves matter together — the old behaviour returned Lossy with an empty string,
+    // which handed callers "" as analysable text while the warning said "skipping", so the
+    // file was reported as analysed with zero symbols. Asserting content() is None is what
+    // stops that regressing.
+    assert!(matches!(result, FileReadResult::Skipped { .. }));
+    assert_eq!(result.content(), None, "a skipped file yields no content");
     assert!(result.warning().unwrap().contains("UTF-16"));
-    assert_eq!(result.content(), Some(""));
 }
 
 #[test]
@@ -382,8 +386,10 @@ fn test_read_source_file_utf16_be_bom() {
 
     let result = read_source_file(file.path()).unwrap();
 
-    // UTF-16 is not supported
-    assert!(matches!(result, FileReadResult::Lossy { .. }));
+    // UTF-16 is not supported: skipped, with the reason kept. See the LE test for why
+    // asserting content() is None alongside the warning is the point.
+    assert!(matches!(result, FileReadResult::Skipped { .. }));
+    assert_eq!(result.content(), None, "a skipped file yields no content");
     assert!(result.warning().unwrap().contains("UTF-16"));
 }
 
