@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:35:17+0200
+updated: 2026-09-06T03:37:51+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -81,7 +81,13 @@ labels: [scan-2026-09-05, hang]
   So the command DOES walk the filesystem (workspace-marker discovery) and DOES enable type
   resolution. The two `read_file_safe` calls are only the pair-comparison half; the call-graph
   half takes a ROOT.
-- ## ✅ ROOT CAUSE LOCALIZED — this bullet supersedes every earlier account on this card
+- ## ✅ HOT PATH LOCALIZED (main thread) — this bullet supersedes every earlier account
+  Scope of the claim, stated up front because an earlier heading said "ROOT CAUSE LOCALIZED"
+  and that was too strong on two counts. (a) The 118 % CPU figure means TWO OR MORE threads
+  burned CPU, and only the MAIN thread is accounted for here; the second was never identified
+  and the process is killed, so for this occurrence it never can be. (b) Locating the hot path
+  is not the same as knowing whether the work terminates. What follows is where the main
+  thread's time went, which is solid, and no more than that.
   The profile was right from the beginning. My CODE SEARCHES were wrong, for one mundane
   reason: I grepped `coupling.rs` for `callgraph` and got ZERO hits, then built four
   conclusions on that zero. The function is `augment_with_project_call_graph` — `call_graph`
@@ -112,9 +118,36 @@ labels: [scan-2026-09-05, hang]
   - The read-set is NOT the two files. `augment_with_project_call_graph` builds a project call
     graph, so the earlier "18 lines is the whole input" argument does not hold. Terminating vs
     non-terminating remains open on the evidence here.
-  - Time is spent in FUZZY-MATCH RESOLUTION, and its leaves are `Vec::spec_from_iter` — i.e.
-    each resolution attempt COLLECTS INTO A FRESH VEC. That is the allocation site, and it
-    explains the steadily growing RSS directly rather than by inference.
+  - **INCLUSIVE vs SELF time — read this before quoting the numbers above.** Every count in
+    that tree is INCLUSIVE: 3327 at `build_project_call_graph_v2` means it was ON THE STACK in
+    3327 samples, not that it burned CPU itself. The tree establishes the PATH; it does not by
+    itself locate the cost.
+    The actual self-time leaves, read from the deepest frames, are spread rather than
+    concentrated: `std::collections::hash::map::Iter<String, ..>` over a `tldr_core::callgraph`
+    map (429), `hashbrown::raw::RawIterRange<(String, ..)>` (159), `_platform_memmove` (141),
+    plus a tail of smaller unnamed frames — summing well below 3366, which is what a hot loop
+    doing varied work looks like.
+    **SELF TIME, read from `sample`'s own "Sort by top of stack" histogram** (line 913 of the
+    dump — the section that answers this directly, rather than inferring from the call graph):
+
+    | leaf | samples |
+    |---|---|
+    | `hashbrown::raw::RawIterRange<(String, ..)>` in `tldr_core::callgraph` | 358, 354, 217, 209 |
+    | `_platform_memmove` | 183 + a long unnamed tail (151, 102, 97, 89, 75, ..) |
+    | `std::collections::hash::map::Iter<String, ..>` in `tldr_core::callgraph` | 41, 39, 36, 30, 26, .. |
+    | hashbrown NEON probe (`read_unaligned` u8x8, `vget_lane_u64`) | 22, 20 |
+    | `TwoWaySearcher::next` | **7** |
+
+    So the cost is HASH-INDEX ITERATION plus MEMMOVE. Two things follow. `TwoWaySearcher` at 7
+    samples independently confirms that `find_var_in_line` / `match_indices` — twice named on
+    this card as the hot path — is noise. And `__psynch_cvwait` at 47124 is the parked rayon
+    workers, which confirms by self-time that they were idle at sample time.
+    Shape to look for: each resolution attempt scans the WHOLE function index, roughly
+    O(call-sites x index-size), with the memmove tail consistent with collections being grown
+    and re-copied. An earlier revision named `Vec::spec_from_iter` as "the" leaf and called it
+    measured; it was the deepest frame printed under a truncating `cut`, and the Vec-per-attempt
+    story remains an INFERENCE — `spec_from_iter` on the stack says a Vec is being built, not
+    that one is retained per attempt, and retention is what RSS growth actually requires.
   - The `find_var_in_line` frames I once called the hot path were 7 and 3 samples out of 3366,
     under 0.2 % — a negligible branch I mistook for the peak because my symbol grep matched
     `tldr_core` names and structurally EXCLUDED `tldr_cli`'s own frames, where the real chain
