@@ -118,6 +118,36 @@ fn wide_encoded_files_are_skipped_with_a_warning_not_analysed_as_empty() {
     }
 }
 
+/// Every BOM branch of `wide_encoding_marker` is exercised, each with its own marker.
+///
+/// These three shipped with no coverage at all: only the UTF-16 **LE** BOM had a fixture. Big-endian
+/// is the branch easiest to get backwards, and `FF FE 00 00` (UTF-32 LE) is a live trap — it starts
+/// with the UTF-16 LE BOM bytes, so a naive ordering reports it as "UTF-16 LE BOM". The marker must
+/// test the UTF-32 BOMs FIRST, and this test fails if anyone reorders them.
+#[test]
+fn every_bom_variant_is_skipped_with_its_own_marker() {
+    let structure = get_code_structure(&fixtures(), Language::Python, 0, None)
+        .expect("structure extraction over the reproducer directory failed");
+
+    for (file, expected) in [
+        ("u16be.py", "UTF-16 BE BOM"),
+        ("u32be.py", "UTF-32 BOM"),
+        ("u32le.py", "UTF-32 BOM"),
+    ] {
+        let warning = structure
+            .warnings
+            .iter()
+            .find(|w| w.contains(file))
+            .unwrap_or_else(|| {
+                panic!("{file} produced no warning; warnings were {:?}", structure.warnings)
+            });
+        assert!(
+            warning.contains(expected),
+            "{file} should be reported as {expected:?}, got {warning:?}"
+        );
+    }
+}
+
 /// `control.py` and `bad.py` hold the same source text and differ only in encoding.
 ///
 /// This is what makes the fixture set an experiment rather than an anecdote: it removes every

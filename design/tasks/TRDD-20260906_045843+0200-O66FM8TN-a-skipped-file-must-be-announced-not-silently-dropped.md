@@ -44,6 +44,24 @@ With the caller readable, `used_only_from_utf16` correctly drops off the list. W
 skipped, a live function is reported as possibly dead and is **indistinguishable from the
 genuinely dead one** — and `warnings` is `None`, so nothing hints that a file was omitted.
 
+**Whether this counts as a `dead` bug turns on what `possibly_dead` means, so it was settled from
+the CODE, not from a doc comment.** The objection to answer: maybe `possibly_dead` is the
+tool's hedge for "uncalled, but my analysis may have been incomplete" — in which case listing the
+function is self-consistent and calling it a false positive is a category error.
+It is not that. `analysis/dead.rs:133` splits the two buckets on **`is_public` alone**:
+public-and-uncalled → `possibly_dead`, private-and-uncalled → `dead_functions`. The in-code
+comment says "may be API surface". So "possibly" qualifies WHY an uncalled public function might
+be legitimate, and carries no claim about analysis confidence. The module contract
+(`dead.rs:3`) is likewise unqualified: *"Find functions that are never called"*.
+
+**Being fair to the other reading, because it changes where the fix belongs.** Any static
+analyser can only compute "uncalled *within what it read*" — that much is inherent, and blaming
+`dead` for it would be unreasonable. So the actionable defect is NOT that `dead` computed the
+wrong answer over its input; it is that **the input set was silently reduced and the report says
+nothing about it.** Both readings agree on that, which is why it lives on this card and not on a
+`dead`-specific one. What the measurement establishes is the CONSEQUENCE: the reduction is not
+harmless bookkeeping, it changes a user-visible verdict about a real function.
+
 Honest scoping, and the semantics were CHECKED rather than assumed — the hedge does not excuse it.
 `types.rs:2454` documents `possibly_dead` as *"Public/exported but uncalled (may be API surface)"*.
 The hedge is about INTENT — a public function may be uncalled on purpose. It is not a hedge about
