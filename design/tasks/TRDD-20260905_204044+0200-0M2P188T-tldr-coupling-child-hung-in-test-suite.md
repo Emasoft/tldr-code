@@ -3,7 +3,7 @@ trdd-id: 0M2P188T
 title: tldr coupling child hung 30 CPU-minutes once inside the test suite
 column: planned
 created: 2026-09-05T20:40:44+0200
-updated: 2026-09-06T03:23:58+0200
+updated: 2026-09-06T03:27:34+0200
 current-owner: codebase-scan-2026-09-05
 task-type: bugfix
 min-approval-requirement: user
@@ -63,21 +63,55 @@ labels: [scan-2026-09-05, hang]
   over mangled names in the text dump, which measures call-graph BREADTH and sweeps in other
   threads' frames, not time. Only the deep-frame excerpt was weighted. Re-profile and read the
   per-thread breakdown before trusting any ordering here.
-- **THE READ-SET IS VERIFIED TO BE JUST THOSE TWO FILES.** This was checked, because the whole
-  argument below collapses if the command walks a tree: `coupling.rs::run` reads exactly
-  `source_a` and `source_b` through `read_file_safe`, and `project_root` (absent from this
-  argv) is used ONLY to join the two paths, never to enumerate a directory. There is no
-  project scan on this path — which is also why the misattributed `build_project_call_graph_v2`
-  above mattered enough to correct: its name implies a project walk that does not happen here.
-- **THE INPUT IS 18 LINES**, preserved at `design/reproducers/TRDD-0M2P188T/` — a 10-line class
-  with an `__init__` and two methods, and an 8-line caller. This is the fact that rules out the
-  benign reading:
-  fuzzy matching is plausibly O(calls x funcs x line-length), but on four functions and a
-  handful of calls that is microseconds, not 15 CPU-minutes and 576 MB. No terminating
-  super-linear algorithm reaches these numbers on this input.
-- Honest limit on that: the process was KILLED at 13 minutes, and the body's occurrence was
-  killed at 45. Neither was ever observed terminating on its own, so "non-terminating" is
-  inferred from the input-size argument above, not from having waited it out.
+- **RETRACTED: "the read-set is just those two files" and the 18-line argument built on it.**
+  An earlier revision of this card asserted both, from reading only `coupling.rs::run`'s first
+  40 lines. The full path was then traced and it is not what that claimed. `coupling.rs:1973`
+  calls `analyze_coupling(&args.path_a, ...)` in `tldr_core::quality::coupling` (imported as
+  `core_analyze_coupling`), and that function does:
+
+  ```
+  analyze_coupling(path, ..)                       quality/coupling.rs:441
+    -> detect_dominant_language(path)
+    -> build_project_call_graph(path, lang, None, true)   callgraph/builder.rs:29
+         config.use_type_resolution = true                builder.rs:40
+         WorkspaceConfig::discover(root)                  builder.rs:50
+    -> analyze_coupling_with_graph(path, ..)
+  ```
+
+  So the command DOES walk the filesystem (workspace-marker discovery) and DOES enable type
+  resolution. The two `read_file_safe` calls are only the pair-comparison half; the call-graph
+  half takes a ROOT.
+- **THE `_v2` RETRACTION WAS ITSELF WRONG — un-retracted.** A previous revision struck
+  `build_project_call_graph_v2` from the hot path as "not on this command's path", on the
+  grounds that `coupling.rs` has no direct call site. Absence of a DIRECT call is not absence
+  of a path, and the transitive one exists. Established end to end:
+
+  ```
+  cli/commands/patterns/coupling.rs:1973   core_analyze_coupling(&args.path_a, ..)
+  core/quality/coupling.rs:455             build_project_call_graph(path, lang, None, true)
+  core/callgraph/builder.rs:40             config.use_type_resolution = true
+  core/callgraph/builder.rs:64             build_project_call_graph_v2(root, config)   <-- HERE
+  core/callgraph/scanner.rs:203/289        resolve_scan_roots / scan_project_files
+                                           -> type resolution -> type_resolver::find_var_in_line
+  ```
+
+  So the ORIGINAL profile-derived path was right, and the "correction" deleted a true frame.
+  The `uniq -c` method used to produce it really was unsound, and it happened to name a symbol
+  that is genuinely on the path — a bad method reaching a correct answer, which is exactly the
+  case where a confident retraction does damage. Trust the chain above, which was read.
+- **DISPROVED hypothesis, recorded so nobody re-runs it:** that discovery ascends from the file
+  into `/tmp`. `WorkspaceConfig::discover` (`core/src/types.rs:1799`) probes for
+  `pnpm-workspace.yaml` / `package.json` / `Cargo.toml` / `go.work` AT the given path only,
+  with no `parent()` walk, and returns `None` when none match. It does not climb.
+- STILL OPEN, and now the highest-value question: `build_project_call_graph_v2` is handed
+  `args.path_a`, which is a FILE (`<tmp>/mod.py`), where the parameter is named `root`. What
+  `resolve_scan_roots` (`callgraph/scanner.rs:203`) does with a file path decides the real
+  read-set and therefore the whole diagnosis. Read that next.
+- Consequence for the earlier reasoning: "no terminating super-linear algorithm reaches 15
+  CPU-minutes on 18 lines" was sound ONLY under the read-set claim that has now been retracted.
+  If the real input is `/tmp`, an expensive-but-terminating walk explains everything and there
+  may be no loop bug at all. Both processes were killed (at 13 and 45 minutes) and neither was
+  observed terminating, so nothing here settles terminating vs not.
 - **SEPARATE DEFECT FOUND WHILE CHECKING THIS — `coupling`'s `--timeout` cannot fire during
   the analysis.** `coupling.rs` checks `start.elapsed() > timeout` exactly three times, at lines
   1864, 1876 and 1912 — after path validation, after the file read, and once more — and

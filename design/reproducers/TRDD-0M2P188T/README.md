@@ -18,9 +18,13 @@ That is the child's argv as captured from the process table, with the temp paths
 
 ## Why the size matters
 
-Eighteen lines total. A class with three methods, and a caller. No legitimate super-linear
-algorithm spends 15 CPU-minutes or half a gigabyte here, which is what rules out "expensive but
-terminating work on pathological input" and leaves a non-terminating loop.
+Eighteen lines total: a class with an `__init__` and two methods, plus a caller.
+
+**But do NOT reuse the argument that was once built on that.** An earlier revision of the card
+reasoned "no super-linear algorithm reaches 15 CPU-minutes on 18 lines, therefore a
+non-terminating loop." That holds only if these two files are the whole input, and they are
+not: the command also runs `build_project_call_graph`, which takes a directory ROOT and scans.
+See the card's STATE block. Whether the work is terminating is OPEN.
 
 ## Hypothesis, NOT established
 
