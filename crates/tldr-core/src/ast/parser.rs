@@ -21,6 +21,16 @@ use crate::TldrResult;
 /// Maximum file size to parse (5MB) - M6 mitigation
 pub const MAX_PARSE_SIZE: usize = 5 * 1024 * 1024;
 
+/// How far into a file to look for the NUL byte that marks a wide encoding.
+///
+/// Bounded rather than whole-file on purpose. A wide-encoded file (BOM-less
+/// UTF-16, UTF-32) carries a NUL by byte 1, because the high byte of its first
+/// ASCII character is zero. A legitimate source file that embeds a raw NUL —
+/// generated C tables, protobuf/flatbuffers output, binary-protocol fixtures
+/// written as `.py`/`.js`/`.rs` — carries it far later. Scanning the whole file
+/// would skip those too, trading one silent-loss bug for another.
+const NUL_SCAN_PREFIX: usize = 1024;
+
 /// TypeScript / JavaScript grammar dialect.
 ///
 /// `tree-sitter-typescript` ships two distinct grammars:
@@ -367,26 +377,37 @@ impl ParserPool {
                 path: path.to_path_buf(),
                 detail: "UTF-16 BE BOM".to_string(),
             });
-        } else if bytes.contains(&0x00) {
+        } else if bytes[..NUL_SCAN_PREFIX.min(bytes.len())].contains(&0x00) {
             // BOM-less UTF-16 is the COMMON form (a BOM is often absent on
-            // Unix-authored files, and pipes/editors strip it), and it is NOT
-            // caught by the BOM checks above, nor by `str::from_utf8`: a
-            // UTF-16 encoding of ASCII text is every ASCII byte interleaved
-            // with NUL, and NUL is a *valid* 1-byte UTF-8 sequence. Measured:
-            // `from_utf8` ACCEPTS BOM-less UTF-16LE and UTF-16BE outright, so
-            // a validity check alone would let this straight through.
+            // Unix-authored files, and pipes/editors strip it). It is caught by
+            // NEITHER the BOM checks above NOR by `str::from_utf8`: a UTF-16
+            // encoding of ASCII text is every ASCII byte interleaved with NUL,
+            // and NUL is a *valid* 1-byte UTF-8 sequence. Measured — validating
+            // UTF-8 ACCEPTS BOM-less UTF-16LE and UTF-16BE outright, while
+            // REJECTING latin-1/cp1252, so it fails in both directions at once.
             //
-            // A NUL byte is the exact discriminator instead. Every wide
-            // encoding of source code carries one (keywords and punctuation
-            // are ASCII, so their high byte is 0x00), while no byte-oriented
-            // text encoding does — latin-1 and cp1252 accents are NUL-free,
-            // which is why they keep the lossy path below rather than being
-            // skipped. Measured over this repo: 0 of 919 source files contain
-            // a NUL byte.
+            // A NUL byte in the PREFIX is the discriminator instead, and the
+            // prefix bound is load-bearing rather than an optimisation. A
+            // wide-encoded file has a NUL by byte 1 (the high byte of its first
+            // ASCII character). A legitimate source file that embeds a raw NUL
+            // — generated C tables, protobuf/flatbuffers output, binary-protocol
+            // test fixtures written as .py/.js/.rs — has it thousands of bytes
+            // in. Scanning the whole file would skip those too, which is the
+            // same silent-loss bug pointed the other way.
+            //
+            // ASSUMPTION, stated because it is not proven: NUL-in-the-first-KiB
+            // of a real source file is rare enough that a WARNED skip beats a
+            // silent mis-parse. Evidence is 0 of 919 files in THIS repo, which
+            // is a homogeneous sample of the tool's own codebase, not of the
+            // arbitrary user code tldr runs on. The failure mode is at least
+            // visible now: the file is named in `warnings`, not dropped in
+            // silence.
             return Err(TldrError::EncodingError {
                 path: path.to_path_buf(),
-                detail: "contains NUL bytes (binary or a wide encoding such as BOM-less UTF-16)"
-                    .to_string(),
+                detail: format!(
+                    "NUL byte in the first {NUL_SCAN_PREFIX} bytes \
+                     (binary, or a wide encoding such as BOM-less UTF-16)"
+                ),
             });
         }
 

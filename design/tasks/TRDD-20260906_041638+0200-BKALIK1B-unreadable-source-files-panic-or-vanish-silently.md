@@ -75,6 +75,24 @@ labels: [scan-2026-09-05, robustness, encoding]
 - Both cases verified against the real binary: BOM'd UTF-16 → skipped, `"UTF-16 LE BOM"`;
   BOM-less UTF-16 → skipped, `"contains NUL bytes …"`; sibling UTF-8 files still analysed
   normally. `files_skipped` and `warnings` reach the JSON output.
+- **STILL OPEN, and the retitling of this card made it INVISIBLE rather than fixed:
+  latin-1 / cp1252 source is still silently mangled.** Those files are not valid UTF-8 and carry
+  no NUL, so they take the lossy path — which is correct when the accented bytes sit in comments
+  or string literals, and WRONG when they sit in an identifier. `from_utf8_lossy` substitutes
+  U+FFFD, which is not a valid identifier character in any grammar tldr uses, so `función` or
+  `naïve_parse` mangles or fails to parse and the surrounding structure can be dropped — the
+  same silent-wrong-answer class this card was opened for, for a large and non-hypothetical
+  population (Spanish, French, Portuguese codebases). I asserted these were "handled acceptably"
+  having verified only that they take the lossy path, never what the lossy path produces. NOT
+  measured, NOT fixed. Needs its own card once measured.
+- **The NUL guard's "rejects nothing real" is an ASSUMPTION, not a finding** — corrected in the
+  code comment too. "Exact" was doing two jobs: exact as a NUL *detector* (trivially true), and
+  exact as a predicate for *"this file is wide-encoded rather than source"* (empirical, and
+  evidenced only by 919 files of this tool's own repo — the least representative sample
+  available). The scan is now bounded to the first `NUL_SCAN_PREFIX` (1024) bytes, which keeps
+  every wide-encoding catch (a NUL appears by byte 1) while sparing legitimate source that embeds
+  a raw NUL far in — generated C tables, protobuf output, binary-protocol fixtures written as
+  `.py`/`.js`/`.rs`. Scanning whole-file would have traded one silent-loss bug for another.
 - `.gitattributes` marks `design/reproducers/** -text -diff` so a checkout with
   `core.autocrlf=true` cannot rewrite the fixtures into something a UTF-8 decoder accepts —
   which would leave the regression test passing for the wrong reason, silently.
