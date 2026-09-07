@@ -3,7 +3,7 @@ trdd-id: YJALU4Y2
 title: Three wall-clock benchmarks fail the default cargo test run on a loaded machine
 column: todo
 created: 2026-09-07T18:46:25+0200
-updated: 2026-09-07T19:16:49+0200
+updated: 2026-09-07T19:19:00+0200
 current-owner: unassigned
 implementation-commits: [127bced]
 task-type: bugfix
@@ -111,11 +111,22 @@ the test does not control, so machine speed and load move it. Every attempt to s
 qualifying the runs with a load ("on a loaded machine", "concurrent cargo builds plus several
 subagents") failed because a load is not specifiable: how many builds, on what core count, at what
 memory pressure. Two testers get two loads and the same criterion passes or fails at the tester's
-discretion. So the choice is between exactly two shapes — **(a) assert the structural property**
-(option 2: `Arc::ptr_eq` / `strong_count` for "the cache hit did not clone", which is what the
-clone-cost bench exists to prove), or **(b) assert a RATIO against a reference operation measured
-in the same process and the same run**, so both sides degrade together. Pick one, then write the
-acceptance box against it.
+discretion. So the choice is between exactly two shapes — **(a) assert the structural property**,
+or **(b) assert a RATIO against a reference operation measured in the same process and the same
+run**, so both sides degrade together. Pick one, then write the acceptance box against it.
+
+**READ THE CACHE BEFORE COSTING (a) — this card said `Arc::ptr_eq` three times and it is NOT
+available.** `L1Cache.entries` is `HashMap<String, CacheEntry>` and `CacheEntry { result:
+ToolsCallResult, inserted_at: Instant }` (`cache.rs:18-29`) — an OWNED value, no `Arc` anywhere.
+`get()` returns `Option<&ToolsCallResult>` (`cache.rs:48`), a borrow, so `call_tool` clones at the
+boundary to hand back an owned result. A clone on that path is therefore real; whether it is what
+`bench_call_tool_cache_hit_clone_cost` asserts on is NOT established — only the bench's setup was
+read (`tools/mod.rs:1190-1215`: two `call_tool` calls with a `tldr_tree` fallback), never its
+assertion. Do not restate the bench's purpose from its name. Consequences: `Arc::ptr_eq`/`strong_count` needs the cache changed to store
+`Arc<ToolsCallResult>` FIRST, so (a) is a production change, not a ~3-line test edit — the
+expensive option, exactly as this card's STATE block warned before the warning was ignored.
+**And that reframes the whole card:** storing an `Arc` would DELETE the clone rather than assert
+about it, which is worth weighing against writing any assertion at all.
 
 **Do not read option 3's ranking wider than it goes.** It is aimed at raising a number and not
 saying what it was calibrated against — that is what drifts. A threshold that STATES its basis is a
@@ -136,7 +147,15 @@ against that different proposal, because the label matched. Judge it on its own 
       62% overshoot may be miscalibration that noise occasionally dips under. Settle it by running
       the four alone, `--test-threads=1`, five times before relying on any claim about which of
       them this box actually guards.
-**There is deliberately NO second box yet, and that is the point.** Four were written and all four
+- [ ] **The gate is intact in BOTH directions** — checkable today, no decision required:
+      `cargo test -p tldr-mcp 2>&1 | grep -q '4 ignored'` (debug still skips them) AND
+      `cargo test -p tldr-mcp --release 2>&1 | grep -q '0 ignored'` (release still RUNS them).
+      The debug box alone catches only someone stripping the `cfg_attr`. This catches the sneakier
+      regression: an unconditional `#[ignore]`, which leaves debug green and silently disables the
+      release enforcement too — the profile where these assertions are the only thing guarding
+      the paths at all.
+
+**There is deliberately no box for the REDESIGN yet, and that is the point.** Four were written and all four
 were unfalsifiable, because an acceptance criterion is defined relative to a CHOSEN option and
 `## What` above still says "Not decided". A box cannot encode a decision that has not been made;
 every attempt smuggled one into the acceptance section instead. Once the decision exists, the box
@@ -161,9 +180,12 @@ misreport its own state.
   5/4/3/1/0, all ok. **That the four benches ran is READ, not reasoned** — the run's own test list
   carries `bench_cache_hit_latency ... ok`, `bench_cache_key_construction ... ok`,
   `bench_call_tool_cache_hit ... ok`, `bench_call_tool_cache_hit_clone_cost ... ok`. The
-  arithmetic corroborates independently: debug reports 41 passed + 4 ignored, release 45 + 0, and
-  45 - 41 = the four. Machine was not idle — the unit-2 worker ran concurrently. n=1; one pass is
-  not a variance measurement.
+  test-name list is the whole of the evidence and is sufficient alone. **The tempting "45 - 41 = 4"
+  arithmetic is NOT a second source** — the 41+4 debug figure is recalled from earlier in the
+  session, not re-read, and the two counts are the same test population under two profiles, so the
+  subtraction cannot fail unless the debug figure is wrong, which is the very thing it would be
+  vouching for. A consistency check wearing the costume of corroboration. Machine was not idle —
+  the unit-2 worker ran concurrently. n=1; one pass is not a variance measurement.
 - **Not yet taken:** the four benches alone in debug, `--test-threads=1`, five times. That is what
   would settle whether the other three are miscalibrated or merely noisy, which the debug box's
   note currently declines to assert either way.
