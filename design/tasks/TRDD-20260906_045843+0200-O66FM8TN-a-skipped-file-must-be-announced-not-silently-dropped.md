@@ -3,18 +3,55 @@ trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
 column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-07T18:20:00+0200
+updated: 2026-09-07T18:40:22+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
 labels: [robustness, encoding, silent-failure]
 parent-trdd: BKALIK1B
-implementation-commits: [b64d541, e83d2b4, 9dabab1]
+implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75]
 ---
 
 # A file the analysis skips must be announced, not silently dropped from the result
 
-## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06 06:40
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-07 18:40
+
+### 2026-09-07 — daemon + MCP done. Only units 2-4 remain.
+
+- **SUPERSEDES the 2026-09-06 bullet below that says "the daemon `dead` handler and the MCP `dead`
+  tool were NOT touched". Both are now done.** MCP landed in `9dabab1`; the daemon in `6d43608`,
+  corrected by `b888b2d` and `804dd75`.
+- **Unit 5 (daemon) verdict: CAN, and it does.** `handlers/callgraph.rs` builds the IR directly and
+  carries `ir.warnings` into the report. `ir.warnings.len()` is an EXACT skipped-file count, not a
+  proxy: `CallGraphIR.warnings` is written at exactly three places — `Vec::new()` at
+  `cross_file_types.rs:1317` and `:1331`, and the single assignment `ir.warnings = skipped` at
+  `builder_v2.rs:668`, fed by one push per skipped file at `builder_v2.rs:154` followed by
+  `continue`. Established by RENAMING the field and letting the compiler enumerate; the grep used
+  first (`warnings.push`, `warnings:`) structurally could not see an assignment and missed `:668`.
+  Caveat: `cargo check` aborted in `tldr-core`, so that enumeration covers `tldr-core` only.
+  Verdict file: `reports/colony/daemon-dead-skip-verdict.md`.
+- **First test in `crates/tldr-daemon/` that asserts on the `dead` handler's output at all** —
+  `tests/dead_handler_reports_skipped_files_test.rs`. Three red-proofs, not one: zeroing
+  `files_skipped` (positive test red, control green); zeroing `warnings` with `files_skipped` left
+  correct (proves the warnings assertions can fail — they had never run to completion, because Rust
+  panics short-circuit and `files_skipped` is asserted first); and removing the fixture write
+  (proves the control is not vacuous — `files_skipped == 0` plus `warnings == []` are both
+  satisfied by a scan that found nothing).
+- **Two false claims were committed and then corrected on this card's own commits.** `6d43608`
+  asserted the cached path passes neither type resolution nor workspace roots — false: `builder.rs:40`
+  sets `use_type_resolution = true` and `None` is what TRIGGERS workspace discovery
+  (`builder.rs:48-62`), so the two build equivalently. It also re-asserted "no daemon test asserts
+  on handler output content", which `handler_path_traversal_audit_test.rs` falsifies and which had
+  already been retracted once in `1259493`. Both corrected in `b888b2d`.
+- **Real divergence, documented in the code:** the cached closures swallow a build failure into an
+  empty `ProjectCallGraph` and cache it forever (`handlers/callgraph.rs:60`, `:131`, `:328`);
+  `dead` propagates (`:221`). An empty graph makes every function look dead. Any future cache
+  unification must preserve BOTH the warnings and the fail-fast.
+- **NEXT ACTION: units 2-4 of `reports/colony/DELEGATION.md`** — `todo`/`bugbot born-dead` carrying
+  the skip list (unit 2), and the two silent-read-site surveys (units 3, 4). Unit 1 and unit 5 are
+  `verified`. This card does NOT close until those land; it is `dev`, not `complete`.
+- Not blocking this card, noted so it is not rediscovered: `tldr-core` could expose the
+  IR-returning half of `build_project_call_graph` so `dead` and `calls` share one config path.
 
 - **Piece 1 LANDED (2026-09-06 ~06:30): `dead`, `calls`, `smells` now announce every file they
   drop.** One shared helper, `tldr_core::fs::skipped_file_warning(path, reason)`, produces the
