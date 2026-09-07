@@ -1,10 +1,10 @@
 ---
 trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
-column: todo
+column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-06T04:58:43+0200
-current-owner: unassigned
+updated: 2026-09-06T06:40:00+0200
+current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
 labels: [robustness, encoding, silent-failure]
@@ -13,8 +13,45 @@ parent-trdd: BKALIK1B
 
 # A file the analysis skips must be announced, not silently dropped from the result
 
-## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06 06:40
 
+- **Piece 1 LANDED (2026-09-06 ~06:30): `dead`, `calls`, `smells` now announce every file they
+  drop.** One shared helper, `tldr_core::fs::skipped_file_warning(path, reason)`, produces the
+  `Skipped <path>: <reason>` line for all of them AND for `structure` (which was rewritten to use
+  it), so a new command has one thing to call. Per command:
+  - `dead` (CLI, both the refcount default and `--call-graph`): the collectors used
+    `if let Ok(..) = parse_file(..)` / `extract_file(..)` and dropped the error. They now return
+    the skip list; `DeadCodeReport` gained `files_skipped: usize` + `warnings: Vec<String>`
+    (`#[serde(default)]`, emitted in the hand-rolled Serialize), text mode prints
+    `Files skipped: N (results exclude them)` under the headline numbers.
+  - `smells` (core): `filter_map(|f| analyze_file(f).ok())` swallowed every failure. Now
+    partitioned; failures go to the pre-existing `SmellsReport.warnings`, which the text
+    formatter already rendered. The `--deep` aggregate path carries them through too.
+  - `calls` (core builder + CLI): `build_indices_parallel` read with plain `fs::read_to_string`,
+    which SUCCEEDS on BOM-less UTF-16 (valid UTF-8, ASCII interleaved with NUL) — so a wide file
+    was pushed as an EMPTY `FileIR`, present in the graph with zero functions. It now reads via
+    `fs::read_to_string_tolerant` (the same guard as `structure`), and a file whose
+    `FileParseResult.error` is set is recorded in the new `CallGraphIR.warnings` and left OUT of
+    the graph. The CLI's `CallGraphOutput` gained `files_skipped` + `warnings`.
+  - **Correction to the parent card's table:** `calls` did NOT "reach the guard" before this.
+    It had no guard on its read path at all; the wide files were analysed-as-empty, which is the
+    parent card's original bug shape, on a second path. The probe that "settled" the row could
+    not distinguish analysed-as-empty from skipped, because both leave the file out of `nodes`.
+  - The two OTHER consumers of the dead collector (`todo`, `bugbot born-dead`) have no warnings
+    channel; they print the skip list to stderr rather than drop it. Wiring it into their
+    reports is still open on this card.
+  - The daemon `dead` handler and the MCP `dead` tool were NOT touched: the daemon derives
+    `all_functions` from graph edges (its own pre-existing oddity) and the MCP tool drops
+    `structure.warnings` on the floor. Both are still silent. Open.
+- **Tests:** `crates/tldr-core/tests/encoding_skip_tests.rs` +2 (smells, calls over the
+  BKALIK1B fixtures: warning names each of the 5 wide files, none of the 3 readable ones, and
+  for `calls` the dropped files are absent from `ir.files`). New
+  `crates/tldr-cli/tests/skipped_file_warning_tests.rs` (5): dead/calls/smells JSON name exactly
+  the 5, dead text prints them, and the card's measured scenario — a UTF-16 `caller.py` — now
+  yields a warning naming the caller. Each CLI test pins `TLDR_DAEMON_REGISTRY_DIR` to an empty
+  tempdir so a live daemon cannot serve a cached pre-fix payload.
+- **Still open on this card:** the 56-site SILENT inventory decisions, the `File::open` /
+  `read_to_end` bucketing, and the daemon/MCP/todo/bugbot channels above.
 - Split out of TRDD-BKALIK1B, which fixed a REPRODUCED instance (a wide-encoded file analysed as
   zero symbols) and should close on that. This card carries the larger, different problem it
   exposed: **a skip that nobody is told about.**
@@ -118,17 +155,23 @@ mislabelling the file as binary here. **Not established either way; assess in co
 
 ## Acceptance
 
-- [ ] `tldr dead`, `tldr calls` and `tldr smells` over a directory containing an unreadable file
-      name that file in a user-visible warning, as `structure` does.
-- [ ] A regression test covers at least one whole-program command (`dead`) against
+- [x] `tldr dead`, `tldr calls` and `tldr smells` over a directory containing an unreadable file
+      name that file in a user-visible warning, as `structure` does. — landed 2026-09-06, see
+      STATE; verified by `skipped_file_warning_tests` against the built binary.
+- [x] A regression test covers at least one whole-program command (`dead`) against
       `design/reproducers/TRDD-BKALIK1B/`, asserting the warning is present — not merely that the
       file is absent from the results, which is what the buggy behaviour also produces.
+      — `dead_json_names_every_skipped_file` + the UTF-16-caller scenario test.
 - [ ] Every one of the 56 SILENT sites has a recorded decision: warn, propagate, or
       deliberately-silent-with-a-reason.
 - [ ] The `File::open` / `read_to_end` / `.read(&mut …)` sites the survey never saw are bucketed
       the same way — count them AFTER bucketing, not before.
 - [ ] The skip path is centralised, so a NEW command cannot silently drop a file without
       inheriting the warning.
+      — PARTIAL: the MESSAGE is centralised (`fs::skipped_file_warning`, used by structure,
+      dead, smells, calls). The DECISION to warn still lives at each `Err` arm; a new command
+      that writes `if let Ok(..)` is not stopped by anything. Left open on purpose — a walk
+      helper that owns the error arm would be the real mechanism.
       — This replaces an earlier line, "no command returns a result computed over a reduced file
       set without saying so", which was **unfalsifiable**: it quantified over all commands, all
       inputs and all future code, so nothing could ever discharge it and it would have been

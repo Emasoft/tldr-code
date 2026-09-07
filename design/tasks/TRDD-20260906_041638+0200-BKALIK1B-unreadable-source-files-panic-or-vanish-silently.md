@@ -1,9 +1,9 @@
 ---
 trdd-id: BKALIK1B
 title: A UTF-16 source file is reported as analysed with zero symbols instead of being skipped
-column: dev
+column: human_review
 created: 2026-09-06T04:16:38+0200
-updated: 2026-09-06T04:38:00+0200
+updated: 2026-09-06T06:45:00+0200
 current-owner: claude-session-2026-09-06
 task-type: bugfix
 min-approval-requirement: user
@@ -12,8 +12,19 @@ labels: [scan-2026-09-05, robustness, encoding]
 
 # A UTF-16 source file is reported as analysed with zero symbols instead of being skipped
 
-## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-06 06:45
 
+- **READY FOR THE USER TO CLOSE (2026-09-06 06:45).** The one item the prior handoff left
+  unverified — the full `tldr-core` suite against the `late_nul.py` fixture six tests share —
+  ran to completion: **83 bins / 7220 passed / 1 failed**, the failure being the baseline
+  `ruby_io_popen_with_user_input_via_compute_taint`. Every acceptance box is ticked. The
+  follow-on work (every skip announced, the 56-site inventory) is on TRDD-O66FM8TN, where
+  piece 1 has since landed; nothing on THIS card is open.
+- **One row of the read-path table below is WRONG and is corrected on O66FM8TN:** `calls` never
+  reached the guard. Its builder read with plain `fs::read_to_string`, which accepts BOM-less
+  UTF-16, and pushed the wide file as an EMPTY `FileIR` — analysed-as-empty, this card's own bug
+  shape, on a second path. The probe could not tell that from a skip because both leave the file
+  out of the output. Fixed there; recorded here so the table is not inherited as settled.
 - **The bug is REPRODUCED end-to-end.** Fixture committed at
   `design/reproducers/TRDD-BKALIK1B/`. `control.py` and `bad.py` hold byte-identical source text
   and differ only in encoding: `tldr structure` finds **2 definitions in the UTF-8 one and 0 in
@@ -246,6 +257,9 @@ lands. Sequencing, once it does:
       additions: +1 binary (`encoding_skip_tests`) and +4 passing tests. `cargo_exit=101` is that
       single known failure, not a build error — 83 `test result:` lines are present and there are
       zero `error[E…]` diagnostics.
+      — RE-RUN 2026-09-06 06:20 after the last two commits (`662633b`, `d8737e7`) and the
+      shared `late_nul.py` fixture: **83 bins / 7220 passed / 1 failed**, same single baseline
+      name. Log: `reports_dev/suite/20260906_052138+0200-tldr-core.txt` (machine-local).
 
 ## What is NOT closed by the above
 
