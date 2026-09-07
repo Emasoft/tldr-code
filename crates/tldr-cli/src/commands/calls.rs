@@ -73,6 +73,16 @@ struct CallGraphOutput {
     total_edges: usize,
     /// Number of edges shown after truncation
     shown_edges: usize,
+    /// Number of source files the builder could not read and dropped.
+    ///
+    /// TRDD-O66FM8TN: a dropped file means missing edges, so the graph is
+    /// confidently incomplete unless the omission is in the output.
+    /// `#[serde(default)]` keeps cached daemon payloads deserializable.
+    #[serde(default)]
+    files_skipped: usize,
+    /// One `Skipped <path>: <reason>` line per dropped file.
+    #[serde(default)]
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -128,7 +138,9 @@ impl CallsArgs {
                     output.root.display(),
                     lang_label,
                 ));
-                text.push_str(&format!("Edges: {}\n\n", output.total_edges));
+                text.push_str(&format!("Edges: {}\n", output.total_edges));
+                push_skipped_files(&mut text, &output);
+                text.push('\n');
 
                 for edge in &output.edges {
                     text.push_str(&format!(
@@ -266,6 +278,8 @@ impl CallsArgs {
             truncated,
             total_edges,
             shown_edges,
+            files_skipped: ir.warnings.len(),
+            warnings: ir.warnings,
         };
 
         // Output based on format
@@ -307,7 +321,9 @@ impl CallsArgs {
                 self.path.display(),
                 lang_label,
             ));
-            text.push_str(&format!("Edges: {}\n\n", output.total_edges));
+            text.push_str(&format!("Edges: {}\n", output.total_edges));
+            push_skipped_files(&mut text, &output);
+            text.push('\n');
 
             for edge in &output.edges {
                 text.push_str(&format!(
@@ -325,5 +341,20 @@ impl CallsArgs {
         }
 
         Ok(())
+    }
+}
+
+/// TRDD-O66FM8TN: name every dropped file next to the edge count, because
+/// the edge count was computed without it.
+fn push_skipped_files(text: &mut String, output: &CallGraphOutput) {
+    if output.warnings.is_empty() {
+        return;
+    }
+    text.push_str(&format!(
+        "Files skipped: {} (edges exclude them)\n",
+        output.files_skipped
+    ));
+    for warning in &output.warnings {
+        text.push_str(&format!("  {}\n", warning));
     }
 }

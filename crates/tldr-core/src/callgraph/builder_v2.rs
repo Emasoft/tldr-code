@@ -85,13 +85,13 @@ use super::var_types::FileParseResult;
 /// * `config` - Build configuration
 ///
 /// # Returns
-/// Tuple of (FuncIndex, ClassIndex, Vec<FileIR>)
+/// Tuple of (FuncIndex, ClassIndex, Vec<FileIR>, skipped-file warnings)
 pub fn build_indices_parallel(
     files: &[ScannedFile],
     root: &Path,
     language: &str,
     _config: &BuildConfig,
-) -> (FuncIndex, ClassIndex, Vec<FileIR>) {
+) -> (FuncIndex, ClassIndex, Vec<FileIR>, Vec<String>) {
     // P1: Canonicalize root for consistent path operations (parity-fix-plan.yaml)
     let canonical_root = root.canonicalize().ok();
 
@@ -100,23 +100,34 @@ pub fn build_indices_parallel(
     let results: Vec<_> = files
         .par_iter()
         .map(|scanned| {
-            // Read file content
-            let content = match fs::read_to_string(&scanned.path) {
-                Ok(c) => c,
-                Err(e) => {
+            // Read file content.
+            //
+            // TRDD-O66FM8TN: go through the shared encoding guard rather than
+            // `fs::read_to_string`. A BOM-less UTF-16 file is valid UTF-8 (ASCII
+            // bytes interleaved with NUL), so a plain read "succeeds" and the
+            // file parses to zero symbols — analysed-as-empty, the exact bug
+            // TRDD-BKALIK1B fixed on the `structure` path. Every read failure
+            // lands in `error` and is turned into a named warning below.
+            let failure = match crate::fs::read_to_string_tolerant(&scanned.path) {
+                Ok(crate::fs::ReadOutcome::Ok(content)) => {
                     return (
                         scanned.path.clone(),
-                        FileParseResult {
-                            error: Some(format!("Failed to read file: {}", e)),
-                            ..Default::default()
-                        },
+                        extract_definitions(&content, &scanned.path, language),
                     );
                 }
+                Ok(crate::fs::ReadOutcome::WideEncoded { detail }) => detail.to_string(),
+                Ok(crate::fs::ReadOutcome::NonUtf8 { byte_offset }) => {
+                    format!("invalid UTF-8 at byte {byte_offset}")
+                }
+                Err(e) => format!("Failed to read file: {}", e),
             };
-
-            // Extract definitions
-            let result = extract_definitions(&content, &scanned.path, language);
-            (scanned.path.clone(), result)
+            (
+                scanned.path.clone(),
+                FileParseResult {
+                    error: Some(failure),
+                    ..Default::default()
+                },
+            )
         })
         .collect();
 
@@ -128,8 +139,22 @@ pub fn build_indices_parallel(
     let mut func_index = FuncIndex::with_capacity(total_funcs);
     let mut class_index = ClassIndex::with_capacity(total_classes);
     let mut file_irs = Vec::with_capacity(results.len());
+    let mut warnings: Vec<String> = Vec::new();
 
     for (abs_path, parse_result) in results {
+        // TRDD-O66FM8TN: a file that could not be read or parsed used to be
+        // pushed as an EMPTY FileIR — present in the graph with no functions,
+        // indistinguishable from a genuinely empty file, error string dropped
+        // on the floor. Record it and leave it out of the graph instead.
+        // This cannot over-skip a merely malformed source: `parse_source`
+        // (types.rs) errs only when tree-sitter returns None or the grammar is
+        // missing; a syntax error still yields a tree with ERROR nodes and no
+        // `error` here, so such a file keeps contributing what it parsed.
+        if let Some(reason) = parse_result.error {
+            warnings.push(crate::fs::skipped_file_warning(&abs_path, reason));
+            continue;
+        }
+
         // P1: Compute relative path with normalization (parity-fix-plan.yaml)
         let relative_path =
             normalize_path_relative_to_root(&abs_path, root, canonical_root.as_deref());
@@ -230,7 +255,9 @@ pub fn build_indices_parallel(
         file_irs.push(file_ir);
     }
 
-    (func_index, class_index, file_irs)
+    // Parallel collection order is nondeterministic; sort so output is stable.
+    warnings.sort();
+    (func_index, class_index, file_irs, warnings)
 }
 
 // =============================================================================
@@ -634,8 +661,11 @@ pub fn build_project_call_graph_v2(
 
     // Step 4: Build function and class indices in parallel (Phase 14c)
     // Per M1.9: Build indices completely before resolution phase
-    let (_func_index, _class_index, file_irs) =
+    let (_func_index, _class_index, file_irs, skipped) =
         build_indices_parallel(&scanned_files, root, &config.language, &config);
+    // TRDD-O66FM8TN: the skipped files are not in `ir.files`; this is the
+    // only record of them, so it rides on the IR to whatever renders it.
+    ir.warnings = skipped;
 
     // Step 5: Add FileIRs to the CallGraphIR
     for file_ir in file_irs {

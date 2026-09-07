@@ -117,7 +117,11 @@ impl DeadArgs {
             Some(self.entry_points.clone())
         };
 
-        let report = if self.call_graph {
+        // TRDD-O66FM8TN: every file the walk could not read is a hole in a
+        // whole-program analysis — a function whose only caller lives in a
+        // skipped file comes out as dead. The collectors hand back one
+        // warning per dropped file; it goes into the report, not to /dev/null.
+        let (mut report, skipped) = if self.call_graph {
             // Old path: build call graph, then analyze
             writer.progress(&format!(
                 "Building call graph for {} ({:?})...",
@@ -128,11 +132,15 @@ impl DeadArgs {
             let graph = build_project_call_graph(&self.path, language, None, true)?;
 
             writer.progress("Extracting all functions...");
-            let module_infos = collect_module_infos(&self.path, language, self.no_default_ignore);
+            let (module_infos, skipped) =
+                collect_module_infos(&self.path, language, self.no_default_ignore);
             let all_functions: Vec<FunctionRef> = collect_all_functions(&module_infos);
 
             writer.progress("Analyzing dead code (call graph)...");
-            dead_code_analysis(&graph, &all_functions, entry_points_for_analysis.as_deref())?
+            (
+                dead_code_analysis(&graph, &all_functions, entry_points_for_analysis.as_deref())?,
+                skipped,
+            )
         } else {
             // New default path: reference counting (single-pass)
             writer.progress(&format!(
@@ -141,17 +149,22 @@ impl DeadArgs {
                 language
             ));
 
-            let (module_infos, merged_ref_counts) =
+            let (module_infos, merged_ref_counts, skipped) =
                 collect_module_infos_with_refcounts(&self.path, language, self.no_default_ignore);
             let all_functions: Vec<FunctionRef> = collect_all_functions(&module_infos);
 
             writer.progress("Analyzing dead code (refcount)...");
-            dead_code_analysis_refcount(
-                &all_functions,
-                &merged_ref_counts,
-                entry_points_for_analysis.as_deref(),
-            )?
+            (
+                dead_code_analysis_refcount(
+                    &all_functions,
+                    &merged_ref_counts,
+                    entry_points_for_analysis.as_deref(),
+                )?,
+                skipped,
+            )
         };
+        report.files_skipped = skipped.len();
+        report.warnings = skipped;
 
         // Apply truncation if needed
         let (truncated_report, truncated, total_count, shown_count) =
@@ -251,28 +264,35 @@ fn is_typescript_declaration_file(path: &Path) -> bool {
 ///
 /// This provides the enriched function metadata (decorators, visibility, etc.)
 /// needed for accurate dead code analysis with low false-positive rates.
+///
+/// Returns the module infos plus one warning per file that was dropped because
+/// it could not be read or parsed (TRDD-O66FM8TN) — callers must surface them.
 fn collect_module_infos(
     path: &Path,
     language: Language,
     no_default_ignore: bool,
-) -> Vec<(PathBuf, ModuleInfo)> {
+) -> (Vec<(PathBuf, ModuleInfo)>, Vec<String>) {
     let mut module_infos = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
 
     if path.is_file() {
         // M6: skip .d.ts declaration-only files
         if is_typescript_declaration_file(path) {
-            return module_infos;
+            return (module_infos, skipped);
         }
-        if let Ok(mut info) = extract_file(path, path.parent()) {
-            if let Ok(source) = std::fs::read_to_string(path) {
-                tag_directive_functions(&mut info, &source, path);
+        match extract_file(path, path.parent()) {
+            Ok(mut info) => {
+                if let Ok(source) = std::fs::read_to_string(path) {
+                    tag_directive_functions(&mut info, &source, path);
+                }
+                // Use filename only for single files (matches call graph convention)
+                let rel_path = path
+                    .file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| path.to_path_buf());
+                module_infos.push((rel_path, info));
             }
-            // Use filename only for single files (matches call graph convention)
-            let rel_path = path
-                .file_name()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| path.to_path_buf());
-            module_infos.push((rel_path, info));
+            Err(e) => skipped.push(tldr_core::fs::skipped_file_warning(path, e)),
         }
     } else {
         // language-coverage-fixes-v1 (P4.BUG-N1, P4.BUG-N5): use
@@ -311,17 +331,24 @@ fn collect_module_infos(
                             );
                             break;
                         }
-                        if let Ok(mut info) = extract_file(file_path, Some(path)) {
-                            // Tag functions with framework directive from source
-                            if let Ok(source) = std::fs::read_to_string(file_path) {
-                                tag_directive_functions(&mut info, &source, file_path);
+                        match extract_file(file_path, Some(path)) {
+                            Ok(mut info) => {
+                                // Tag functions with framework directive from source
+                                if let Ok(source) = std::fs::read_to_string(file_path) {
+                                    tag_directive_functions(&mut info, &source, file_path);
+                                }
+                                // Use relative path to match call graph edge convention
+                                let rel_path = file_path
+                                    .strip_prefix(path)
+                                    .unwrap_or(file_path)
+                                    .to_path_buf();
+                                module_infos.push((rel_path, info));
                             }
-                            // Use relative path to match call graph edge convention
-                            let rel_path = file_path
-                                .strip_prefix(path)
-                                .unwrap_or(file_path)
-                                .to_path_buf();
-                            module_infos.push((rel_path, info));
+                            // TRDD-O66FM8TN: was `if let Ok(..)` — an unreadable
+                            // file vanished from the analysis with no trace.
+                            Err(e) => {
+                                skipped.push(tldr_core::fs::skipped_file_warning(file_path, e))
+                            }
                         }
                     }
                 }
@@ -329,7 +356,7 @@ fn collect_module_infos(
         }
     }
 
-    module_infos
+    (module_infos, skipped)
 }
 
 /// Collect ModuleInfo AND identifier reference counts in a single pass.
@@ -339,35 +366,49 @@ fn collect_module_infos(
 /// - `count_identifiers_in_tree()` to get identifier occurrence counts
 ///
 /// The identifier counts are merged into a single project-wide HashMap.
+///
+/// The third element is one warning per file that was dropped because it could
+/// not be read or parsed (TRDD-O66FM8TN). Reference counting is whole-program:
+/// a dropped file takes its references with it, so every caller must surface
+/// these rather than bind them to `_`.
 pub(crate) fn collect_module_infos_with_refcounts(
     path: &Path,
     language: Language,
     no_default_ignore: bool,
-) -> (Vec<(PathBuf, ModuleInfo)>, HashMap<String, usize>) {
+) -> (
+    Vec<(PathBuf, ModuleInfo)>,
+    HashMap<String, usize>,
+    Vec<String>,
+) {
     let mut module_infos = Vec::new();
     let mut merged_counts: HashMap<String, usize> = HashMap::new();
+    let mut skipped: Vec<String> = Vec::new();
 
     if path.is_file() {
         // M6: skip .d.ts declaration-only files (still produce empty
         // module_infos / counts so callers behave gracefully).
         if is_typescript_declaration_file(path) {
-            return (module_infos, merged_counts);
+            return (module_infos, merged_counts, skipped);
         }
-        if let Ok((tree, source, lang)) = parse_file(path) {
-            // Extract ModuleInfo from the parsed tree
-            if let Ok(mut info) = extract_from_tree(&tree, &source, lang, path, path.parent()) {
-                tag_directive_functions(&mut info, &source, path);
-                let rel_path = path
-                    .file_name()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| path.to_path_buf());
-                module_infos.push((rel_path, info));
+        match parse_file(path) {
+            Ok((tree, source, lang)) => {
+                // Extract ModuleInfo from the parsed tree
+                if let Ok(mut info) = extract_from_tree(&tree, &source, lang, path, path.parent())
+                {
+                    tag_directive_functions(&mut info, &source, path);
+                    let rel_path = path
+                        .file_name()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| path.to_path_buf());
+                    module_infos.push((rel_path, info));
+                }
+                // Count identifiers from the same parsed tree
+                let file_counts = count_identifiers_in_tree(&tree, source.as_bytes(), lang);
+                for (name, count) in file_counts {
+                    *merged_counts.entry(name).or_insert(0) += count;
+                }
             }
-            // Count identifiers from the same parsed tree
-            let file_counts = count_identifiers_in_tree(&tree, source.as_bytes(), lang);
-            for (name, count) in file_counts {
-                *merged_counts.entry(name).or_insert(0) += count;
-            }
+            Err(e) => skipped.push(tldr_core::fs::skipped_file_warning(path, e)),
         }
     } else {
         // language-coverage-fixes-v1 (P4.BUG-N1, P4.BUG-N5): use
@@ -406,24 +447,33 @@ pub(crate) fn collect_module_infos_with_refcounts(
                             );
                             break;
                         }
-                        if let Ok((tree, source, lang)) = parse_file(file_path) {
-                            // Extract ModuleInfo from the parsed tree
-                            if let Ok(mut info) =
-                                extract_from_tree(&tree, &source, lang, file_path, Some(path))
-                            {
-                                // Tag functions with framework directive while we have the source
-                                tag_directive_functions(&mut info, &source, file_path);
-                                let rel_path = file_path
-                                    .strip_prefix(path)
-                                    .unwrap_or(file_path)
-                                    .to_path_buf();
-                                module_infos.push((rel_path, info));
+                        match parse_file(file_path) {
+                            Ok((tree, source, lang)) => {
+                                // Extract ModuleInfo from the parsed tree
+                                if let Ok(mut info) =
+                                    extract_from_tree(&tree, &source, lang, file_path, Some(path))
+                                {
+                                    // Tag functions with framework directive while we have the source
+                                    tag_directive_functions(&mut info, &source, file_path);
+                                    let rel_path = file_path
+                                        .strip_prefix(path)
+                                        .unwrap_or(file_path)
+                                        .to_path_buf();
+                                    module_infos.push((rel_path, info));
+                                }
+                                // Count identifiers from the same parsed tree
+                                let file_counts =
+                                    count_identifiers_in_tree(&tree, source.as_bytes(), lang);
+                                for (name, count) in file_counts {
+                                    *merged_counts.entry(name).or_insert(0) += count;
+                                }
                             }
-                            // Count identifiers from the same parsed tree
-                            let file_counts =
-                                count_identifiers_in_tree(&tree, source.as_bytes(), lang);
-                            for (name, count) in file_counts {
-                                *merged_counts.entry(name).or_insert(0) += count;
+                            // TRDD-O66FM8TN: was `if let Ok(..)`. This is the
+                            // default `tldr dead` path, and a UTF-16 caller
+                            // file silently dropped here turned every function
+                            // it called into a "possibly dead" false positive.
+                            Err(e) => {
+                                skipped.push(tldr_core::fs::skipped_file_warning(file_path, e))
                             }
                         }
                     }
@@ -432,7 +482,7 @@ pub(crate) fn collect_module_infos_with_refcounts(
         }
     }
 
-    (module_infos, merged_counts)
+    (module_infos, merged_counts, skipped)
 }
 
 /// Wrapper struct for JSON output with truncation metadata.
@@ -512,6 +562,18 @@ fn format_dead_code_text_truncated(
             "Possibly dead (public but uncalled): {}\n",
             report.total_possibly_dead.to_string().yellow()
         ));
+    }
+
+    // TRDD-O66FM8TN: name every dropped file right under the headline
+    // numbers, because those numbers were computed without it.
+    if !report.warnings.is_empty() {
+        output.push_str(&format!(
+            "Files skipped: {} (results exclude them)\n",
+            report.files_skipped.to_string().yellow()
+        ));
+        for warning in &report.warnings {
+            output.push_str(&format!("  {}\n", warning.yellow()));
+        }
     }
 
     output.push('\n');

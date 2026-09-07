@@ -209,3 +209,88 @@ fn the_utf8_control_and_the_utf16_file_hold_identical_source_text() {
         "control.py and bad.py have drifted apart; they must differ ONLY in encoding"
     );
 }
+
+// ---------------------------------------------------------------------------
+// TRDD-O66FM8TN — a file the scan drops must be ANNOUNCED, not silently absent.
+//
+// Absence from the output is exactly what the buggy behaviour produced too, so
+// these assert the WARNING that names the file, not merely that the file is
+// missing from the results.
+// ---------------------------------------------------------------------------
+
+const SKIPPED: [&str; 5] = ["bad.py", "u16be.py", "u32be.py", "u32le.py", "nobom.py"];
+const ANALYSED: [&str; 3] = ["control.py", "good.py", "late_nul.py"];
+
+#[test]
+fn smells_names_every_file_it_dropped() {
+    let report = tldr_core::detect_smells(
+        &fixtures(),
+        tldr_core::ThresholdPreset::Default,
+        None,
+        false,
+    )
+    .expect("smell detection over the reproducer directory failed");
+
+    for file in SKIPPED {
+        assert!(
+            report.warnings.iter().any(|w| w.contains(file)),
+            "{file} was dropped from the smells scan with no warning naming it. Warnings: {:?}",
+            report.warnings
+        );
+    }
+    for file in ANALYSED {
+        assert!(
+            !report.warnings.iter().any(|w| w.contains(file)),
+            "{file} is readable and must not be reported as skipped. Warnings: {:?}",
+            report.warnings
+        );
+    }
+    assert_eq!(
+        report.files_scanned,
+        ANALYSED.len(),
+        "files_scanned must count only the files actually analysed; warnings {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn calls_names_every_file_it_dropped_and_keeps_it_out_of_the_graph() {
+    use tldr_core::callgraph::{build_project_call_graph_v2, BuildConfig};
+
+    let ir = build_project_call_graph_v2(
+        &fixtures(),
+        BuildConfig {
+            language: "python".to_string(),
+            ..Default::default()
+        },
+    )
+    .expect("call-graph build over the reproducer directory failed");
+
+    let in_graph: Vec<String> = ir.files.keys().map(|p| p.display().to_string()).collect();
+
+    for file in SKIPPED {
+        assert!(
+            ir.warnings.iter().any(|w| w.contains(file)),
+            "{file} was dropped from the call graph with no warning naming it. Warnings: {:?}",
+            ir.warnings
+        );
+        // Pre-fix, an unreadable file was pushed as an EMPTY FileIR — present
+        // with zero functions, indistinguishable from an empty source file.
+        assert!(
+            !in_graph.iter().any(|p| p.ends_with(file)),
+            "{file} is still listed as a graph file; it must be skipped, not analysed-as-empty. \
+             Files: {in_graph:?}"
+        );
+    }
+    for file in ANALYSED {
+        assert!(
+            in_graph.iter().any(|p| p.ends_with(file)),
+            "{file} is readable and must be in the graph. Files: {in_graph:?}"
+        );
+        assert!(
+            !ir.warnings.iter().any(|w| w.contains(file)),
+            "{file} must not be reported as skipped. Warnings: {:?}",
+            ir.warnings
+        );
+    }
+}

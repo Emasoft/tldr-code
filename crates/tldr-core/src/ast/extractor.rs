@@ -13,7 +13,6 @@ use crate::TldrResult;
 
 use super::extract::is_upper_case_name;
 use super::imports::extract_imports_from_tree;
-use super::parser::parse_file;
 
 /// Extract code structure from all files in a directory.
 ///
@@ -100,7 +99,7 @@ pub fn get_code_structure(
                 // warning instead of reporting a confidently wrong
                 // "zero symbols" result.
                 files_skipped += 1;
-                warnings.push(format!("Skipped {}: {}", path.display(), detail));
+                warnings.push(crate::fs::skipped_file_warning(&path, detail));
                 return Ok(CodeStructure {
                     root: root.to_path_buf(),
                     language: Some(language),
@@ -172,7 +171,7 @@ pub fn get_code_structure(
                 // arm above - surface a named, structured warning
                 // instead of an eprintln-only notice.
                 files_skipped += 1;
-                warnings.push(format!("Skipped {}: {}", path.display(), detail));
+                warnings.push(crate::fs::skipped_file_warning(&path, detail));
             }
             Err(e) => {
                 // Log error but continue - recoverable errors per spec

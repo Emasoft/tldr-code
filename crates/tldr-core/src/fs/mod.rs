@@ -137,6 +137,21 @@ pub fn read_to_string_tolerant(path: &Path) -> io::Result<ReadOutcome> {
     }
 }
 
+/// The one message shape for "this file was dropped from the scan".
+///
+/// TRDD-O66FM8TN: every directory-walking command that skips a file it could
+/// not read MUST push this into its report's `warnings` (and count it in
+/// `files_skipped`) instead of discarding the error. A dead-code report
+/// computed over a silently smaller file set is a wrong answer in the most
+/// dangerous shape — a function whose only caller sits in the dropped file is
+/// reported as dead — so the omission has to be visible in the output itself.
+/// Routing every caller through this helper keeps the message greppable
+/// (`Skipped <path>: <reason>`) and gives a new command one obvious thing to
+/// call rather than a format string to reinvent.
+pub fn skipped_file_warning(path: &Path, reason: impl std::fmt::Display) -> String {
+    format!("Skipped {}: {}", path.display(), reason)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

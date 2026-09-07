@@ -1293,6 +1293,14 @@ pub struct CallGraphIR {
     /// Cross-file call edges resolved from imports and calls.
     /// Added in Phase 14d-14f to store resolution results.
     pub edges: Vec<CrossFileCallEdge>,
+
+    /// Scanned source files the builder could not read or parse and therefore
+    /// dropped, one `Skipped <path>: <reason>` line each.
+    ///
+    /// TRDD-O66FM8TN: a missing file means missing edges, so a graph built
+    /// over a silently reduced file set is confidently incomplete. The files
+    /// are NOT in `files`; this is the only record that they existed.
+    pub warnings: Vec<String>,
 }
 
 impl CallGraphIR {
@@ -1306,6 +1314,7 @@ impl CallGraphIR {
             func_index: FuncIndexProxyMut::new(),
             class_index: HashMap::new(),
             edges: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -1319,6 +1328,7 @@ impl CallGraphIR {
             func_index: FuncIndexProxyMut::with_capacity(capacity * 10), // ~10 funcs per file
             class_index: HashMap::with_capacity(capacity),
             edges: Vec::with_capacity(capacity * 20), // ~20 edges per file estimate
+            warnings: Vec::new(),
         }
     }
 

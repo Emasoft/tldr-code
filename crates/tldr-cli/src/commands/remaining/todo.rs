@@ -319,9 +319,16 @@ fn run_dead_analysis(path: &Path, language: Language) -> RemainingResult<(Vec<To
         path
     };
 
-    // Single-pass: collect module infos and identifier reference counts together
-    let (module_infos, merged_ref_counts) =
+    // Single-pass: collect module infos and identifier reference counts together.
+    // TRDD-O66FM8TN: the skipped-file warnings are deliberately NOT bound to
+    // `_`; `todo` has no warnings channel of its own yet, so they are printed
+    // to stderr rather than dropped. Wiring them into the todo report is the
+    // follow-up on that card.
+    let (module_infos, merged_ref_counts, skipped) =
         collect_module_infos_with_refcounts(project_root, language, false);
+    for warning in &skipped {
+        eprintln!("Warning: {warning}");
+    }
     let all_functions: Vec<FunctionRef> = collect_all_functions(&module_infos);
 
     // Run refcount-based analysis (rescues functions that are referenced by name)

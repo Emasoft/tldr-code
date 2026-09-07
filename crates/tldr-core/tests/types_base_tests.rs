@@ -869,6 +869,8 @@ fn test_dead_code_report_creation() {
         total_possibly_dead: 0,
         total_functions: 100,
         dead_percentage: 0.0,
+        files_skipped: 0,
+        warnings: vec![],
     };
 
     assert_eq!(report.total_functions, 100);

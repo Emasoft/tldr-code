@@ -162,6 +162,10 @@ pub fn dead_code_analysis(
         total_possibly_dead,
         total_functions,
         dead_percentage,
+        // The analysis itself never reads files; the caller that walked the
+        // tree owns the skip list and fills these in (TRDD-O66FM8TN).
+        files_skipped: 0,
+        warnings: Vec::new(),
     })
 }
 
@@ -303,6 +307,9 @@ pub fn dead_code_analysis_refcount(
         total_possibly_dead,
         total_functions,
         dead_percentage,
+        // Filled by the caller that walked the tree (TRDD-O66FM8TN).
+        files_skipped: 0,
+        warnings: Vec::new(),
     })
 }
 

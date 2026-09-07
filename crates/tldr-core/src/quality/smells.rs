@@ -501,11 +501,26 @@ pub fn detect_smells_with_walker_opts(
         paths
     };
 
-    // Analyze files in parallel using rayon
-    let file_results: Vec<Vec<SmellFinding>> = files
+    // Analyze files in parallel using rayon.
+    //
+    // TRDD-O66FM8TN: this used to be `filter_map(|f| analyze_file(f).ok())`,
+    // which dropped every unreadable file (UTF-16 source, a NUL in the first
+    // KB, an I/O error) with no trace in the report — `files_scanned` just
+    // came out one smaller. Keep the per-file failure and turn it into a
+    // named warning; the scan still continues past the bad file.
+    let (analysed, skipped): (Vec<_>, Vec<_>) = files
         .par_iter()
-        .filter_map(|file_path| analyze_file(file_path, &thresholds, smell_type, suggest).ok())
-        .collect();
+        .map(|file_path| {
+            analyze_file(file_path, &thresholds, smell_type, suggest)
+                .map_err(|e| crate::fs::skipped_file_warning(file_path, e))
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .partition(Result::is_ok);
+    let file_results: Vec<Vec<SmellFinding>> = analysed.into_iter().map(Result::unwrap).collect();
+    let mut warnings: Vec<String> = skipped.into_iter().map(Result::unwrap_err).collect();
+    // Parallel collection order is nondeterministic; sort so JSON is stable.
+    warnings.sort();
 
     let files_scanned = file_results.len();
     let raw_smells: Vec<SmellFinding> = file_results.into_iter().flatten().collect();
@@ -561,7 +576,7 @@ pub fn detect_smells_with_walker_opts(
         by_file,
         summary,
         excluded_test_smells,
-        warnings: Vec::new(),
+        warnings,
     })
 }
 
@@ -2642,6 +2657,9 @@ pub fn analyze_smells_aggregated_with_walker_opts(
     // v0.2.3 (#1.D): track findings excluded by the test-file filter so the
     // aggregated path mirrors the base path's `excluded_test_smells` counter.
     let mut excluded_test_smells: usize = 0;
+    // TRDD-O66FM8TN: carry the base scan's skipped-file warnings through the
+    // --deep path too, or `--deep` would silently un-announce them.
+    let mut warnings: Vec<String> = Vec::new();
     let include_tests = walker_opts.include_tests;
 
     if should_run_original_detectors(smell_type) {
@@ -2655,6 +2673,7 @@ pub fn analyze_smells_aggregated_with_walker_opts(
             files_scanned = base_report.files_scanned;
             all_smells.extend(base_report.smells);
             excluded_test_smells += base_report.excluded_test_smells;
+            warnings = base_report.warnings;
         }
     }
 
@@ -2766,7 +2785,7 @@ pub fn analyze_smells_aggregated_with_walker_opts(
         by_file,
         summary,
         excluded_test_smells,
-        warnings: Vec::new(),
+        warnings,
     })
 }
 

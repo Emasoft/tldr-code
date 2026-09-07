@@ -2481,6 +2481,18 @@ pub struct DeadCodeReport {
     pub total_functions: usize,
     /// Percentage of definitely-dead functions (excludes possibly_dead)
     pub dead_percentage: f64,
+    /// Number of source files the scan could not read and therefore dropped.
+    ///
+    /// TRDD-O66FM8TN: dead-code detection is whole-program — a function whose
+    /// only caller lives in a dropped file is reported as dead — so a reduced
+    /// input set must be visible in the report, not silently absorbed.
+    /// `#[serde(default)]` keeps cached daemon payloads deserializable.
+    #[serde(default)]
+    pub files_skipped: usize,
+    /// One `Skipped <path>: <reason>` line per dropped file
+    /// (see `tldr_core::fs::skipped_file_warning`).
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 // med-low-schema-cleanup-v1 (N13): hand-rolled `Serialize` so we can emit
@@ -2493,7 +2505,7 @@ impl serde::Serialize for DeadCodeReport {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("DeadCodeReport", 8)?;
+        let mut s = serializer.serialize_struct("DeadCodeReport", 10)?;
         s.serialize_field("dead_functions", &self.dead_functions)?;
         s.serialize_field("possibly_dead", &self.possibly_dead)?;
         s.serialize_field("by_file", &self.by_file)?;
@@ -2506,6 +2518,8 @@ impl serde::Serialize for DeadCodeReport {
         // release; new code should read `functions_analyzed`.
         s.serialize_field("total_functions", &self.total_functions)?;
         s.serialize_field("dead_percentage", &self.dead_percentage)?;
+        s.serialize_field("files_skipped", &self.files_skipped)?;
+        s.serialize_field("warnings", &self.warnings)?;
         s.end()
     }
 }

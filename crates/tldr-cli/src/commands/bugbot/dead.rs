@@ -49,8 +49,15 @@ pub fn compose_born_dead(
     }
 
     // Scan the entire project for identifier refcounts (single-pass tree-sitter).
-    let (_module_infos, ref_counts) =
+    // TRDD-O66FM8TN: a file dropped from the refcount scan takes its references
+    // with it, which turns a called new function into a "born dead" finding.
+    // bugbot has no warnings channel yet, so say so on stderr rather than
+    // discard it; wiring it into the findings is the follow-up on that card.
+    let (_module_infos, ref_counts, skipped) =
         collect_module_infos_with_refcounts(project, *language, false);
+    for warning in &skipped {
+        eprintln!("Warning: {warning}");
+    }
 
     compose_born_dead_with_refcounts(inserted, &ref_counts)
 }
