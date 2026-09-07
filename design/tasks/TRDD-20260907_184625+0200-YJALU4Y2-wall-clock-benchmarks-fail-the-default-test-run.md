@@ -3,7 +3,7 @@ trdd-id: YJALU4Y2
 title: Three wall-clock benchmarks fail the default cargo test run on a loaded machine
 column: todo
 created: 2026-09-07T18:46:25+0200
-updated: 2026-09-07T19:19:00+0200
+updated: 2026-09-07T19:21:35+0200
 current-owner: unassigned
 implementation-commits: [127bced]
 task-type: bugfix
@@ -124,9 +124,12 @@ boundary to hand back an owned result. A clone on that path is therefore real; w
 read (`tools/mod.rs:1190-1215`: two `call_tool` calls with a `tldr_tree` fallback), never its
 assertion. Do not restate the bench's purpose from its name. Consequences: `Arc::ptr_eq`/`strong_count` needs the cache changed to store
 `Arc<ToolsCallResult>` FIRST, so (a) is a production change, not a ~3-line test edit — the
-expensive option, exactly as this card's STATE block warned before the warning was ignored.
-**And that reframes the whole card:** storing an `Arc` would DELETE the clone rather than assert
-about it, which is worth weighing against writing any assertion at all.
+expensive option, as this card's STATE block already warned.
+**And that reframes the card:** storing an `Arc` would reduce the clone to a refcount increment
+rather than assert about it — worth weighing against writing any assertion at all. Note "reduce",
+not "delete": whether that is a win depends on `ToolsCallResult`'s size, which is NOT measured, and
+changing `get`'s return type has an unenumerated blast radius across its other callers. Those two
+unknowns are what actually price option (a); take them before choosing.
 
 **Do not read option 3's ranking wider than it goes.** It is aimed at raising a number and not
 saying what it was calibrated against — that is what drifts. A threshold that STATES its basis is a
@@ -147,9 +150,15 @@ against that different proposal, because the label matched. Judge it on its own 
       62% overshoot may be miscalibration that noise occasionally dips under. Settle it by running
       the four alone, `--test-threads=1`, five times before relying on any claim about which of
       them this box actually guards.
-- [ ] **The gate is intact in BOTH directions** — checkable today, no decision required:
-      `cargo test -p tldr-mcp 2>&1 | grep -q '4 ignored'` (debug still skips them) AND
-      `cargo test -p tldr-mcp --release 2>&1 | grep -q '0 ignored'` (release still RUNS them).
+- [ ] **The gate is intact in BOTH directions** — checkable today, no decision required. Capture
+      to a file, then assert on BOTH the exit status and the test NAMES:
+      debug `cargo test -p tldr-mcp > OUT 2>&1` exits 0 and
+      `grep -cE '^test .*bench_.* ignored' OUT` is 4; release the same command with `--release`
+      exits 0 and that count is 0.
+      **Assert on names, not on the summary's `N ignored`:** an unrelated `#[ignore]` anywhere in
+      the crate moves that number and would red this box for a reason that has nothing to do with
+      these four. **And keep the exit status:** `cargo test ... | grep -q` reports grep's status,
+      not the suite's, so a piped-only check passes on a red suite.
       The debug box alone catches only someone stripping the `cfg_attr`. This catches the sneakier
       regression: an unconditional `#[ignore]`, which leaves debug green and silently disables the
       release enforcement too — the profile where these assertions are the only thing guarding
