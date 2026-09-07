@@ -1,10 +1,11 @@
 ---
 trdd-id: YJALU4Y2
 title: Three wall-clock benchmarks fail the default cargo test run on a loaded machine
-column: backburner
+column: todo
 created: 2026-09-07T18:46:25+0200
-updated: 2026-09-07T18:46:25+0200
+updated: 2026-09-07T19:05:00+0200
 current-owner: unassigned
+implementation-commits: [127bced]
 task-type: bugfix
 min-approval-requirement: user
 labels: [tests, flaky, benchmarks, mcp]
@@ -12,7 +13,40 @@ labels: [tests, flaky, benchmarks, mcp]
 
 # Three wall-clock benchmarks fail the default cargo test run on a loaded machine
 
-## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-07
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-07 19:05
+
+### The immediate red is FIXED (127bced). The design question is not.
+
+- **Option 4 applied.** All four benches carry
+  `#[cfg_attr(debug_assertions, ignore = "...")]`. `cargo test -p tldr-mcp` exits 0 in debug
+  (41 passed, 4 ignored); `cargo test -p tldr-mcp --release --lib bench_` exits 0, so the
+  assertions still run where their numbers apply. Nothing was weakened.
+- **CORRECTION: FOUR benches, not three.** The title and the body below say three. The fourth is
+  `bench_call_tool_cache_hit`. The count came from a single run — counting before bucketing.
+  Title left as-is because it is the filename; trust this block.
+- **CORRECTION: two categories, not one.** Three identical runs of one command on unmodified code
+  failed 3, then 2, then 1 — the failing SET moves, so most are load-sensitive. But
+  `bench_cache_key_construction` failed **3 of 3** at 13.4-15.2us against its own <10us limit.
+  That one is deterministically miscalibrated for a debug build, not flaky. The body below treats
+  all of them as one phenomenon; it is wrong about that.
+- **The regression scare, and how it was settled.** A review raised that `9dabab1` (this session's
+  own change, in the lib target) enlarged `DeadCodeReport`, so gating a clone-cost bench might
+  hide a regression I caused — and correctly noted the card's "unrelated to my work" argument only
+  covered the UNCOMMITTED file, not the committed one. Settled by reading `call_tool`:
+  `tools/mod.rs:104-107` puts `tldr_dead` in `skip_cache`, so `DeadCodeReport` never enters the L1
+  cache, and the bench caches `tldr_structure`/`tldr_tree` anyway. No payload-size path exists.
+- **NEXT ACTION, and it is a real decision, not cleanup:** debug now asserts NOTHING about these
+  paths. Option 4 traded flakiness for zero debug coverage. Consider either (a) structural
+  assertions that do not vary with load — but FIRST check whether the cache stores an `Arc`, since
+  `Arc::ptr_eq`/`strong_count` is ~3 lines while allocation counting needs a custom `GlobalAlloc`
+  and is the most expensive option on this card, not a middle one; or (b) an honestly-recalibrated
+  debug threshold that STATES its basis, which still catches a 10x regression and never flakes.
+  Do not raise a number without recording what it was calibrated against — that is what produced
+  the current ones.
+- Acceptance box 1 says "ten runs in a row" — it must name a PROFILE. Under option 4 it is
+  trivially true in debug and untested in release.
+
+## Superseded intake block — 2026-09-07 18:46
 
 - **MEASURED, twice, first-hand.** Not inferred from a name or a count. `cargo test -p tldr-mcp`
   exits 101 today on an otherwise-clean tree.
