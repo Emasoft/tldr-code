@@ -1,14 +1,15 @@
 ---
 trdd-id: K3XQ7M2V
 title: tldr todo JSON omits the skip list unless --detail dead is passed
-column: todo
+column: testing
 created: 2026-09-07T19:49:13+0200
-updated: 2026-09-07T21:35:33+0200
+updated: 2026-09-07T22:12:00+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
 labels: [robustness, silent-failure, json-output]
 parent-trdd: O66FM8TN
+implementation-commits: [0063e1b]
 ---
 
 # tldr todo JSON omits the skip list unless --detail dead is passed

@@ -3,13 +3,13 @@ trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
 column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-07T22:06:29+0200
+updated: 2026-09-07T22:12:00+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
 labels: [robustness, encoding, silent-failure]
 parent-trdd: BKALIK1B
-implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75]
+implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75, 0063e1b]
 ---
 
 # A file the analysis skips must be announced, not silently dropped from the result
