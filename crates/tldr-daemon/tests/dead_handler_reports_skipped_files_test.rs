@@ -131,6 +131,16 @@ async fn skipped_file_is_announced_in_the_dead_report() {
         "the warning must NAME the dropped file, otherwise the count is \
          unactionable — a user cannot find what was skipped. got: {text}"
     );
+    // Pin the REASON, not just the fact of a skip. Without this the test does
+    // not verify what its own comment claims: UTF-16LE ASCII is `XX 00 XX 00`,
+    // so `wide_encoding_marker`'s "NUL byte in the first 1024 bytes" branch
+    // catches this fixture even if both BOM branches were deleted. Asserting
+    // the reason is what makes the fixture's BOM actually load-bearing.
+    assert!(
+        text.contains("UTF-16 LE BOM"),
+        "expected the BOM branch of `wide_encoding_marker` to be the reason, \
+         not the NUL-scan fallback; got: {text}"
+    );
 }
 
 #[tokio::test]
@@ -142,6 +152,17 @@ async fn clean_project_reports_zero_skipped() {
 
     let body = run_dead(project.path()).await;
     let report = &body["result"];
+
+    // FIRST assert the scan actually happened. Zero-skipped and zero-warnings
+    // are BOTH satisfied by a scan that found nothing at all — a wrong language
+    // string, an ignore rule eating the tempdir, a bad path — so without this
+    // line the control passes vacuously and controls nothing. Absence-of-skip
+    // and absence-of-everything must not look the same.
+    assert_eq!(
+        report["functions_analyzed"], 2,
+        "control is vacuous unless the scan really saw good.py's two functions; \
+         got payload: {body}"
+    );
 
     assert_eq!(
         report["files_skipped"], 0,

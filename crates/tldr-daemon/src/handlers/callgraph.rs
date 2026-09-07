@@ -184,12 +184,23 @@ pub async fn dead(
     // `use_type_resolution = true` (builder.rs:40) and, because `None` is what
     // TRIGGERS workspace discovery rather than skipping it (builder.rs:48-62),
     // also discovers and applies workspace roots. The two paths build
-    // equivalently. Anyone unifying them needs to preserve the WARNINGS, not
-    // some config difference — there isn't one.
+    // equivalently.
+    //
+    // But config is not the only axis, and ERROR HANDLING is the one that
+    // bites. The cached closures above swallow a build failure into an empty
+    // `ProjectCallGraph` and the cache then keeps it forever; `dead` propagates
+    // via `map_err(..)?` below. An empty graph makes EVERY function look dead,
+    // so a `dead` that inherited the swallow would serve a 100%-false-positive
+    // report from cache — worse than the bug this TRDD fixes, and silent apart
+    // from a `tracing::error!` nobody reads.
     //
     // ponytail: the cost is that `dead` rebuilds the graph every request. If
-    // that ever matters, cache a (graph, warnings) pair — the graph half can
-    // safely be the same one `calls` uses.
+    // that ever matters, cache a (graph, warnings) pair — but it must preserve
+    // BOTH the warnings and this fail-fast, so it cannot just reuse the `calls`
+    // cache as it stands. The tidier fix is upstream: have `tldr-core` expose
+    // the IR-returning half of `build_project_call_graph` so there is one
+    // config path and the equivalence above holds by construction instead of
+    // by a comment that can rot.
     let build_root = project.clone();
     let ir = tokio::task::spawn_blocking(move || {
         let mut config = tldr_core::callgraph::BuildConfig {
