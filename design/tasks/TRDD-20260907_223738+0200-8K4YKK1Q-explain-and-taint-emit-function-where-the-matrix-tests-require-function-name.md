@@ -3,7 +3,7 @@ trdd-id: 8K4YKK1Q
 title: explain and taint emit a function key where exhaustive_matrix requires function_name
 column: todo
 created: 2026-09-07T22:37:38+0200
-updated: 2026-09-07T22:44:00+0200
+updated: 2026-09-07T22:52:00+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
@@ -102,6 +102,22 @@ named `function_name` in Rust; the WIRE name is `function`, by a custom
 `Serialize` impl. That is why `git log -S 'function_name'` found the literal in
 src while the payload does not carry it — both observations were right and
 neither implied the other.
+
+**And `taint` was covered SEPARATELY, because `ExplainReport` does not cover it.**
+18 of the 36 are `taint` tests, and the read above is `explain`'s struct — so
+resolving both halves from it would have been the one-command-to-two
+generalization this session kept making. `taint` has its own type,
+`TaintInfo` at `crates/tldr-core/src/security/taint.rs:246`:
+
+```rust
+#[serde(rename = "function", alias = "function_name")]
+pub function_name: String,
+```
+
+A different struct in a different crate, and a THIRD implementation of the same
+decision — a plain serde `rename` rather than a custom `Serialize` impl. Same
+deliberate wire name `function`, same `alias` keeping the old name readable on
+input. Two independent reads, both halves covered.
 
 **So (b) is affirmatively excluded**: emitting `function_name` again would revert
 a cross-command consistency guarantee whose whole purpose is that this key is
