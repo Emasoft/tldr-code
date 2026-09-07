@@ -106,6 +106,11 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1]
     test touches the `dead` handler.** That file has ZERO references to `callgraph` or `dead`
     (the `dead` handler lives in `handlers::callgraph`, which nothing imports), and the
     both-spellings `files_skipped` grep found nothing outside the implementation line.
+    **Re-verified across ALL FOUR test files** with `grep -rnw 'dead\|callgraph\|DeadCode'`:
+    exactly one hit, the English phrase `// not kept as dead weight` in a comment. The first
+    version of this check ran on ONE file with the pattern `[^_a-z]dead`, which requires a
+    preceding character and so would not have matched `dead` at the start of a line — a pattern
+    that could have returned 0 from being wrong rather than from the claim being true.
     **How the false version got committed:** I dismissed this file because the other traversal
     file's names end `_rejects_absolute_path_outside_project`, so "traversal tests assert
     rejection" — reasoning from ONE file's naming pattern to a differently-named file I had not

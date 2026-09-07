@@ -49,6 +49,13 @@ The twelve: `ping_request_format`, `tree_request_format`, `structure_request_for
 That is 12 of the 39 test functions the harness reports for `tldr-daemon` — roughly 30% of the
 crate's apparent test count, asserting nothing about the crate.
 
+**All twelve bodies were read, not sampled.** An earlier pass had read five and generalised;
+the remaining seven were then read and are identical in shape. `response_ok_format` and
+`response_error_format` are included and are the same tautology (`r#"{"status": "ok", "result":
+"pong"}"#` parsed and asserted against itself) — note these are DIFFERENT tests from
+`server::tests::test_daemon_response_ok`, which lives in `src/server.rs`, constructs a real
+`DaemonResponse::ok("pong")`, and is therefore genuine.
+
 ## The same file already diagnosed this defect and fixed only one instance
 
 `mod socket_tests`, thirty lines above, carries this comment:
