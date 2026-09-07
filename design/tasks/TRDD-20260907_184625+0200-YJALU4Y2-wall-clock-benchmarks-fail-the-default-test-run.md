@@ -3,7 +3,7 @@ trdd-id: YJALU4Y2
 title: Three wall-clock benchmarks fail the default cargo test run on a loaded machine
 column: todo
 created: 2026-09-07T18:46:25+0200
-updated: 2026-09-07T19:10:47+0200
+updated: 2026-09-07T19:16:49+0200
 current-owner: unassigned
 implementation-commits: [127bced]
 task-type: bugfix
@@ -105,6 +105,18 @@ lies, and stops reading it. A suite that cries wolf is worse than a smaller suit
 
 2 or 4. Do not pick 3 without an argument for why this raise is the last one.
 
+**THE DECISION TO MAKE, stated so it can be made:** a threshold denominated in wall-clock time
+against a fixed constant cannot be rescued by choosing a better number — the number is in a unit
+the test does not control, so machine speed and load move it. Every attempt to save the form by
+qualifying the runs with a load ("on a loaded machine", "concurrent cargo builds plus several
+subagents") failed because a load is not specifiable: how many builds, on what core count, at what
+memory pressure. Two testers get two loads and the same criterion passes or fails at the tester's
+discretion. So the choice is between exactly two shapes — **(a) assert the structural property**
+(option 2: `Arc::ptr_eq` / `strong_count` for "the cache hit did not clone", which is what the
+clone-cost bench exists to prove), or **(b) assert a RATIO against a reference operation measured
+in the same process and the same run**, so both sides degrade together. Pick one, then write the
+acceptance box against it.
+
 **Do not read option 3's ranking wider than it goes.** It is aimed at raising a number and not
 saying what it was calibrated against — that is what drifts. A threshold that STATES its basis is a
 different proposal and this ranking does not cover it; I applied 4 partly by reusing "3 is worst"
@@ -124,21 +136,14 @@ against that different proposal, because the label matched. Judge it on its own 
       62% overshoot may be miscalibration that noise occasionally dips under. Settle it by running
       the four alone, `--test-threads=1`, five times before relying on any claim about which of
       them this box actually guards.
-- [ ] **No assertion on these paths is denominated in wall-clock time against a fixed constant.**
-      Either the four benches assert a STRUCTURAL property (option 2 — `Arc::ptr_eq` /
-      `strong_count` for "the cache hit did not clone", which is what the clone-cost bench exists
-      to prove), or, if a timing form must survive, it asserts a RATIO against a reference
-      operation measured in the SAME process and the SAME run, so both sides degrade together.
-
-      **Why no run-count box replaced this, after three attempts at one.** Every version tried to
-      qualify the runs with a load ("on a loaded machine", then "concurrent cargo builds plus
-      several subagents"). That is not specifiable: how many builds, on what core count, at what
-      memory pressure. Two testers get two loads, so the same box can be passed or failed at the
-      tester's discretion — and under unbounded load every wall-clock assertion fails eventually.
-      A threshold in a unit the test does not control cannot be rescued by choosing a better
-      number, which is why options 3 and 4 both kept producing boxes that read as rigorous and
-      were not. Measurements go in `## Evidence` with their date and result path; the box holds
-      the gate.
+**There is deliberately NO second box yet, and that is the point.** Four were written and all four
+were unfalsifiable, because an acceptance criterion is defined relative to a CHOSEN option and
+`## What` above still says "Not decided". A box cannot encode a decision that has not been made;
+every attempt smuggled one into the acceptance section instead. Once the decision exists, the box
+names a file, a test and an observable — e.g. `no Duration comparison remains in the four benches:
+grep -n 'as_micros\|as_nanos\|elapsed()' crates/tldr-mcp/src/cache.rs returns nothing`. A card
+carrying an unfalsifiable box reads as having a gate it does not have, which is worse than
+visibly having none.
 - [ ] Whatever replaces the wall-clock assertion still FAILS when the property it guards is broken
       — demonstrated by breaking it (e.g. forcing a clone on the cache-hit path), watching it go
       red, and reverting. A threshold that can no longer fail is not a fix.
@@ -152,10 +157,13 @@ written into a criterion is falsified by the act of satisfying it, and a stale o
 misreport its own state.
 
 - **2026-09-07 ~19:07 — `cargo test -p tldr-mcp --release` (FULL suite): exit 0.**
-  Lib target `45 passed; 0 failed; 0 ignored` in 0.31s, plus integration targets 5/4/3/1/0, all ok.
-  **`0 ignored` is the load-bearing part:** `#[cfg_attr(debug_assertions, ignore)]` does not fire
-  in release, so the four benches DID execute here and passed. Machine was not idle — the unit-2
-  worker was running concurrently. n=1; one pass is not a variance measurement.
+  Lib target `45 passed; 0 failed; 0 ignored; 0 filtered out` in 0.31s, plus integration targets
+  5/4/3/1/0, all ok. **That the four benches ran is READ, not reasoned** — the run's own test list
+  carries `bench_cache_hit_latency ... ok`, `bench_cache_key_construction ... ok`,
+  `bench_call_tool_cache_hit ... ok`, `bench_call_tool_cache_hit_clone_cost ... ok`. The
+  arithmetic corroborates independently: debug reports 41 passed + 4 ignored, release 45 + 0, and
+  45 - 41 = the four. Machine was not idle — the unit-2 worker ran concurrently. n=1; one pass is
+  not a variance measurement.
 - **Not yet taken:** the four benches alone in debug, `--test-threads=1`, five times. That is what
   would settle whether the other three are miscalibrated or merely noisy, which the debug box's
   note currently declines to assert either way.
