@@ -3,10 +3,10 @@ trdd-id: K3XQ7M2V
 title: tldr todo JSON omits the skip list unless --detail dead is passed
 column: todo
 created: 2026-09-07T19:49:13+0200
-updated: 2026-09-07T19:49:13+0200
+updated: 2026-09-07T19:54:19+0200
 current-owner: session-claude
 task-type: bugfix
-min-approval-requirement: none
+min-approval-requirement: user
 labels: [robustness, silent-failure, json-output]
 parent-trdd: O66FM8TN
 ---
@@ -54,10 +54,25 @@ user` for reasons unrelated to that decision. One atomic task per card.
 | c | **add the skip list as an additive field at the JSON root** | additive only; no existing key changes meaning; no consumer breaks |
 
 **Recommended: (c).** It is the only option that does not make an existing
-reader wrong, which is why this card is scoped to (c) alone and carries
-`min-approval-requirement: none`. If (c) turns out to be infeasible and the fix
-has to be (a), **this card escalates to `user`** before any code lands — do not
-silently fall back to it.
+reader wrong, which is why this card is scoped to (c) alone.
+
+### Why this carries `user` and not `none`
+
+The objective floor for (c) alone is `none` — an additive field triggers nothing
+in the tier table. It was filed that way and then raised, deliberately:
+
+- The parent TRDD-O66FM8TN carries `min-approval-requirement: user`, and its
+  `## Approval log` records **no trigger for that floor**. With no documented
+  reason, there is nothing to show the child escapes.
+- A child scoped to the one option whose floor is `none`, hanging off a `user`
+  parent on the same output surface, is indistinguishable from picking the
+  option that avoids review. Raising it removes that reading.
+
+So: conservative default, per "when unsure which tier applies, escalate one".
+A reviewer who can name the parent's actual trigger and confirm (c) does not
+touch it may lower this to `none` deliberately — that is a decision to record,
+not a default to assume. If (c) proves infeasible and the fix must be (a), the
+`user` floor is required on the objective table anyway.
 
 ## Not yet verified
 
@@ -67,7 +82,14 @@ silently fall back to it.
 - Whether the other sub-analyses have skip lists that should ride the same
   field. `skipped_file_warning`'s doc comment (`tldr-core/src/fs/mod.rs:140`)
   says every directory-walking command MUST adopt the helper, so the field
-  should be shaped for more than one producer from the start.
+  should be shaped for more than one producer from the start. Note what that
+  doc actually mandates: the **report's `warnings` field**, not a stderr line —
+  bugbot adopted the helper and emits a finding with no stderr output.
+- Whether any consumer deserializes the todo JSON root with
+  `#[serde(deny_unknown_fields)]`. "Additive" is only non-breaking if none does;
+  a strict reader breaks on a new key exactly like a renamed one. Check this in
+  the same pass as the root-assembly read — it is the assumption option (c)
+  rests on.
 
 ## Acceptance
 

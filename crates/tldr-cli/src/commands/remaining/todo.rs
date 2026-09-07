@@ -333,14 +333,16 @@ fn run_dead_analysis(path: &Path, language: Language) -> RemainingResult<(Vec<To
     //
     // Do NOT delete this as duplication of the complexity analysis's
     // `Warning: skipping <path> due to parse error`
-    // (tldr-core/src/quality/complexity.rs:235). Read both sides before
-    // believing they cover the same files: complexity walks `walk_project`
-    // filtered by `Language::from_path` and warns when `analyze_file_complexity`
-    // errs, while this analysis walks `ProjectWalker::lang_hint` filtered by
-    // `language.scan_extensions()` (so `.d.ts` is dropped and C++ `.h` is
-    // included) and skips when `parse_file` errs. Different walkers, different
-    // filters, different error sources -- they coincide on an undecodable file
-    // because it defeats both, not because either guarantees the other's
+    // (tldr-core/src/quality/complexity.rs:235). It is not the same list. Both
+    // reach files through the SAME walker -- `walk_project` is just
+    // `ProjectWalker::new(root).iter()` (tldr-core/src/walker.rs:388) -- but
+    // configured differently: complexity takes no lang hint and keeps a file
+    // when `Language::from_path` matches, warning when `analyze_file_complexity`
+    // errs; this analysis passes `.lang_hint(language)`, keeps a file only when
+    // its extension is in `language.scan_extensions()`, drops `.d.ts` outright,
+    // and records a skip when `parse_file` errs. Different filters and a
+    // different error source, so the two coincide on an undecodable file
+    // because it defeats both -- not because either guarantees the other's
     // coverage.
     let (module_infos, merged_ref_counts, skipped) =
         collect_module_infos_with_refcounts(project_root, language, false);
