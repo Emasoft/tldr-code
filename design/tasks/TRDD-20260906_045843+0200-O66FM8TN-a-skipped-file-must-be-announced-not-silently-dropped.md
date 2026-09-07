@@ -9,7 +9,7 @@ task-type: bugfix
 min-approval-requirement: user
 labels: [robustness, encoding, silent-failure]
 parent-trdd: BKALIK1B
-implementation-commits: [b64d541, 9dabab1]
+implementation-commits: [b64d541, e83d2b4, 9dabab1]
 ---
 
 # A file the analysis skips must be announced, not silently dropped from the result
@@ -58,17 +58,34 @@ implementation-commits: [b64d541, 9dabab1]
     `analysis/dead.rs` initializes every `DeadCodeReport` literal with `warnings: Vec::new()`
     (the analysis never reads files). The negative loop over the three readable fixtures is
     vacuous on an empty vec BY DESIGN — it guards over-reporting, not under-reporting.
-  - Daemon (unit 5) has cleared a COMPILER, nothing more. It is uncommitted, and it has **no
-    test at all**: `cargo test -p tldr-daemon -- --list | grep -iE 'dead|skip|warn'` is EMPTY,
-    and across every crate plus `tests/`, in both `files_skipped` and `filesSkipped` spellings,
-    the only hit under `tldr-daemon` is the assignment site `handlers/callgraph.rs:217`. The
-    right words are "compiles and is plausibly correct" — never "verified".
-    **How this was nearly got wrong, because the method matters more than the answer:** the
-    first pass concluded "no test" from `grep -rn 'files_skipped' crates/tldr-daemon/` returning
-    one hit. That is a TOKEN SEARCH standing in for a COVERAGE claim, and it would have missed a
-    serde-renamed key, a test asserting on `warnings` instead, a snapshot fixture, or a test in
-    another crate. The conclusion survived re-checking; the method did not support it. The test
-    LIST is the read that answers "what is covered".
+  - Daemon (unit 5) has cleared a COMPILER, nothing more. It is uncommitted and has **no test
+    at all**. Settled by ENUMERATION, which is the read that answers "what is covered": the
+    harness lists 39 test functions for `tldr-daemon`, all 39 were read, and every one is a
+    path-traversal rejection (11), a message-format check (12), a `state::`/`server::`/socket
+    unit test (13), a cache test (2) or a perf test (2). **Not one exercises any handler's
+    OUTPUT CONTENT**, and there is not even a `dead_handler_rejects_absolute_path…` among the
+    11 traversal tests. The right words are "compiles and is plausibly correct" — never
+    "verified".
+    **Two superseded methods, recorded because the method matters more than the answer.** The
+    first pass concluded "no test" from `grep -rn 'files_skipped' crates/tldr-daemon/` → one
+    hit: a TOKEN SEARCH standing in for a COVERAGE claim. The second replaced it with
+    `--list | grep -iE 'dead|skip|warn'` → empty: better instrument, same class of error, since
+    it matches test-function NAMES and a test called `callgraph_excludes_bad_encoding` would be
+    invisible. It also suppressed stderr, which is the channel a failed test-target build would
+    have used. Both conclusions held; neither method supported them. Reading all 39 names does.
+  - **`e83d2b4` added to `implementation-commits`.** It cleared rustc warnings that piece 1's
+    own changes introduced, so a future bisect landing there must find this card. `a902ce9` and
+    `91812be` stay out: they corrected this card's survey, not the product code.
+  - **CORRECTION to the `9dabab1` commit message.** That message asserts "this repo DOES emit
+    `filesSkipped` — the MCP test hedges across both spellings". **False.** The wire name is
+    snake_case: `DeadCodeReport` has a hand-rolled `Serialize` and `types.rs:2521` emits
+    `serialize_field("files_skipped", …)`. The test's `or_else` hedge is the worker being
+    defensive about a format it had not checked; I read that defensiveness as evidence about
+    the format. History is not rewritten for this — the correction lives here.
+  - **Why the daemon suite stays green despite unit 5's bypass:**
+    `state::tests::test_get_or_build_call_graph_caches_per_language` exercises the cache
+    FUNCTION directly, not the `dead` handler's use of it. Bypassing the cache in the handler
+    therefore breaks no existing test — which is precisely why the decision below needs one.
 - **Open decision blocking the daemon half (USER):** it currently bypasses the shared call-graph
   cache (`get_or_build_call_graph`) to obtain the warnings, so daemon `dead` would rebuild the
   graph per request. The daemon's stated purpose is that cache; **the cost of bypassing it is
