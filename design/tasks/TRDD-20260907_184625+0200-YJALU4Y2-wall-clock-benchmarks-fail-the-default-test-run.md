@@ -3,7 +3,7 @@ trdd-id: YJALU4Y2
 title: Three wall-clock benchmarks fail the default cargo test run on a loaded machine
 column: todo
 created: 2026-09-07T18:46:25+0200
-updated: 2026-09-07T19:05:00+0200
+updated: 2026-09-07T18:59:48+0200
 current-owner: unassigned
 implementation-commits: [127bced]
 task-type: bugfix
@@ -13,7 +13,7 @@ labels: [tests, flaky, benchmarks, mcp]
 
 # Three wall-clock benchmarks fail the default cargo test run on a loaded machine
 
-## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-07 19:05
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-07 18:59
 
 ### The immediate red is FIXED (127bced). The design question is not.
 
@@ -105,10 +105,16 @@ lies, and stops reading it. A suite that cries wolf is worse than a smaller suit
 
 2 or 4. Do not pick 3 without an argument for why this raise is the last one.
 
+**Do not read option 3's ranking wider than it goes.** It is aimed at raising a number and not
+saying what it was calibrated against — that is what drifts. A threshold that STATES its basis is a
+different proposal and this ranking does not cover it; I applied 4 partly by reusing "3 is worst"
+against that different proposal, because the label matched. Judge it on its own merits.
+
 ## Acceptance
 
-- [ ] `cargo test -p tldr-mcp` exits 0 on a loaded machine, ten runs in a row, with no code change
-      between runs.
+- [ ] `cargo test -p tldr-mcp --release` exits 0 on a loaded machine, ten runs in a row, with no
+      code change between runs. **Release, named deliberately:** under 127bced the debug run is
+      green because these benches no longer execute, so a debug pass proves nothing about them.
 - [ ] Whatever replaces the wall-clock assertion still FAILS when the property it guards is broken
       — demonstrated by breaking it (e.g. forcing a clone on the cache-hit path), watching it go
       red, and reverting. A threshold that can no longer fail is not a fix.
