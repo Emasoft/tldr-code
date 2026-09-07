@@ -323,7 +323,10 @@ Revisit when a second producer lands; it is a breaking change by then.
       all eight were grepped for `todo` / `TodoReport`, zero hits, therefore they
       cannot reach the changed code path. The premise is true and the inference
       does not follow. **`crates/tldr-cli/src/commands/remaining/types.rs` is a
-      SHARED module for the whole `remaining` command family** — it defines
+      SHARED module — at minimum with `api_check`, verified by its
+      `use super::types::{` at `api_check.rs:28`; "the whole `remaining` command
+      family" was written before that check and is a generalization from ONE
+      confirmed consumer** — it defines
       `APIRule`, `MisuseFinding`, `APICheckSummary`, `MisuseCategory` and
       `MisuseSeverity` alongside `TodoReport`, and
       `api_check_and_patterns_accuracy_v1.rs` (one of the eight) tests exactly
@@ -331,13 +334,44 @@ Revisit when a second producer lands; it is a breaking change by then.
       the file that was edited. The question asked was "does the TEST mention
       todo?"; the question that decides it is "what did the EDIT touch?"
 
-      **The sound check, run afterwards, and it does hold.** The entire
-      `types.rs` diff in `0063e1b` is: one field `pub warnings: Vec<String>`
-      added INSIDE `TodoReport` (between `sub_results` and `total_elapsed_ms`)
-      with its doc comment, plus `warnings: Vec::new(),` in `TodoReport::new()`.
-      No shared type is touched, no signature changes, nothing else in the file
-      is altered. `todo.rs` gains a private helper and one call. So the eight are
-      unreachable from this diff — by the diff's scope, not by the tests' vocabulary.
+      **The coupling is REAL, not inferred from names.** The first version of
+      this paragraph called `types.rs` shared on the strength of type names that
+      looked like api-check's (`APIRule`, `MisuseFinding`, …) sitting in the same
+      file — which is co-location, and would have been the same inference error
+      one layer down. Checked properly: `api_check.rs:28` reads
+      `use super::types::{`, and the file names those types 275 times. It really
+      does import from the edited module.
+
+      **The sound check, run afterwards, and it does hold — but the first
+      statement of it understated the diff.** It said "`todo.rs` gains a private
+      helper and one call", asserted from having read the file earlier rather
+      than from this commit's diff for that path. Read properly, `todo.rs` is
+      **129 insertions, 0 DELETIONS**, in four hunks: a `let mut warnings:
+      Vec<String>` local, the `lift_warnings(..)` call, a `warnings,` field in
+      the `TodoReport` literal, and the helper plus its `#[cfg(test)] mod
+      lift_warnings_tests` (most of the 129). The `types.rs` half was verified
+      from the diff at the time and is exactly two hunks: the field inside
+      `TodoReport` and `warnings: Vec::new(),` in `TodoReport::new()`.
+
+      **Zero deletions across both files is what actually carries the
+      conclusion** — nothing pre-existing was modified or removed, and every
+      addition sits inside the todo path or a test module. So the eight are
+      unreachable from this diff, by its scope. Stronger evidence than the loose
+      phrase it replaces, which is the point: "a helper and one call" was an
+      assertion about a diff made without reading it, in a paragraph whose whole
+      subject is asserting scope without reading the diff.
+
+      **The argument that beats all three of the above, and that I never made:
+      THE PACKAGE COMPILED.** If the `types.rs` edit had broken any other
+      `remaining/` consumer structurally, `cargo test -p tldr-cli` would have
+      failed to BUILD and zero binaries would have run. Twenty-two ran. That
+      excludes structural reachability far more strongly than any grep or
+      diff-reading, and unlike the grep it runs in the correct direction — from
+      the changed symbol outward, rather than from a test's vocabulary inward.
+      What compilation does NOT exclude is a behavioural change in serialized
+      output, which is confined to code that serializes a `TodoReport`. Supplied
+      by an adversarial review fork; three rounds of evidence were spent
+      reconstructing by hand a fact the build had already established.
 
       **Same conclusion, replaced evidence.** Worth naming plainly: this is the
       identical "right answer, wrong evidence" failure retracted on TRDD-DPL55YB3

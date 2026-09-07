@@ -47,9 +47,18 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75, 0
   empty `ProjectCallGraph` and cache it forever (`handlers/callgraph.rs:60`, `:131`, `:328`);
   `dead` propagates (`:221`). An empty graph makes every function look dead. Any future cache
   unification must preserve BOTH the warnings and the fail-fast.
-- **NEXT ACTION: commit unit 2 (TRDD-K3XQ7M2V).** It is the ONLY unit left — rows 1, 3, 4 and 5 of
-  `reports/colony/DELEGATION.md` are all `verified`. This card does NOT close until unit 2 lands;
-  it is `dev`, not `complete`.
+- **Unit 2 LANDED in `0063e1b`.** All five delegation rows are now terminal.
+- **NEXT ACTION: TRDD-OGK2ROKJ — and this card MUST NOT close without it.** Unit 2 fixed
+  `todo -f json`; `format_todo_text` (`remaining/todo.rs:675`) never reads `report.warnings`, so
+  the DEFAULT human-facing output still drops the skip list silently. **This card's title is
+  format-agnostic** — "must be announced, not silently dropped" — while K3XQ7M2V's is JSON-scoped,
+  so K3XQ7M2V is complete as written and this one is not.
+- **The near-miss is worth keeping.** Hours before, this block was edited to read "ONE unit
+  remains: unit 2, uncommitted", which after the commit would have read as ready to close — a
+  format-agnostic card closed on a JSON-only fix. An adversarial review fork caught it by asking
+  whether the sibling commands' TEXT output had a counterpart; `dead.rs:571` and `calls.rs:354`
+  both print `Files skipped: N`, and `todo` has none. I had verified the delegation rows and the
+  commit, and still missed that the card's own condition was broader than the work.
 - **2026-09-07 — UNIT 2 IS IN FLIGHT as child TRDD-K3XQ7M2V.** It adds a root
   `TodoReport.warnings` field, lifted by key from each sub-report, so a plain `todo -f json` names
   every skipped file without `--detail`. Implemented; its guards run by name and pass; NOT yet
