@@ -1299,10 +1299,11 @@ fn is_scala_wildcard_arm(node: Node, source: &str) -> bool {
         }
         // The first non-`case` named child is the pattern; if it is
         // anything other than `wildcard`, this is a credited arm.
+        // Every path in the loop returns or continues, so the loop itself
+        // is the function's value; a trailing `false` was unreachable.
         let text = child.utf8_text(source.as_bytes()).unwrap_or("");
         return text == "_";
     }
-    false
 }
 
 /// Kotlin: a `when_entry` whose first child is the `else` token is the

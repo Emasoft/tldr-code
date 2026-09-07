@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::metrics::file_utils::{
-    check_file_size, has_binary_extension, is_binary_file, should_exclude, should_skip_path,
+    check_file_size, has_binary_extension, is_binary_file, should_exclude,
     should_skip_path_with_lang,
     DEFAULT_MAX_FILE_SIZE_MB,
 };
