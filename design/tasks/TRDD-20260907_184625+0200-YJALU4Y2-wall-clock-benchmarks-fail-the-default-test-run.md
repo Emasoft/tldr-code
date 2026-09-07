@@ -3,7 +3,7 @@ trdd-id: YJALU4Y2
 title: Three wall-clock benchmarks fail the default cargo test run on a loaded machine
 column: todo
 created: 2026-09-07T18:46:25+0200
-updated: 2026-09-07T18:59:48+0200
+updated: 2026-09-07T19:05:11+0200
 current-owner: unassigned
 implementation-commits: [127bced]
 task-type: bugfix
@@ -112,9 +112,17 @@ against that different proposal, because the label matched. Judge it on its own 
 
 ## Acceptance
 
-- [ ] `cargo test -p tldr-mcp --release` exits 0 on a loaded machine, ten runs in a row, with no
-      code change between runs. **Release, named deliberately:** under 127bced the debug run is
-      green because these benches no longer execute, so a debug pass proves nothing about them.
+- [ ] **Debug — what a contributor actually runs:** `cargo test -p tldr-mcp` exits 0. True since
+      127bced BECAUSE these four benches do not execute in debug, so this box guards only that the
+      gate is still in place: it goes red if the `cfg_attr` is removed. That is worth a box on its
+      own — green-for-contributors is the entire user-visible deliverable of 127bced.
+- [ ] **Release — a measurement to TAKE, not a property to assume:** run `cargo test -p tldr-mcp
+      --release` ten times under the load that produced the original red (concurrent cargo builds
+      plus several subagents) and RECORD the pass count. Exactly one release run has ever passed;
+      that is the whole of what is known. Every flakiness figure on this card is from a DEBUG run
+      (`--lib`, no `--release`), and debug/release margins here differ by profile, not marginally
+      — `cache.rs:387` claims ~128ns release against a 1us threshold versus 1.623us measured in
+      debug. Do not carry the debug variance over to release; measure it.
 - [ ] Whatever replaces the wall-clock assertion still FAILS when the property it guards is broken
       — demonstrated by breaking it (e.g. forcing a clone on the cache-hit path), watching it go
       red, and reverting. A threshold that can no longer fail is not a fix.
