@@ -125,26 +125,35 @@ pub fn handle_dead(args: Value) -> ToolsCallResult {
     };
 
     // Get all functions from structure
-    let all_functions = match tldr_core::get_code_structure(&path, lang, 0, None) {
-        Ok(structure) => {
-            let mut funcs = Vec::new();
-            for file in structure.files {
-                for func_name in file.functions {
-                    funcs.push(tldr_core::FunctionRef::new(file.path.clone(), func_name));
+    // TRDD-O66FM8TN: a file the scan couldn't read is a file dropped from the
+    // whole-program call graph, so its only-caller functions look dead when
+    // they aren't. Carry `warnings`/`files_skipped` through to the report
+    // instead of discarding them here.
+    let (all_functions, files_skipped, warnings) =
+        match tldr_core::get_code_structure(&path, lang, 0, None) {
+            Ok(structure) => {
+                let mut funcs = Vec::new();
+                for file in structure.files {
+                    for func_name in file.functions {
+                        funcs.push(tldr_core::FunctionRef::new(file.path.clone(), func_name));
+                    }
                 }
+                (funcs, structure.files_skipped as usize, structure.warnings)
             }
-            funcs
-        }
-        Err(e) => return ToolsCallResult::error(format!("Error getting structure: {}", e)),
-    };
+            Err(e) => return ToolsCallResult::error(format!("Error getting structure: {}", e)),
+        };
 
     let entry_refs: Option<Vec<String>> = entry_points;
 
     match tldr_core::dead_code_analysis(&call_graph, &all_functions, entry_refs.as_deref()) {
-        Ok(report) => match serde_json::to_string_pretty(&report) {
-            Ok(json) => ToolsCallResult::text(json),
-            Err(e) => ToolsCallResult::error(format!("Serialization error: {}", e)),
-        },
+        Ok(mut report) => {
+            report.files_skipped = files_skipped;
+            report.warnings = warnings;
+            match serde_json::to_string_pretty(&report) {
+                Ok(json) => ToolsCallResult::text(json),
+                Err(e) => ToolsCallResult::error(format!("Serialization error: {}", e)),
+            }
+        }
         Err(e) => ToolsCallResult::error(format!("Error: {}", e)),
     }
 }
