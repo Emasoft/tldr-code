@@ -3,12 +3,13 @@ trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
 column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-06T06:40:00+0200
+updated: 2026-09-07T18:20:00+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
 labels: [robustness, encoding, silent-failure]
 parent-trdd: BKALIK1B
+implementation-commits: [b64d541, 9dabab1]
 ---
 
 # A file the analysis skips must be announced, not silently dropped from the result
@@ -43,6 +44,41 @@ parent-trdd: BKALIK1B
   - The daemon `dead` handler and the MCP `dead` tool were NOT touched: the daemon derives
     `all_functions` from graph edges (its own pre-existing oddity) and the MCP tool drops
     `structure.warnings` on the floor. Both are still silent. Open.
+- **SUPERSEDES the bullet above, 2026-09-07: the MCP half is DONE and committed (`9dabab1`).**
+  `handle_dead` now carries `structure.warnings` / `structure.files_skipped` into the emitted
+  `DeadCodeReport`. The daemon half is still open, and its status is NOT the same as the MCP
+  half's — see below. Only the daemon sentence in that bullet is still true.
+- **Two different verification standards, and they must not be reported under one word.**
+  - MCP (unit 1) is verified BEHAVIOURALLY: removing the two assignment lines turns
+    `crates/tldr-mcp/tests/skipped_files_dead_test.rs` red (exit 101, at the `files_skipped`
+    assertion); restoring turns it green. Three checks in that file are load-bearing, not one —
+    the `filesSkipped == 5` equality, the `.expect("warnings array present")`, and the positive
+    `warnings.iter().any(|w| w.contains(name))` loop over the five unreadable fixtures. That
+    loop cannot pass on an empty vec, and the vec IS empty under the neutered build because
+    `analysis/dead.rs` initializes every `DeadCodeReport` literal with `warnings: Vec::new()`
+    (the analysis never reads files). The negative loop over the three readable fixtures is
+    vacuous on an empty vec BY DESIGN — it guards over-reporting, not under-reporting.
+  - Daemon (unit 5) has cleared a COMPILER, nothing more. It is uncommitted, and it has **no
+    test at all**: `cargo test -p tldr-daemon -- --list | grep -iE 'dead|skip|warn'` is EMPTY,
+    and across every crate plus `tests/`, in both `files_skipped` and `filesSkipped` spellings,
+    the only hit under `tldr-daemon` is the assignment site `handlers/callgraph.rs:217`. The
+    right words are "compiles and is plausibly correct" — never "verified".
+    **How this was nearly got wrong, because the method matters more than the answer:** the
+    first pass concluded "no test" from `grep -rn 'files_skipped' crates/tldr-daemon/` returning
+    one hit. That is a TOKEN SEARCH standing in for a COVERAGE claim, and it would have missed a
+    serde-renamed key, a test asserting on `warnings` instead, a snapshot fixture, or a test in
+    another crate. The conclusion survived re-checking; the method did not support it. The test
+    LIST is the read that answers "what is covered".
+- **Open decision blocking the daemon half (USER):** it currently bypasses the shared call-graph
+  cache (`get_or_build_call_graph`) to obtain the warnings, so daemon `dead` would rebuild the
+  graph per request. The daemon's stated purpose is that cache; **the cost of bypassing it is
+  UNMEASURED** — an earlier note in this session quoted "~35×" from a module header in
+  `commands/dead.rs:4`, which nobody measured. Struck. The lazy alternative nobody has costed:
+  cache the warnings alongside the graph and keep the cache. Either way the daemon half needs a
+  test before it can claim what the MCP half claims.
+- **Loose end, recorded so it is not later promoted to a fact:** `.janitor/logs/heartbeat-fires.log`
+  attributes recent fires to session `s:2612dd24` while this session's task paths sit under
+  `c9d26272`. Unexplained; not chased; nothing depends on it.
 - **Tests:** `crates/tldr-core/tests/encoding_skip_tests.rs` +2 (smells, calls over the
   BKALIK1B fixtures: warning names each of the 5 wide files, none of the 3 readable ones, and
   for `calls` the dropped files are absent from `ir.files`). New
