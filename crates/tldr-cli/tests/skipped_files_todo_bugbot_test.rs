@@ -154,9 +154,9 @@ fn todo_without_detail_still_names_every_unreadable_file_on_stderr() {
     // `Warning: Skipped` lines to UNREADABLE.len(). It would add exactly one
     // case the loop above misses -- the rival `Warning: skipping` from the
     // complexity analysis someday being reworded to collide with this shape --
-    // and that is speculative. The loop is the guard that earns its place: it is
-    // red-proofed by measurement (delete the `eprintln!` in run_dead_analysis
-    // and this test exits 101).
+    // and that is speculative. The loop is the guard that earns its place: it
+    // was red-proofed by measurement -- deleting the `eprintln!` in
+    // run_dead_analysis made this test fail, and restoring it made it pass.
     //
     // Do NOT justify the absence by `skipped_file_warning`'s "every command MUST
     // adopt it" doc comment (tldr-core/src/fs/mod.rs:140). That mandates the

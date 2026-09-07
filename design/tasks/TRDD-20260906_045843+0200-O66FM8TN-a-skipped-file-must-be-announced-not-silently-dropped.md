@@ -3,7 +3,7 @@ trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
 column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-07T18:40:22+0200
+updated: 2026-09-07T19:59:23+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
@@ -14,7 +14,7 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75]
 
 # A file the analysis skips must be announced, not silently dropped from the result
 
-## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-07 18:40
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-07 19:59
 
 ### 2026-09-07 — daemon + MCP done. Only units 2-4 remain.
 
@@ -345,6 +345,34 @@ mislabelling the file as binary here. **Not established either way; assess in co
       TRDD-MWLIUB72. Centralisation is the mechanism that actually generalises the guarantee, and
       it is checkable.
 
+## Why the complexity warning is not this one
+
+`run_dead_analysis`'s unconditional `eprintln!` was once deleted as apparent duplication of the
+complexity analysis's `Warning: skipping <path> due to parse error`
+(`tldr-core/src/quality/complexity.rs:235`), which fires for the same fixture files. It is not
+duplication, and this is the worked mechanism the code comment points at — kept here rather than
+in the comment so the line numbers can be corrected without touching source.
+
+Both analyses reach files through the SAME walker: `walk_project` is just
+`ProjectWalker::new(root).iter()` (`tldr-core/src/walker.rs:388`). They filter it differently, and
+the sets come apart on at least two shapes:
+
+- **`.h` under a C++ scan.** The dead analysis gates on `language.scan_extensions()`, which lists
+  `.h` for `Cpp` (`types.rs:154`), so the header is scanned. Complexity gates on
+  `Language::from_path`, whose `from_extension` arm reads `".c" | ".h" => Some(Language::C)`
+  (`types.rs:183`) — read directly, not inferred from `from_path_with_siblings`'s doc comment. Its
+  `d == l` test therefore fails `C != Cpp` and drops the file.
+- **`.d.ts` under a TypeScript scan.** The dead analysis skips it via
+  `is_typescript_declaration_file`. The walker's `default_ignore` filters DIRECTORIES only
+  (`walker.rs:245`), so it does not drop the file on complexity's side. That is a claim about the
+  walker's default ignore, not a survey of every filter in complexity's path.
+
+**Not established, deliberately:** whether the two error sources are distinct. Complexity errs
+through `calculate_all_complexities_file` / `extract_file`; the dead analysis errs through
+`parse_file`. Whether those share a parser underneath has not been read, so no claim is made — an
+earlier version of the code comment asserted "a different error source" while that question sat
+unread on its own not-read list.
+
 ## Notes
 
 The one methodological trap this work will hit, learned the hard way on the parent card: **a
@@ -361,3 +389,8 @@ before one actually discriminated.
   that the parent had established its defect and fixed it, while "every skip is announced" is a
   larger piece of work with its own 56-site inventory. Keeping both on one card would mean the
   parent never closes and its acceptance keeps being rewritten. Filing only; no code changed.
+- 2026-09-07T20:05:00+0200 — `min-approval-requirement: user` carries no written trigger here. The
+  likely one is this card's own scope: it changed report shapes across the CLI, the daemon handler
+  (`6d43608`) and the MCP tool (`9dabab1`). Confirm that in a line here, or lower the floor. Noted
+  because the child TRDD-K3XQ7M2V was briefly raised to `user` on the strength of this card's floor
+  alone, with no trigger anyone could name — that raise was reverted.

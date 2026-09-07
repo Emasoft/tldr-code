@@ -3,10 +3,10 @@ trdd-id: K3XQ7M2V
 title: tldr todo JSON omits the skip list unless --detail dead is passed
 column: todo
 created: 2026-09-07T19:49:13+0200
-updated: 2026-09-07T19:54:19+0200
+updated: 2026-09-07T19:59:23+0200
 current-owner: session-claude
 task-type: bugfix
-min-approval-requirement: user
+min-approval-requirement: none
 labels: [robustness, silent-failure, json-output]
 parent-trdd: O66FM8TN
 ---
@@ -56,23 +56,30 @@ user` for reasons unrelated to that decision. One atomic task per card.
 **Recommended: (c).** It is the only option that does not make an existing
 reader wrong, which is why this card is scoped to (c) alone.
 
-### Why this carries `user` and not `none`
+### Why this carries `none`, and the floor question it raises
 
 The objective floor for (c) alone is `none` — an additive field triggers nothing
-in the tier table. It was filed that way and then raised, deliberately:
+in the tier table. This card was filed at `none`, raised to `user`, and returned
+to `none`. The round trip is recorded because the reasoning matters more than the
+value:
 
-- The parent TRDD-O66FM8TN carries `min-approval-requirement: user`, and its
-  `## Approval log` records **no trigger for that floor**. With no documented
-  reason, there is nothing to show the child escapes.
-- A child scoped to the one option whose floor is `none`, hanging off a `user`
-  parent on the same output surface, is indistinguishable from picking the
-  option that avoids review. Raising it removes that reading.
+The raise was made on the observation that the parent TRDD-O66FM8TN carries
+`min-approval-requirement: user` while its `## Approval log` records **no trigger
+for that floor** — and on the worry that a child scoped to the one option floored
+at `none` would read as avoiding review. Neither is a reason. "I cannot name the
+parent's trigger" is an absence of evidence, and converting it into the parent's
+floor is the same move as asserting a claim without reading its source. Optics
+are not a risk to the codebase, and floors raised this way only ever ratchet:
+the next agent inherits the same unanswerable question and defaults the same way.
 
-So: conservative default, per "when unsure which tier applies, escalate one".
-A reviewer who can name the parent's actual trigger and confirm (c) does not
-touch it may lower this to `none` deliberately — that is a decision to record,
-not a default to assume. If (c) proves infeasible and the fix must be (a), the
-`user` floor is required on the objective table anyway.
+So the floor is the one the tier table gives. **If (c) proves infeasible and the
+fix must be (a), that carries `user` on the objective table and this card
+escalates** — the escalation clause already covers the case the raise was
+hedging.
+
+**Derived finding, belongs to the parent, not here:** O66FM8TN's `user` floor has
+no recorded trigger. Someone should document it or lower it. Propagating it
+downward was the wrong fix.
 
 ## Not yet verified
 
