@@ -215,6 +215,26 @@ before it is accepted as passing.
       untick on a search artifact. Only this one rests on the struct itself.*
 - [ ] `cargo test -p tldr-cli --test cli_tests test_structure_json_output`
       passes, and was observed FAILING first under a deliberate mutation.
+
+      **Do NOT write the fix as `contains("\"definitions\"")`.** That passes on
+      `"definitions": []` — an empty array still contains the key — which is the
+      SAME present-but-empty confusion that sent this card down two wrong routes
+      (`"functions": null` would likewise have satisfied the assertion it was
+      failing). Swapping one substring predicate for another reproduces the
+      defect with a different key.
+
+      `contains("\"kind\": \"function\"")` is no better: it pins the serializer's
+      exact whitespace and breaks on a formatting change, while still asserting
+      nothing about WHICH definition has that kind.
+
+      **Parse stdout as JSON and assert structurally** — `files[0].definitions`
+      contains an element with `name == "foo"` AND `kind == "function"`. That is
+      the property the test is actually for.
+
+      **Red-proof by deleting `foo` from the fixture, not by deleting the
+      assertion.** Removing the assertion proves only that the assertion runs;
+      removing the thing it looks for proves it can still fail for the right
+      reason.
 - [ ] `cargo test -p tldr-cli` (UNFILTERED) is fully green — capture cargo's
       OWN exit status, never a wrapper's.
 - [ ] If (b): a note on whether any other command's JSON carries the same
