@@ -89,10 +89,39 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1]
     `serialize_field("files_skipped", …)`. The test's `or_else` hedge is the worker being
     defensive about a format it had not checked; I read that defensiveness as evidence about
     the format. History is not rewritten for this — the correction lives here.
-  - **Why the daemon suite stays green despite unit 5's bypass:**
-    `state::tests::test_get_or_build_call_graph_caches_per_language` exercises the cache
-    FUNCTION directly, not the `dead` handler's use of it. Bypassing the cache in the handler
-    therefore breaks no existing test — which is precisely why the decision below needs one.
+  - **Why the daemon suite stays green despite unit 5's bypass — now read at the BODY level.**
+    `state::tests::test_cache_invalidation` and `test_get_or_build_call_graph_caches_per_language`
+    both build through a STUB closure returning `ProjectCallGraph::new()` — an empty graph they
+    hand in themselves — and assert only on `call_graph_cache.len()` and `contains_key`. Neither
+    calls a handler; neither inspects graph contents. So the bypass cannot redden them. That is
+    measured two ways: the bodies above, and `cargo test -p tldr-daemon` exiting 0 with unit 5's
+    modified handler present in the tree.
+  - **THE CLAIM "no daemon test exercises any handler's OUTPUT CONTENT" — how it is actually
+    supported, after three insufficient attempts.** Names cannot carry it; bodies can:
+    `crates/tldr-daemon/tests/` holds FOUR files (`daemon_tests.rs`,
+    `handler_path_traversal_audit_test.rs`, `path_traversal_test.rs`,
+    `val004_cache_oncecell_test.rs`), and `grep -c 'handlers::\|handle_'` over them gives
+    0 / 3 / 1 / 0 — only the two path-traversal files reference a handler at all, and those
+    assert REJECTION. The 12 `message_tests::*` and the cache tests reference handlers zero
+    times, so they cannot assert on handler output. `server::tests::test_daemon_response_ok`
+    and `_error` looked like the strongest counterexample (named for responses) and are not:
+    they construct a literal `DaemonResponse::ok("pong")` and assert the ENVELOPE serializes
+    with `status`/`result` — the response type, never a handler.
+  - **The test-file inventory was wrong twice, in the same direction.** Both this session and a
+    review fork stated `tests/` holds TWO files. It holds four. The two-file figure came from
+    reading the TAIL of `cargo test` output, which shows only the last targets — a truncated
+    view taken for the whole. The fork then inherited the error from this card and built its
+    closing argument on it, which is how a wrong fact in an authoritative block propagates:
+    the reviewer checks the reasoning, not the premise.
+  - **Bucket membership, since the counts above are precise numbers over categories that were
+    never defined:** buckets are by MODULE PATH (`message_tests::`, `state::`/`server::`/
+    `socket_tests::`, `daemon_performance_tests::`, top-level) EXCEPT "traversal", which is
+    semantic — the 9 names ending `_handler_rejects_absolute_path_outside_project`. Under a
+    SUBJECT taxonomy "cache" would be 5, not 3, because `state::tests::test_cache_invalidation`
+    and `test_get_or_build_call_graph_caches_per_language` are cache tests filed by path. Both
+    taxonomies are defensible; mixing them without saying so is not. The counts are DECORATION
+    on the output-content claim either way — a module path neither supports nor refutes a claim
+    about what an assertion checks.
 - **Open decision blocking the daemon half (USER):** it currently bypasses the shared call-graph
   cache (`get_or_build_call_graph`) to obtain the warnings, so daemon `dead` would rebuild the
   graph per request. The daemon's stated purpose is that cache; **the cost of bypassing it is
