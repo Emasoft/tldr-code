@@ -3,7 +3,7 @@ trdd-id: YJALU4Y2
 title: Three wall-clock benchmarks fail the default cargo test run on a loaded machine
 column: todo
 created: 2026-09-07T18:46:25+0200
-updated: 2026-09-07T19:05:11+0200
+updated: 2026-09-07T19:10:47+0200
 current-owner: unassigned
 implementation-commits: [127bced]
 task-type: bugfix
@@ -116,18 +116,49 @@ against that different proposal, because the label matched. Judge it on its own 
       127bced BECAUSE these four benches do not execute in debug, so this box guards only that the
       gate is still in place: it goes red if the `cfg_attr` is removed. That is worth a box on its
       own — green-for-contributors is the entire user-visible deliverable of 127bced.
-- [ ] **Release — a measurement to TAKE, not a property to assume:** run `cargo test -p tldr-mcp
-      --release` ten times under the load that produced the original red (concurrent cargo builds
-      plus several subagents) and RECORD the pass count. Exactly one release run has ever passed;
-      that is the whole of what is known. Every flakiness figure on this card is from a DEBUG run
-      (`--lib`, no `--release`), and debug/release margins here differ by profile, not marginally
-      — `cache.rs:387` claims ~128ns release against a 1us threshold versus 1.623us measured in
-      debug. Do not carry the debug variance over to release; measure it.
+      **What carries the red is not yet established — do not trust the split below.**
+      `bench_cache_key_construction` failed 3 of 3 (13.4-15.2us vs its <10us limit), so it is
+      deterministic in debug. The other three were called "load-sensitive" on this card, but that
+      bucket rests on n=3 runs and NO idle run was ever taken — `bench_cache_hit_latency` measured
+      1.623us against a 1us limit, 62% over, and was filed as flaky only because it passed once. A
+      62% overshoot may be miscalibration that noise occasionally dips under. Settle it by running
+      the four alone, `--test-threads=1`, five times before relying on any claim about which of
+      them this box actually guards.
+- [ ] **No assertion on these paths is denominated in wall-clock time against a fixed constant.**
+      Either the four benches assert a STRUCTURAL property (option 2 — `Arc::ptr_eq` /
+      `strong_count` for "the cache hit did not clone", which is what the clone-cost bench exists
+      to prove), or, if a timing form must survive, it asserts a RATIO against a reference
+      operation measured in the SAME process and the SAME run, so both sides degrade together.
+
+      **Why no run-count box replaced this, after three attempts at one.** Every version tried to
+      qualify the runs with a load ("on a loaded machine", then "concurrent cargo builds plus
+      several subagents"). That is not specifiable: how many builds, on what core count, at what
+      memory pressure. Two testers get two loads, so the same box can be passed or failed at the
+      tester's discretion — and under unbounded load every wall-clock assertion fails eventually.
+      A threshold in a unit the test does not control cannot be rescued by choosing a better
+      number, which is why options 3 and 4 both kept producing boxes that read as rigorous and
+      were not. Measurements go in `## Evidence` with their date and result path; the box holds
+      the gate.
 - [ ] Whatever replaces the wall-clock assertion still FAILS when the property it guards is broken
       — demonstrated by breaking it (e.g. forcing a clone on the cache-hit path), watching it go
       red, and reverting. A threshold that can no longer fail is not a fix.
 - [ ] If any wall-clock assertion survives, it states which profile and which machine class it is
       calibrated for, and does not run outside it.
+
+## Evidence
+
+Measurements live here with their date and command, never inside an acceptance box — a count
+written into a criterion is falsified by the act of satisfying it, and a stale one makes the card
+misreport its own state.
+
+- **2026-09-07 ~19:07 — `cargo test -p tldr-mcp --release` (FULL suite): exit 0.**
+  Lib target `45 passed; 0 failed; 0 ignored` in 0.31s, plus integration targets 5/4/3/1/0, all ok.
+  **`0 ignored` is the load-bearing part:** `#[cfg_attr(debug_assertions, ignore)]` does not fire
+  in release, so the four benches DID execute here and passed. Machine was not idle — the unit-2
+  worker was running concurrently. n=1; one pass is not a variance measurement.
+- **Not yet taken:** the four benches alone in debug, `--test-threads=1`, five times. That is what
+  would settle whether the other three are miscalibrated or merely noisy, which the debug box's
+  note currently declines to assert either way.
 
 ## Notes
 
