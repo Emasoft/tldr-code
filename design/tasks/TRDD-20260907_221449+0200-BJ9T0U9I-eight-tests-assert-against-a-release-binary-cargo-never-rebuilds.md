@@ -3,7 +3,7 @@ trdd-id: BJ9T0U9I
 title: Eight tests assert against a release binary the test runner never rebuilds
 column: todo
 created: 2026-09-07T22:14:49+0200
-updated: 2026-09-07T22:14:49+0200
+updated: 2026-09-07T22:30:42+0200
 current-owner: session-claude
 task-type: infra
 min-approval-requirement: none
@@ -60,11 +60,22 @@ semantic)`. The stale case produces `5 passed` in `0.03s` and looks exactly like
 success.
 
 **Scope, and this is the part the original footnote got wrong.** This is not
-about one change. Any commit since the release binary was last built has been
-"tested" by these eight files against pre-change code. That covers the whole
-TRDD-O66FM8TN chain (`b64d541`, `e83d2b4`, `9dabab1`, `6d43608`, `b888b2d`,
-`804dd75`, `0063e1b`) and anything else landed in that window. A green CI or
-local suite in that period does not mean what it appears to mean for these files.
+about one change. It is STRUCTURAL: there is no rebuild step, so the binary is
+stale relative to any source edit, before and after this window, permanently,
+until the mechanism changes. A date makes it read like an incident; it is not
+one.
+
+**The supportable claim, stated exactly** — an earlier draft of this paragraph
+overreached and is replaced by it: *any run of these eight files since the
+binary's mtime exercised that binary, so a green result from them is evidence
+about that binary and not about the working tree.* What the mtime does NOT
+establish, and the draft asserted anyway: which commit or tree the binary was
+built from; whether it carries `--features semantic` at all; and — the load-
+bearing one — that any given commit WAS tested. A commit nobody ran these files
+against was not "tested against pre-change code", it was not tested. The draft
+also enumerated seven commits from the O66FM8TN chain as though their test runs
+had been observed; they had not, and a specific-looking list is what gets quoted
+later. Removed rather than qualified.
 
 **NOT established, and do not assume either way:** whether CI builds the release
 binary before running tests. If it does, the hole is local-only, which changes

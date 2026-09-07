@@ -3,7 +3,7 @@ trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
 column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-07T22:12:00+0200
+updated: 2026-09-07T22:30:42+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
@@ -48,11 +48,24 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75, 0
   `dead` propagates (`:221`). An empty graph makes every function look dead. Any future cache
   unification must preserve BOTH the warnings and the fail-fast.
 - **Unit 2 LANDED in `0063e1b`.** All five delegation rows are now terminal.
-- **NEXT ACTION: TRDD-OGK2ROKJ — and this card MUST NOT close without it.** Unit 2 fixed
-  `todo -f json`; `format_todo_text` (`remaining/todo.rs:675`) never reads `report.warnings`, so
-  the DEFAULT human-facing output still drops the skip list silently. **This card's title is
-  format-agnostic** — "must be announced, not silently dropped" — while K3XQ7M2V's is JSON-scoped,
-  so K3XQ7M2V is complete as written and this one is not.
+- **NEXT ACTION: the three unticked acceptance boxes** — the 56 silent sites, the un-surveyed
+  `File::open`/`read_to_end` sites, and centralisation of the skip path. Those are what hold this
+  card open.
+- **CORRECTION (2026-09-07 22:30), because this block asserted the wrong blocker for ~15 minutes.**
+  It read: *"NEXT ACTION: TRDD-OGK2ROKJ — and this card MUST NOT close without it … the DEFAULT
+  human-facing output still drops the skip list silently."* **The silence half is false.**
+  `remaining/todo.rs:474-476` runs `eprintln!("Warning: {warning}")` for every skipped file inside
+  `run_dead_analysis`, on the default path, ungated by `--detail` and independent of output format.
+  This card's own section *"Why the complexity warning is not this one"* (below) exists to defend
+  that exact `eprintln!` from deletion — so the disconfirming evidence was in this file the whole
+  time, and the child card contradicted its parent.
+  What IS true: `format_todo_text` (`todo.rs:675-741`, whole body read) never reads
+  `report.warnings`, so `todo`'s report body on stdout omits the skip line that `dead.rs:571` and
+  `calls.rs:354` print in theirs. That is a consistency gap, tracked as TRDD-OGK2ROKJ, and it is
+  **not** a blocker for this card — the three unticked boxes above are.
+  The error came from a grep scoped to `format_todo_text` finding no `warnings` hit. The grep was
+  right; its SCOPE was wrong, and re-grounding it three more ways *inside the same function*
+  (`38bfe9f`) did not help. An absence inside a chosen function is not an absence in the program.
 - **The near-miss is worth keeping.** Hours before, this block was edited to read "ONE unit
   remains: unit 2, uncommitted", which after the commit would have read as ready to close — a
   format-agnostic card closed on a JSON-only fix. An adversarial review fork caught it by asking

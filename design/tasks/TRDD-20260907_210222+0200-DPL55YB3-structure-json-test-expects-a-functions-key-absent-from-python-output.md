@@ -3,7 +3,7 @@ trdd-id: DPL55YB3
 title: test_structure_json_output expects a functions key absent from structure's python output
 column: todo
 created: 2026-09-07T21:02:22+0200
-updated: 2026-09-07T21:35:33+0200
+updated: 2026-09-07T22:30:42+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
@@ -216,12 +216,26 @@ before it is accepted as passing.
 - [ ] `cargo test -p tldr-cli --test cli_tests test_structure_json_output`
       passes, and was observed FAILING first under a deliberate mutation.
 
-      **Do NOT write the fix as `contains("\"definitions\"")`.** That passes on
-      `"definitions": []` — an empty array still contains the key — which is the
-      SAME present-but-empty confusion that sent this card down two wrong routes
-      (`"functions": null` would likewise have satisfied the assertion it was
-      failing). Swapping one substring predicate for another reproduces the
-      defect with a different key.
+      **Do NOT write the fix as `contains("\"definitions\"")`.** Not "a weaker
+      test" — **not a test.** `definitions` carries `#[serde(default)]` and no
+      `skip_serializing_if`, so the key is emitted for every file entry
+      regardless of what the extractor found. The predicate has NO failing
+      input: it would pass on a completely broken Python extractor returning
+      zero definitions. It tests serde's field list, not the parser.
+
+      Note the direction of that trade: the CURRENT assertion
+      (`contains("\"functions\"")`) *can* fail, and does. The proposed
+      replacement would convert a red test into a permanently green one that
+      cannot fail — and a green test is trusted. That is strictly worse than
+      the bug being fixed, and it is the same red-proof failure this card
+      demands be avoided elsewhere.
+
+      **Generalize it rather than blacklisting keys one at a time:** the schema's
+      stated purpose is a stable shape for consumers, so EVERY key-presence
+      assertion against this payload is dead on arrival — `"classes"`,
+      `"imports"`, `"method_infos"` included. The only reason
+      `contains("\"functions\"")` still discriminates is that its field's
+      attribute changed out from under it.
 
       `contains("\"kind\": \"function\"")` is no better: it pins the serializer's
       exact whitespace and breaks on a formatting change, while still asserting
