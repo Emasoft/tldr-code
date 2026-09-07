@@ -149,6 +149,13 @@ fn todo_without_detail_still_names_every_unreadable_file_on_stderr() {
             "default `tldr todo` must announce skipped file {name}, stderr: {stderr}"
         );
     }
+
+    // Deliberately NO exact-count assertion. `skipped_file_warning`'s doc
+    // comment (tldr-core/src/fs/mod.rs:140) says every directory-walking command
+    // MUST adopt it, so a second analysis announcing its own skips is the
+    // invited direction of travel -- a count pinned to UNREADABLE.len() would go
+    // red on precisely that correct change, and its failure message could not
+    // tell a maintainer apart from a real double-announce regression.
 }
 
 // ---------------------------------------------------------------------------

@@ -326,13 +326,22 @@ fn run_dead_analysis(path: &Path, language: Language) -> RemainingResult<(Vec<To
     // (`files_skipped`/`warnings`, both already `#[serde(default)]`) so a
     // machine-readable consumer sees it.
     //
-    // BOTH channels, deliberately. The stderr line below is NOT redundant with
-    // that wiring: `result_value` reaches the output only through the
-    // `sub_results.insert(..)` at the top of this file, which is gated on
-    // `--detail <this analysis>`. A plain `tldr todo` never evaluates that
-    // branch, so the report fields alone would drop the skip list on the
-    // DEFAULT path — the exact silent-drop this card exists to prevent, and a
-    // regression against the unconditional warning that was here before.
+    // BOTH channels, deliberately, and the stderr line is the load-bearing one
+    // on the default path: `result_value` reaches the output only through the
+    // `sub_results.insert(..)` in `TodoCommand::run`, gated on
+    // `--detail <this analysis>`, which a plain `tldr todo` never evaluates.
+    //
+    // Do NOT delete this as duplication of the complexity analysis's
+    // `Warning: skipping <path> due to parse error`
+    // (tldr-core/src/quality/complexity.rs:235). Read both sides before
+    // believing they cover the same files: complexity walks `walk_project`
+    // filtered by `Language::from_path` and warns when `analyze_file_complexity`
+    // errs, while this analysis walks `ProjectWalker::lang_hint` filtered by
+    // `language.scan_extensions()` (so `.d.ts` is dropped and C++ `.h` is
+    // included) and skips when `parse_file` errs. Different walkers, different
+    // filters, different error sources -- they coincide on an undecodable file
+    // because it defeats both, not because either guarantees the other's
+    // coverage.
     let (module_infos, merged_ref_counts, skipped) =
         collect_module_infos_with_refcounts(project_root, language, false);
     for warning in &skipped {
