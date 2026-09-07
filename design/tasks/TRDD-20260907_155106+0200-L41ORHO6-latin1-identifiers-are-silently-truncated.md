@@ -40,8 +40,18 @@ def naive_tail():    return 3
 
 `files_skipped: null`, `warnings: null`. The file is ANALYSED, not skipped — correctly so by the
 current design: latin-1 carries no NUL and is not valid UTF-8, so it takes the deliberate M2
-lossy fallback (`from_utf8_lossy`), which substitutes U+FFFD. U+FFFD is not an identifier
-character in any grammar tldr uses, so the identifier ends at the accent and the tail is lost.
+lossy fallback rather than the guard.
+
+**What is measured, and what is not — because the first version of this card got it wrong.**
+Measured: the emitted symbol name is `funci`, and its bytes are exactly `b'funci'` — the
+identifier is TRUNCATED at the accent. This card originally said the name carries U+FFFD, the
+replacement character `from_utf8_lossy` substitutes. **It does not.** Checked by dumping the
+name's UTF-8 bytes from the JSON: no U+FFFD anywhere in it. The lossy substitution is what the
+read path is documented to do, and U+FFFD is not an identifier character in the grammars tldr
+uses, so a substituted-then-truncated-at-the-substitution chain is the obvious explanation — but
+that chain is INFERRED from the code, not observed in the output. The observation supports
+exactly this: *invalid UTF-8 in an identifier yields a silently truncated name.* Anyone fixing
+this should establish the intermediate for themselves rather than inherit it from here.
 
 **The consequence, also measured.** Add `caller.py` (UTF-8) importing and calling `función`:
 
@@ -72,9 +82,12 @@ from an accent in an identifier (wrong, currently silent).
 
 Three shapes, none of them chosen:
 
-1. **Detect U+FFFD inside an extracted identifier** and warn/skip that symbol. Narrowest, and it
-   acts exactly where the damage is; needs a decision about what a partially-analysed file
-   reports.
+1. **Detect the damage at the identifier's boundary** — NOT by looking for U+FFFD *inside* the
+   extracted name, which the measurement above rules out: the name comes back as `funci` with no
+   replacement character in it. Whatever signal is used has to be visible where the truncation
+   happens (the byte after the identifier's end in the decoded source, or the decode step itself),
+   not in the name the extractor hands back. Narrowest option, and it acts exactly where the
+   damage is; needs a decision about what a partially-analysed file reports.
 2. **Transcode instead of lossy-decoding** (latin-1 → UTF-8 when the bytes are valid latin-1),
    which fixes the name rather than reporting the damage. Risks guessing the wrong codepage —
    latin-1 and cp1252 differ in `0x80-0x9F`, and every byte is "valid latin-1" by construction,
