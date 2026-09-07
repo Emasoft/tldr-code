@@ -96,6 +96,13 @@ Three shapes, none of them chosen:
    cheapest, and the only one that generalises past identifiers, but it is noise on the large
    population of files where lossy is correct.
 
+   **1 and 3 are less distinct than this list makes them look.** Once option 1 is stated
+   honestly — the signal has to be read at the decode step or at the identifier's boundary in the
+   decoded source, because it is provably not in the returned name — it differs from 3 mainly in
+   WHERE the warning is scoped (one symbol vs one file), not in what it detects. Whoever picks
+   should treat them as one axis with two granularities, and 2 (transcode) as the genuinely
+   different option.
+
 Whichever is picked, it needs the population argument the parent card's guard got: how many real
 files are latin-1 with accented identifiers, versus latin-1 with accents only in strings.
 
