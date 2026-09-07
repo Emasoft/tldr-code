@@ -34,6 +34,23 @@ still presents a report computed over fewer files than the user believes, with
 nothing on screen saying so. The field is populated and then ignored on the path
 most users actually see.
 
+**How this was established, stated because the first pass was not enough.** It
+began as an ABSENCE claim from a grep: no hit for `warnings` between line 675
+and the test module. That is the same shape as a false claim made earlier the
+same day (a struct field reported absent because the read window started one
+line below it), so it was re-checked three ways:
+
+- the body of `format_todo_text` builds a `lines` vec from `report.path`,
+  `total_items` and `report.summary.*` — `dead_count`, `hotspot_count`,
+  `low_cohesion_count`, `similar_pairs`, `equivalence_groups`;
+- `TodoSummary` has no skipped/warning counter, so there is no second route
+  by which a count could reach the text output;
+- `grep -rn TodoReport crates/tldr-cli/src` returns only `mod.rs` re-exports
+  and `todo.rs` itself, so no OTHER file formats this report either.
+
+A grep's silence alone would not have supported the claim. These three together
+do.
+
 ## Why it is the parent's business, not a nice-to-have
 
 TRDD-O66FM8TN is titled *"A file the analysis skips must be announced, not
