@@ -61,11 +61,18 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1]
   - Daemon (unit 5) has cleared a COMPILER, nothing more. It is uncommitted and has **no test
     at all**. Settled by ENUMERATION, which is the read that answers "what is covered": the
     harness lists 39 test functions for `tldr-daemon`, all 39 were read, and every one is a
-    path-traversal rejection (11), a message-format check (12), a `state::`/`server::`/socket
-    unit test (13), a cache test (2) or a perf test (2). **Not one exercises any handler's
-    OUTPUT CONTENT**, and there is not even a `dead_handler_rejects_absolute_path…` among the
-    11 traversal tests. The right words are "compiles and is plausibly correct" — never
-    "verified".
+    path-traversal rejection (9), a message-format check (12), a `state::`/`server::`/socket
+    unit test (13), a cache test (3) or a perf test (2) — 9+12+13+3+2 = 39. **Not one
+    exercises any handler's OUTPUT CONTENT**, and there is no `dead_handler_…` among the 9
+    traversal tests (they are cfg, complexity, dfg, imports, maintainability, secrets, slice,
+    smells, vuln). The right words are "compiles and is plausibly correct" — never "verified".
+    **These counts were published wrong once, in `4d3e91c`, as 11 traversal / 2 cache.** They
+    summed to 40 against a list of 39 — the arithmetic was the tell, and nobody checked it
+    before it was committed. Counting BEFORE bucketing is how a number gets quoted forever with
+    its qualifier stripped; the fix is to count the buckets after assigning every item, which
+    is what the 9+12+13+3+2 above records. The CONCLUSION never moved — no daemon test touches
+    handler output either way — but a wrong count in an authoritative block is inherited as
+    fact, which is the whole reason this block exists.
     **Two superseded methods, recorded because the method matters more than the answer.** The
     first pass concluded "no test" from `grep -rn 'files_skipped' crates/tldr-daemon/` → one
     hit: a TOKEN SEARCH standing in for a COVERAGE claim. The second replaced it with
