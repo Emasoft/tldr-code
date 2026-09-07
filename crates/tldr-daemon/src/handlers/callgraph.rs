@@ -166,25 +166,46 @@ pub async fn dead(
     let project = state.project().clone();
     let entry_points = request.entry_points;
 
-    // Get or build call graph
-    let graph = state
-        .get_or_build_call_graph(language, || async {
-            let project = project.clone();
-            tokio::task::spawn_blocking(move || {
-                build_project_call_graph(&project, language, None, true)
-                    // why: a swallowed build error was cached as an empty graph forever
-                    // (get_or_build_call_graph caches the closure's return value), so a
-                    // parse/IO failure silently looked like "project has no calls" on every
-                    // future request. Log it so the failure is at least observable.
-                    .unwrap_or_else(|e| {
-                        tracing::error!("build_project_call_graph failed: {e}");
-                        ProjectCallGraph::new()
-                    })
-            })
-            .await
-            .unwrap_or_else(|_| ProjectCallGraph::new())
-        })
-        .await;
+    // TRDD-O66FM8TN: dead-code analysis needs the skipped-file list, and
+    // only the raw CallGraphIR carries it (`build_project_call_graph`'s
+    // ProjectCallGraph wrapper drops `warnings` entirely in
+    // `project_graph_from_ir` — tldr-core/src/callgraph/builder.rs). So
+    // build the IR directly here instead of going through the shared,
+    // cached ProjectCallGraph used by `calls` — that cache cannot carry
+    // warnings because ProjectCallGraph has no field for them.
+    // The bypass is NOT only a caching difference — do not "optimize" it away.
+    // This path builds with `use_type_resolution = true` and, when
+    // `WorkspaceConfig::discover` finds roots, with those workspace roots. The
+    // cached path (`calls`/`impact`/`arch`) calls `build_project_call_graph`
+    // and passes neither. On a multi-root workspace the two produce DIFFERENT
+    // edge sets, and this one sees more. Moving `dead` back onto the shared
+    // cache without reproducing both settings would silently lose edges and
+    // resurrect the dead-code false positives TRDD-O66FM8TN exists to kill —
+    // a correctness regression wearing a performance change's clothes.
+    // ponytail: the cost is that `dead` rebuilds the graph every request. If
+    // that ever matters, cache a (graph, warnings) pair built with THIS
+    // config; do not reuse the `calls` cache.
+    let build_root = project.clone();
+    let ir = tokio::task::spawn_blocking(move || {
+        let mut config = tldr_core::callgraph::BuildConfig {
+            language: language.as_str().to_string(),
+            respect_ignore: true,
+            ..Default::default()
+        };
+        config.use_type_resolution = true;
+        if let Some(ws) = tldr_core::WorkspaceConfig::discover(&build_root) {
+            if !ws.roots.is_empty() {
+                config.use_workspace_config = true;
+                config.workspace_roots = ws.roots;
+            }
+        }
+        tldr_core::callgraph::build_project_call_graph_v2(&build_root, config)
+    })
+    .await
+    .map_err(|e| HandlerError(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .map_err(|e| HandlerError(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let graph = tldr_core::callgraph::builder::project_graph_from_ir_ref(&ir);
 
     // Collect all functions (this should come from structure extraction)
     // For now, collect from call graph edges
@@ -200,8 +221,10 @@ pub async fn dead(
         .into_iter()
         .collect();
 
-    let result = dead_code_analysis(&graph, &all_functions, entry_points.as_deref())
+    let mut result = dead_code_analysis(&graph, &all_functions, entry_points.as_deref())
         .map_err(|e| HandlerError(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    result.files_skipped = ir.warnings.len();
+    result.warnings = ir.warnings;
 
     Ok(Json(DaemonResponse::ok(result)))
 }
