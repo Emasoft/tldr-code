@@ -197,6 +197,7 @@ impl TodoArgs {
 
         // Run sub-analyses and collect results
         let mut sub_results: HashMap<String, Value> = HashMap::new();
+        let mut warnings: Vec<String> = Vec::new();
         let mut all_items: Vec<TodoItem> = Vec::new();
         let mut summary = TodoSummary::default();
 
@@ -207,6 +208,21 @@ impl TodoArgs {
                 Ok((items, result_value)) => {
                     // Update summary
                     update_summary(&mut summary, *analysis, &items);
+
+                    // Lift this sub-report's warnings to the root, UNGATED.
+                    // `result_value` is returned on every run; only its
+                    // insertion into `sub_results` below is gated on `--detail`,
+                    // so this is what makes a skipped file visible to a plain
+                    // `-f json` consumer (TRDD-K3XQ7M2V).
+                    //
+                    // MUST stay BEFORE the `sub_results.insert(..)` below, which
+                    // MOVES `result_value`. Moving it after stops compiling.
+                    //
+                    // ponytail: no dedupe. On the surveyed run only `dead_code`
+                    // emitted a top-level `warnings` key, so nothing can collide
+                    // yet. Add one when a second producer warns about the same
+                    // file.
+                    lift_warnings(&result_value, &mut warnings);
 
                     // Store raw results if detail requested (match by parsing the detail arg)
                     if let Some(ref detail) = self.detail {
@@ -263,6 +279,7 @@ impl TodoArgs {
             items: all_items,
             summary,
             sub_results,
+            warnings,
             total_elapsed_ms: elapsed_ms,
         };
 
@@ -287,6 +304,118 @@ impl TodoArgs {
         }
 
         Ok(())
+    }
+}
+
+/// Collect a sub-report's top-level `warnings` array into `out`.
+///
+/// TRDD-K3XQ7M2V. Extracted from the call site so its behaviours can be pinned
+/// by tests — each is a way this could silently drop a warning, the very
+/// failure the lift exists to close.
+///
+/// A string entry goes through `as_str()` FIRST, because `Display` for `Value`
+/// is JSON serialization: `Value::String("x").to_string()` is `"\"x\""`, quotes
+/// included. Skipping that step re-quotes every plain warning. A non-string
+/// entry is stringified rather than dropped, which is why `filter_map(as_str)`
+/// — which would discard it with no error — is not used.
+///
+/// The read is a single top-level `get("warnings")`. A producer that nests its
+/// warnings deeper, or names the key differently, contributes nothing and
+/// raises no error. That is a LIMIT of this function, not an enforced contract:
+/// nothing fails if a producer violates it.
+fn lift_warnings(result_value: &Value, out: &mut Vec<String>) {
+    let Some(ws) = result_value.get("warnings").and_then(Value::as_array) else {
+        return;
+    };
+    out.extend(ws.iter().map(|w| match w.as_str() {
+        Some(s) => s.to_string(),
+        None => w.to_string(),
+    }));
+}
+
+#[cfg(test)]
+mod lift_warnings_tests {
+    use super::lift_warnings;
+    use serde_json::json;
+
+    /// A plain string warning is APPENDED, without acquiring JSON quotes.
+    ///
+    /// `out` is seeded AND the input carries TWO entries. Both are load-bearing:
+    /// the call site invokes this once per sub-analysis into one shared vec, so
+    /// an implementation that assigned (`*out = ...collect()`) would keep only
+    /// the LAST analysis's warnings; and a single-entry input would pass
+    /// `ws.iter().take(1)`, which drops every skipped file but the first — the
+    /// card's whole subject is that EVERY skipped file is named.
+    ///
+    /// Two entries kills `take(1)`/`skip(1)`/`last()`/`rev()`, NOT cardinality
+    /// in general: a unit test with N elements can never exclude `take(N)`. The
+    /// integration test's five-file loop is what covers that. And the order
+    /// assertion is against a LITERAL, not a promise about any real report's
+    /// iteration order — do not "improve" it by sourcing a live sub-report.
+    #[test]
+    fn string_warnings_are_appended_unquoted() {
+        let mut out = vec!["from an earlier analysis".to_string()];
+        lift_warnings(
+            &json!({"warnings": ["bad.py: unreadable", "u32be.py: unreadable"]}),
+            &mut out,
+        );
+        assert_eq!(
+            out,
+            vec![
+                "from an earlier analysis".to_string(),
+                "bad.py: unreadable".to_string(),
+                "u32be.py: unreadable".to_string(),
+            ]
+        );
+    }
+
+    /// A struct-shaped warning survives the lift instead of vanishing.
+    ///
+    /// An untested branch guarding against silent loss is indistinguishable from
+    /// one that does not work. It pins information PRESERVATION, not format —
+    /// `Debug` output would contain both substrings too.
+    ///
+    /// NO claim is made here about whether any producer emits a non-string
+    /// warning today. That would be a statement about array CONTENTS, and the
+    /// survey behind it read only KEYS; `DeadCodeReport` is also defined in two
+    /// places (`tldr-core/src/types.rs`, `tldr-core/src/quality/dead_code.rs`),
+    /// so even its field type is not a one-read answer. The test earns its place
+    /// from the branch existing, not from a census of who reaches it.
+    #[test]
+    fn struct_shaped_warnings_survive_the_lift() {
+        let mut out = Vec::new();
+        lift_warnings(
+            &json!({"warnings": [{"file": "bad.py", "reason": "unreadable"}]}),
+            &mut out,
+        );
+        assert_eq!(out.len(), 1, "a non-string warning must not vanish");
+        // Both fields, not just the name: an implementation that kept only
+        // `w["file"]` would satisfy a filename-only assertion while dropping
+        // the reason the file was skipped.
+        assert!(
+            out[0].contains("bad.py") && out[0].contains("unreadable"),
+            "both fields of the entry must survive stringification, got {}",
+            out[0]
+        );
+    }
+
+    /// A missing or non-array `warnings` adds nothing AND disturbs nothing.
+    ///
+    /// Seeded, and this is the more dangerous case: today only the dead-code
+    /// sub-report emits a top-level `warnings` key, so the early return is the
+    /// common path. An `else` branch that cleared `out` would satisfy an
+    /// empty-start `is_empty()` assertion while wiping every warning collected
+    /// before it — the original silent-drop bug, under a green suite.
+    #[test]
+    fn absent_or_misshapen_warnings_are_a_no_op() {
+        let mut out = vec!["from an earlier analysis".to_string()];
+        lift_warnings(&json!({"dead_functions": []}), &mut out);
+        lift_warnings(&json!({"warnings": "not an array"}), &mut out);
+        assert_eq!(
+            out,
+            vec!["from an earlier analysis".to_string()],
+            "a report with no usable `warnings` must not disturb what is already collected"
+        );
     }
 }
 

@@ -150,28 +150,95 @@ fn todo_without_detail_still_names_every_unreadable_file_on_stderr() {
         );
     }
 
-    // Deliberately NO exact-count assertion pinning the number of
-    // `Warning: Skipped` lines to UNREADABLE.len(). It would catch two things
-    // this loop cannot -- one file announced twice, and a sixth file announced
-    // whose name is in neither fixture list (no assertion in this test touches
-    // such a name). Both are speculative.
+    // No exact-count assertion on `Warning: Skipped` lines. A second analysis
+    // that adopts `skipped_file_warning` (mandated for every directory-walking
+    // command, tldr-core/src/fs/mod.rs:140) AND also prints it -- the pairing
+    // this analysis itself uses -- would raise the count above UNREADABLE.len()
+    // and red this test on correct code. The per-name loop is immune, and it is the guard
+    // red-proofed by measurement: deleting the `eprintln!` in run_dead_analysis
+    // made this test fail, and restoring it made it pass.
+}
+
+/// The DEFAULT `-f json` invocation — no `--detail` — names every unreadable
+/// file in the report's own payload.
+///
+/// Companion to the stderr test above. stderr is not machine-readable, so for a
+/// programmatic consumer of `-f json` the parent card's stderr fix left the
+/// original defect intact: a dead-code report computed over a silently smaller
+/// file set, with nothing in the payload saying so. Measured before the fix, the
+/// whole payload was 264 bytes and contained no fixture filename at all.
+#[test]
+fn todo_without_detail_names_every_unreadable_file_in_root_warnings() {
+    let output = tldr_bin()
+        .args(["todo", FIXTURE, "-f", "json", "-l", "python"])
+        .output()
+        .expect("tldr todo failed to run");
+
+    assert!(
+        output.status.success(),
+        "todo should exit 0, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Control: SOME analysis reached the skipped-file path under `-f json`.
+    // Deliberately NOT phrased as "the dead analysis ran" -- this string is not
+    // specific to it. Today only the dead analysis prints `Warning: Skipped`
+    // (complexity prints `Warning: skipping`, lowercase, non-matching), but the
+    // comment above argues a second adopter of `skipped_file_warning` could
+    // print it too, and both claims cannot hold at once. It also reds if that
+    // `eprintln!` is deleted while the analysis still runs -- so the message
+    // below names the observation, not a subsystem.
     //
-    // It would NOT catch the case it looks built for. If the rival
-    // `Warning: skipping` were reworded to collide with this shape while this
-    // analysis's `eprintln!` was deleted, the collision SUBSTITUTES one
-    // announcement for another rather than adding to it -- the count is still 5
-    // and still passes, masked exactly as the loop is. The one configuration a
-    // count reds on is both announcing, which is correct code.
-    //
-    // The loop is the guard that earns its place: it was red-proofed by
-    // measurement -- deleting the `eprintln!` in run_dead_analysis made this
-    // test fail, and restoring it made it pass.
-    //
-    // Do NOT justify the absence by `skipped_file_warning`'s "every command MUST
-    // adopt it" doc comment (tldr-core/src/fs/mod.rs:140). That mandates the
-    // report's `warnings` FIELD, not a stderr line -- bugbot adopted the helper
-    // and emits a finding with no stderr output at all -- so adoption alone
-    // would not move this count.
+    // Checked BEFORE the payload assertions so a failure discriminates: stderr
+    // green with the root field missing means the lift is broken; stderr empty
+    // means nothing reached the skip path at all. On this fixture a plain run
+    // yields `items: []` and an all-zero summary, so stderr is the only
+    // evidence here INDEPENDENT of the field under test. (The root `warnings`
+    // array is itself evidence a scan happened, which is exactly why a control
+    // cannot be built from it.)
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Warning: Skipped"),
+        "control failed: no skipped-file warning on stderr under -f json, stderr: {stderr}"
+    );
+
+    let json: Value =
+        serde_json::from_slice(&output.stdout).expect("todo stdout should be valid JSON");
+
+    // Pins today's `--detail` gating. This does NOT guard the assertions below
+    // -- they read a ROOT key, which nothing inside `sub_results` can satisfy --
+    // so it is here for one reason only: adopting option (a) of TRDD-K3XQ7M2V
+    // (making `sub_results` unconditional) must surface as a test failure
+    // rather than as a silent change to the payload shape.
+    assert!(
+        json.get("sub_results").is_none(),
+        "plain todo must omit sub_results, got: {json}"
+    );
+
+    let warnings = json["warnings"]
+        .as_array()
+        .expect("root warnings array present")
+        .iter()
+        .map(|v| v.as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+
+    for name in UNREADABLE {
+        assert!(
+            warnings.iter().any(|w| w.contains(name)),
+            "expected root warnings to name {name}, got: {warnings:?}"
+        );
+    }
+
+    // Negative control. Unlike its sibling in the stderr test above, this one
+    // cannot fail by construction today: the root list is fed only by
+    // skipped-file warnings, so a readable file has no route into it. Kept for
+    // symmetry, and it reds if the lift ever collects a broader warning class.
+    for name in READABLE {
+        assert!(
+            !warnings.iter().any(|w| w.contains(name)),
+            "readable file {name} must not appear in root warnings, got: {warnings:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

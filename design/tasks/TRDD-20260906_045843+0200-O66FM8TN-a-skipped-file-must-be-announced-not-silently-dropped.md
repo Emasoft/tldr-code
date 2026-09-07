@@ -3,7 +3,7 @@ trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
 column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-07T19:59:23+0200
+updated: 2026-09-07T22:06:29+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
@@ -47,9 +47,40 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75]
   empty `ProjectCallGraph` and cache it forever (`handlers/callgraph.rs:60`, `:131`, `:328`);
   `dead` propagates (`:221`). An empty graph makes every function look dead. Any future cache
   unification must preserve BOTH the warnings and the fail-fast.
-- **NEXT ACTION: units 2-4 of `reports/colony/DELEGATION.md`** — `todo`/`bugbot born-dead` carrying
-  the skip list (unit 2), and the two silent-read-site surveys (units 3, 4). Unit 1 and unit 5 are
-  `verified`. This card does NOT close until those land; it is `dev`, not `complete`.
+- **NEXT ACTION: commit unit 2 (TRDD-K3XQ7M2V).** It is the ONLY unit left — rows 1, 3, 4 and 5 of
+  `reports/colony/DELEGATION.md` are all `verified`. This card does NOT close until unit 2 lands;
+  it is `dev`, not `complete`.
+- **2026-09-07 — UNIT 2 IS IN FLIGHT as child TRDD-K3XQ7M2V.** It adds a root
+  `TodoReport.warnings` field, lifted by key from each sub-report, so a plain `todo -f json` names
+  every skipped file without `--detail`. Implemented; its guards run by name and pass; NOT yet
+  committed.
+- **Units 3 and 4 WERE stalled; both dispatched 2026-09-07 21:59.** `reports/colony/DELEGATION.md`
+  showed rows 2, 3 and 4 all at `Status: pending`, with `worker-3`/`worker-4` named but never
+  spawned. The ledger's stated gate — "workers spawn only after piece 1 is committed" — **had been
+  satisfied since 2026-09-06 ~06:30**, when piece 1 landed. So nothing was blocking them; they were
+  simply never launched, and the gate was being cited for a wait it had already released. Both are
+  report-writing units over the silent read sites, no code change, output under gitignored
+  `reports/colony/`, so neither touches the frozen tree the in-flight suite run is measuring.
+  Recorded because `column: dev` was asserting activity while only unit 2 moved — a card that claims
+  to be in progress while nothing touches most of it is invisible in the one view anyone checks. A
+  janitor heartbeat surfaced this and I dismissed it by pointing at unit 2, which was moving; that
+  was answering a question nobody asked.
+- **Units 3 and 4 are now `verified` (2026-09-07 22:0x).** Both delivered; the coordinator ran
+  each acceptance command itself rather than trusting the workers' reports. Row 3 additionally
+  got two checks its own command cannot perform — an EXACT set-diff of its 56 `file:line` values
+  against the survey's 56 (empty in both `comm` directions) and one verdict read against source —
+  because `-eq 56` is a format gate that a worker could satisfy with 56 well-formed wrong lines.
+  Receipts and the residual "55 verdicts not individually verified" limit are in the ledger's
+  Evidence section.
+- **The planned "split units 3-4 into their own `todo` card" is DROPPED, and that is the point.**
+  It existed only because a 5-unit card had no honest single column while most of it was frozen.
+  Ending the stall removes the dishonesty at its source; filing a card ABOUT a stall would have
+  added an artifact and left the work where it was. The insurance argument for keeping it — that
+  `dev` is only true while the workers actually run, so a failed worker silently re-freezes the
+  card — was real but is now spent: both units are terminal and verified.
+- **ONE unit remains: unit 2, uncommitted.** With 3 and 4 verified and 1 and 5 verified, this
+  card's `dev` claim is now narrow and exactly true — it names the single in-flight change
+  (TRDD-K3XQ7M2V), not a 5-unit spread with most of it frozen.
 - Not blocking this card, noted so it is not rediscovered: `tldr-core` could expose the
   IR-returning half of `build_project_call_graph` so `dead` and `calls` share one config path.
 

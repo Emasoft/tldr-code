@@ -214,6 +214,27 @@ pub struct TodoReport {
     /// is passed. Skipped when empty.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sub_results: HashMap<String, Value>,
+    /// Warnings reported by the sub-analyses, aggregated across every analysis
+    /// that ran.
+    ///
+    /// TRDD-K3XQ7M2V: unlike `sub_results` this is populated on EVERY run. The
+    /// sub-report carrying these is returned unconditionally; only its insertion
+    /// into `sub_results` is gated on `--detail`, so before this field a plain
+    /// `tldr todo -f json` named no skipped file anywhere in its payload.
+    ///
+    /// The only producer today is the dead-code analysis's skipped-file list —
+    /// established by reading each sub-report's EMITTED keys, not by grepping
+    /// struct fields — so in practice this names files the scan could not read.
+    /// But it is collected structurally by key and is not restricted to those:
+    /// a sub-report that starts emitting a non-skip warning lands here too.
+    ///
+    /// The contract a new producer must meet: `warnings` at the sub-report's
+    /// TOP LEVEL, as an array. The lift is a single `get("warnings")`, so a
+    /// producer that nests its warnings deeper, or names the key differently,
+    /// contributes nothing and raises no error. See `lift_warnings` in
+    /// `todo.rs` for the shape, and its tests for what is pinned.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// Total elapsed time in milliseconds
     pub total_elapsed_ms: f64,
 }
@@ -227,6 +248,7 @@ impl TodoReport {
             items: Vec::new(),
             summary: TodoSummary::default(),
             sub_results: HashMap::new(),
+            warnings: Vec::new(),
             total_elapsed_ms: 0.0,
         }
     }
