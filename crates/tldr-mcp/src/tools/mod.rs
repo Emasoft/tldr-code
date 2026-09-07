@@ -1122,6 +1122,9 @@ mod tests {
     // -----------------------------------------------------------------------
     // Benchmark: full call_tool() cache hit path (target: <15us)
     // -----------------------------------------------------------------------
+    // TRDD-YJALU4Y2: wall-clock threshold, release-only. Failed 1 of 3
+    // identical debug runs. See cache.rs for the measurement.
+    #[cfg_attr(debug_assertions, ignore = "wall-clock threshold; release-only (TRDD-YJALU4Y2)")]
     #[test]
     fn bench_call_tool_cache_hit() {
         use std::time::{Duration, Instant};
@@ -1180,6 +1183,9 @@ mod tests {
     // -----------------------------------------------------------------------
     // Benchmark: call_tool() cache hit — breakdown of clone cost
     // -----------------------------------------------------------------------
+    // TRDD-YJALU4Y2: wall-clock threshold, release-only. Failed 1 of 3
+    // identical debug runs. See cache.rs for the measurement.
+    #[cfg_attr(debug_assertions, ignore = "wall-clock threshold; release-only (TRDD-YJALU4Y2)")]
     #[test]
     fn bench_call_tool_cache_hit_clone_cost() {
         use std::time::{Duration, Instant};
