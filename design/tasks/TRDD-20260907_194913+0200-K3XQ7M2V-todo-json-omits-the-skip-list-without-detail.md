@@ -318,14 +318,36 @@ Revisit when a second producer lands; it is a breaking change by then.
       built from different source than the code under test" are both failures to
       measure the change.
 
-      **Bounded, not hand-waved:** all eight were grepped for any reference to
-      `todo` / `TodoReport` — **zero hits in all eight**. They drive the binary
-      via `run_tldr(&[...])` -> `Command::new(bin).args(...)`, and none of those
-      argument lists names `todo`. So they cannot reach the changed code path,
-      which bounds the risk to nil for THIS diff while leaving the suite-wide
-      claim genuinely weaker. *(An earlier probe of this used `.arg("...")` and
-      returned empty for all six CLI files — a wrong-shape artifact, not a
-      finding. The broad `\btodo\b` grep is what carries the claim.)*
+      **Bounded — but the FIRST bound published for this was reasoning from the
+      wrong artifact, and it shipped in `0063e1b`'s commit message.** It said:
+      all eight were grepped for `todo` / `TodoReport`, zero hits, therefore they
+      cannot reach the changed code path. The premise is true and the inference
+      does not follow. **`crates/tldr-cli/src/commands/remaining/types.rs` is a
+      SHARED module for the whole `remaining` command family** — it defines
+      `APIRule`, `MisuseFinding`, `APICheckSummary`, `MisuseCategory` and
+      `MisuseSeverity` alongside `TodoReport`, and
+      `api_check_and_patterns_accuracy_v1.rs` (one of the eight) tests exactly
+      that command. A test that never utters "todo" can still consume types from
+      the file that was edited. The question asked was "does the TEST mention
+      todo?"; the question that decides it is "what did the EDIT touch?"
+
+      **The sound check, run afterwards, and it does hold.** The entire
+      `types.rs` diff in `0063e1b` is: one field `pub warnings: Vec<String>`
+      added INSIDE `TodoReport` (between `sub_results` and `total_elapsed_ms`)
+      with its doc comment, plus `warnings: Vec::new(),` in `TodoReport::new()`.
+      No shared type is touched, no signature changes, nothing else in the file
+      is altered. `todo.rs` gains a private helper and one call. So the eight are
+      unreachable from this diff — by the diff's scope, not by the tests' vocabulary.
+
+      **Same conclusion, replaced evidence.** Worth naming plainly: this is the
+      identical "right answer, wrong evidence" failure retracted on TRDD-DPL55YB3
+      earlier the same day, committed within the hour of writing that retraction,
+      and it reached a commit message where it cannot be edited. The correction
+      lives here because the card is the durable record; `0063e1b`'s message
+      still carries the weaker claim and is not to be cited for it.
+
+      *(An earlier probe used `.arg("...")` and returned empty for all six CLI
+      files — a wrong-shape artifact, not a finding.)*
 
       **Therefore this box's claim EXCLUDES those eight files.** Widening it
       requires `cargo build --release --features semantic` in the working tree
