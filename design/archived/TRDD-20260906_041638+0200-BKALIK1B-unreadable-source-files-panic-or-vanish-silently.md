@@ -1,13 +1,14 @@
 ---
 trdd-id: BKALIK1B
 title: A UTF-16 source file is reported as analysed with zero symbols instead of being skipped
-column: human_review
+column: complete
 created: 2026-09-06T04:16:38+0200
-updated: 2026-09-06T06:45:00+0200
+updated: 2026-09-07T16:05:00+0200
 current-owner: claude-session-2026-09-06
 task-type: bugfix
 min-approval-requirement: user
 labels: [scan-2026-09-05, robustness, encoding]
+implementation-commits: [3a416d8, ff70cc5, 0255418, c09eb2d, 13e6560, 4d2bcf1, 662633b, d8737e7]
 ---
 
 # A UTF-16 source file is reported as analysed with zero symbols instead of being skipped
@@ -175,7 +176,7 @@ labels: [scan-2026-09-05, robustness, encoding]
   rejects nothing real, and the deliberate M2 lossy fallback is preserved for the encodings it
   was written for.
 - Both cases verified against the real binary: BOM'd UTF-16 → skipped, `"UTF-16 LE BOM"`;
-  BOM-less UTF-16 → skipped, `"contains NUL bytes …"`; sibling UTF-8 files still analysed
+  BOM-less UTF-16 → skipped, `"NUL byte in the first 1024 bytes"`; sibling UTF-8 files still analysed
   normally. `files_skipped` and `warnings` reach the JSON output.
 - **STILL OPEN, and the retitling of this card made it INVISIBLE rather than fixed:
   latin-1 / cp1252 source is still silently mangled.** Those files are not valid UTF-8 and carry
@@ -242,12 +243,18 @@ lands. Sequencing, once it does:
       with zero symbols; it is skipped with a warning naming the file, while `good.py` and
       `control.py` still report 2 definitions each. — verified against the built binary.
 - [x] The BOM-LESS case is caught too (`nobom.py`), since that is the common form and the BOM
-      check alone missed it. — verified: skipped with `"contains NUL bytes …"`.
+      check alone missed it. — RE-VERIFIED 2026-09-07 against the built binary: skipped with
+      `"NUL byte in the first 1024 bytes"`. The quoted text here previously read
+      `"contains NUL bytes …"`, which was never the emitted string — a paraphrase recorded as a
+      quotation. The behaviour was right; the evidence line was not.
 - [x] `.gitattributes` prevents the fixtures being normalised into UTF-8 on checkout.
 - [x] A regression test asserts BOTH the fixture's encoding (first bytes / presence of NUL) AND
       the skip behaviour. Asserting behaviour alone is not enough: if a fixture ever rots into
       UTF-8, a behaviour-only test keeps passing while testing nothing.
-      — `crates/tldr-core/tests/encoding_skip_tests.rs`, 4 tests.
+      — `crates/tldr-core/tests/encoding_skip_tests.rs`. 6 tests from this card (the count read
+      "4" until 2026-09-07; two more landed with commits `4d2bcf1` and `662633b` and the line was
+      never updated). TRDD-O66FM8TN later added 2 more to the same file, so the binary now runs
+      8 — all 8 verified passing 2026-09-07.
 - [x] The corrected production-only survey has landed and the SILENT bucket's real size is
       recorded here. — 56 SILENT (see the table above).
 - [x] `cargo test -p tldr-core` shows no regression against the known baseline
@@ -260,6 +267,17 @@ lands. Sequencing, once it does:
       — RE-RUN 2026-09-06 06:20 after the last two commits (`662633b`, `d8737e7`) and the
       shared `late_nul.py` fixture: **83 bins / 7220 passed / 1 failed**, same single baseline
       name. Log: `reports_dev/suite/20260906_052138+0200-tldr-core.txt` (machine-local).
+      — RE-RUN AT CLOSING, 2026-09-07, at the current HEAD (i.e. with TRDD-O66FM8TN's changes on
+      top): **83 bins / 7222 passed / 1 failed**, `cargo_exit=101`, **zero `error[E…]`**. The +2
+      is exactly O66FM8TN's two additions to `encoding_skip_tests.rs`. Log:
+      `reports_dev/suite/20260907_155010+0200-tldr-core-postfix.txt` (machine-local).
+      Three things were checked that a bin count alone would miss: `82 Running + 1 Doc-tests =
+      83 test-result lines`, so no binary died before reporting and was silently dropped from the
+      totals; the failure's assertion text is BYTE-IDENTICAL to the earlier run
+      (`rr_module_function_integ_test.rs:62:5`, `[ast_only] expected at least one UserInput
+      source; got sources=[]`), so this is the same test failing for the same reason and not a
+      name collision; and the `passed`/`failed` field positions are identical on `ok.` and
+      `FAILED.` lines, so the tally is not silently short.
 
 ## What is NOT closed by the above
 
@@ -271,6 +289,9 @@ the boxes above must not be read as though it were:
   title of this card scopes to wide encodings, which hides it.
 
 Both need their own cards before this one is closed.
+**SATISFIED 2026-09-07 (see the Approval log):** the 56 SILENT sites are TRDD-O66FM8TN; the
+latin-1 mangling is TRDD-L41ORHO6, measured before filing rather than carried over as a
+hypothesis. This card closes on its demonstrated instance; neither successor is closed by it.
 
 ## Approval log
 
@@ -280,3 +301,41 @@ Both need their own cards before this one is closed.
   central claim (25 production panic sites) was false and is retracted; the card had also been
   left arguing with itself, a STOP banner contradicting its own body, which is a trap for a
   reader who skims to the section they need. Column moved `todo` → `dev`: a fix is in flight.
+- 2026-09-07T16:05:00+0200 — **COMPLETED.** Human review performed by the session Claude under an
+  explicit delegation from the USER, quoted verbatim so the authority is auditable rather than
+  implied: *"i delegate the human review to you. base your decisions of verified facts and tests.
+  do not assume anything."* This card's `min-approval-requirement` is `user`; the USER is that
+  approver and delegated this review of a card sitting in `human_review`, which on this board is
+  the column named for that very act.
+
+  **Every acceptance box was re-verified first-hand at review time rather than read off its tick**
+  — the ticks were written by the same session that did the work, so trusting them would have made
+  the review a formality:
+  - structure over the fixtures, against the BUILT BINARY (confirmed newer than every `.rs`
+    file before probing): `bad.py`, `nobom.py`, `u16be.py`, `u32be.py`, `u32le.py` all skipped
+    with warnings naming each, `files_skipped: 5`; `control.py` and `good.py` 2 definitions each;
+    `late_nul.py` analysed with 1.
+  - `.gitattributes`: `git check-attr -a` reports `text: unset`, `diff: unset` on the fixtures —
+    the protection is in force, not merely written down.
+  - the regression tests: 8 passing, attributed PER COMMIT rather than inferred (`0255418` +4,
+    `4d2bcf1` +1, `662633b` +1 = 6 from this card; 2 from TRDD-O66FM8TN), reconciled against the
+    8 the runner actually printed.
+  - the corrected survey file exists at the path the card cites.
+  - the full suite, re-run at closing — see the acceptance box above for the three checks that
+    make the tally trustworthy.
+
+  **Two evidence lines on this card were WRONG and are corrected above, found only by re-running
+  them:** the BOM-less warning was quoted as `"contains NUL bytes …"`, which was never the emitted
+  string, and the test count said 4 when it was 6. Both were paraphrase recorded as quotation —
+  the behaviour was right in each case, the evidence was not.
+
+  **The card's own stated precondition is now satisfied.** It required that BOTH deferred items
+  have their own cards before closing. The 56 SILENT read sites → TRDD-O66FM8TN (already filed).
+  The latin-1/cp1252 identifier mangling had NO card; rather than file a restatement of this
+  card's hypothesis, it was MEASURED first (`función` reported as `funci`, warnings null; and
+  `tldr dead` calling it `possibly_dead` although it is called) and filed as TRDD-L41ORHO6 with
+  that evidence. One claim in that card was itself over-strong and was corrected the same day —
+  the truncated name carries no U+FFFD.
+
+  `implementation-commits:` was missing and is now populated with the 8 code-bearing SHAs,
+  selected by inspecting what each commit touched, not by reading its subject line.
