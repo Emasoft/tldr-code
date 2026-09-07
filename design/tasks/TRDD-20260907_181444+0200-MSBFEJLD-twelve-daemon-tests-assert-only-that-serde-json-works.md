@@ -1,7 +1,7 @@
 ---
 trdd-id: MSBFEJLD
 title: Twelve daemon tests assert only that serde_json parses a literal they just wrote
-column: todo
+column: backburner
 created: 2026-09-07T18:14:44+0200
 updated: 2026-09-07T18:14:44+0200
 current-owner: unassigned
@@ -49,8 +49,21 @@ The twelve: `ping_request_format`, `tree_request_format`, `structure_request_for
 That is 12 of the 39 test functions the harness reports for `tldr-daemon` — roughly 30% of the
 crate's apparent test count, asserting nothing about the crate.
 
-**All twelve bodies were read, not sampled.** An earlier pass had read five and generalised;
-the remaining seven were then read and are identical in shape. `response_ok_format` and
+**All twelve bodies read RAW — and the two earlier attempts to say so were both wrong.** Attempt
+1 read 4 whole bodies and generalised to 12. Attempt 2 (`c377b3b`) claimed enumeration but had
+piped the remaining 8 through `grep 'fn \|use \|assert\|r#"'`, a filter that silently drops the
+`serde_json::from_str` line and ANY line not matching those four patterns — including, had one
+existed, a call into daemon code. That is a PROJECTION of the bodies published as an
+enumeration, in a commit whose subject was that exact distinction. Attempt 3 read lines 95-175
+with no filter: all 8 confirmed identical in shape.
+
+**This file has already had TWO fake-test sweeps, and this module survived both.** A comment
+below `message_tests` records that a former `state_tests` module held 3 tests whose bodies were
+only `let _ = ();`, and that they were DELETED — "per the no-conceptual-tests rule, a
+placeholder duplicating real coverage elsewhere is deleted, not kept as dead weight". Combined
+with the `socket_tests` fix above it, that is two passes over this file that both missed the
+twelve. It also settles which option has precedent HERE: **deletion**, where genuine coverage
+already exists elsewhere. `response_ok_format` and
 `response_error_format` are included and are the same tautology (`r#"{"status": "ok", "result":
 "pong"}"#` parsed and asserted against itself) — note these are DIFFERENT tests from
 `server::tests::test_daemon_response_ok`, which lives in `src/server.rs`, constructs a real
@@ -65,10 +78,19 @@ the remaining seven were then read and are identical in shape. `response_ok_form
 > `compute_socket_path`/`compute_tcp_port` itself (a fake/conceptual test — see tldr rule on
 > tests that don't exercise the code they claim to test).
 
-Someone identified the exact class, wrote down why it is fatal, fixed `socket_tests` to call
-`compute_socket_path` for real — and left twelve instances of the same defect in the next module
-down, in the same file. So this is not an unknown problem; it is a known one that was fixed
-locally and not swept.
+So the class is diagnosed in writing, in this file, and `socket_tests` was fixed to call
+`compute_socket_path` for real — while twelve instances of the same defect sit in the next
+module down. **No claim is made about who knew what:** the comment's author may never have read
+past their own module. What is supported is that the defect is documented here and unfixed
+thirty lines away, so it needs no rediscovery — only a decision.
+
+**A cheaper option than the card first suggested.** `message_tests::response_ok_format` may be a
+fake TWIN of a genuine test: `server::tests::test_daemon_response_ok` (in `src/server.rs`)
+constructs a real `DaemonResponse::ok("pong")` and asserts its serialization, which is exactly
+what the fake one pretends to do with a string literal. If the same holds for the `_error` pair,
+part of the fix is rung 1 — delete the twin, the real one already exists — rather than writing
+anything. Check each of the twelve for an existing genuine counterpart before authoring
+replacements.
 
 ## Why it matters beyond tidiness
 

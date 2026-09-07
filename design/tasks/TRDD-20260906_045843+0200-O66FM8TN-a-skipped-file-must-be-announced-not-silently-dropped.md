@@ -106,11 +106,27 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1]
     test touches the `dead` handler.** That file has ZERO references to `callgraph` or `dead`
     (the `dead` handler lives in `handlers::callgraph`, which nothing imports), and the
     both-spellings `files_skipped` grep found nothing outside the implementation line.
-    **Re-verified across ALL FOUR test files** with `grep -rnw 'dead\|callgraph\|DeadCode'`:
-    exactly one hit, the English phrase `// not kept as dead weight` in a comment. The first
-    version of this check ran on ONE file with the pattern `[^_a-z]dead`, which requires a
-    preceding character and so would not have matched `dead` at the start of a line — a pattern
-    that could have returned 0 from being wrong rather than from the claim being true.
+    **Established by `grep -rniE 'callgraph|dead'` over all four test files** — case-insensitive,
+    no character-class guard. Six hits: five are `ProjectCallGraph` in
+    `val004_cache_oncecell_test.rs`, every one of them `ProjectCallGraph::new()` handed to
+    `get_or_build_call_graph` as an empty stub (the same shape as the two `state::tests` cache
+    tests); the sixth is the English phrase `// not kept as dead weight` in a comment. **No test
+    references the `dead` handler, `handlers::callgraph`, or `DeadCodeReport.**
+    **Two earlier versions of this check were wrong in the same direction, and the second was
+    committed as an "enumeration".** v1 ran on ONE file with `[^_a-z]dead` — a guard requiring a
+    preceding character. v2 (`c377b3b`) ran on all four but as `grep -rnw 'dead\|callgraph\|
+    DeadCode'`, and reported "exactly one hit". That was FALSE: `-w` cannot match `callgraph`
+    inside `ProjectCallGraph`, and case-sensitivity blocked it independently, so five real
+    references were invisible. **The lesson is about pattern DIRECTION, not pattern quality:**
+    both guards existed to suppress false positives, on a question where a false NEGATIVE is the
+    dangerous outcome. When missing a hit is the risk, widen the pattern and read the noise.
+  - **The same commit made the same error a second way: a FILTERED READ published as an
+    enumeration.** `c377b3b` claimed all twelve `message_tests` bodies had been read; 8 of them
+    had been piped through `grep 'fn \|use \|assert\|r#"'`, which drops every line not matching
+    those four patterns — including the one line that would reveal a call into daemon code.
+    Re-read raw, the claim holds. **A filter is not a read.** Both defects in that commit share
+    one cause: choosing an instrument that suppresses what would falsify you, on a question
+    where being falsified is the useful outcome.
     **How the false version got committed:** I dismissed this file because the other traversal
     file's names end `_rejects_absolute_path_outside_project`, so "traversal tests assert
     rejection" — reasoning from ONE file's naming pattern to a differently-named file I had not
