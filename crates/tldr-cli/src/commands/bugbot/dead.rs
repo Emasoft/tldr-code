@@ -51,15 +51,14 @@ pub fn compose_born_dead(
     // Scan the entire project for identifier refcounts (single-pass tree-sitter).
     // TRDD-O66FM8TN: a file dropped from the refcount scan takes its references
     // with it, which turns a called new function into a "born dead" finding.
-    // bugbot has no warnings channel yet, so say so on stderr rather than
-    // discard it; wiring it into the findings is the follow-up on that card.
+    // Carry the skip list into the emitted findings (instead of only
+    // printing it to stderr) so a machine-readable consumer sees it.
     let (_module_infos, ref_counts, skipped) =
         collect_module_infos_with_refcounts(project, *language, false);
-    for warning in &skipped {
-        eprintln!("Warning: {warning}");
-    }
 
-    compose_born_dead_with_refcounts(inserted, &ref_counts)
+    let mut findings = compose_born_dead_with_refcounts(inserted, &ref_counts)?;
+    findings.extend(skipped_file_findings(&skipped));
+    Ok(findings)
 }
 
 /// Scoped born-dead detection: only scan changed files + their importers.
@@ -82,16 +81,24 @@ pub fn compose_born_dead_scoped(
     }
 
     // Tier 1: Count identifiers in changed files only.
+    // TRDD-O66FM8TN: a changed file the scan couldn't read drops its
+    // references, which can turn a called new function into a false
+    // "born dead" finding -- collect the skip so it reaches the report
+    // instead of being silently swallowed by the `if let Ok(..)`.
     let mut ref_counts: HashMap<String, usize> = HashMap::new();
+    let mut skipped: Vec<String> = Vec::new();
     for file in changed_files {
         if !file.exists() {
             continue;
         }
-        if let Ok((tree, source, lang)) = parse_file(file) {
-            let file_counts = count_identifiers_in_tree(&tree, source.as_bytes(), lang);
-            for (name, count) in file_counts {
-                *ref_counts.entry(name).or_insert(0) += count;
+        match parse_file(file) {
+            Ok((tree, source, lang)) => {
+                let file_counts = count_identifiers_in_tree(&tree, source.as_bytes(), lang);
+                for (name, count) in file_counts {
+                    *ref_counts.entry(name).or_insert(0) += count;
+                }
             }
+            Err(e) => skipped.push(tldr_core::fs::skipped_file_warning(file, e)),
         }
     }
 
@@ -107,15 +114,41 @@ pub fn compose_born_dead_scoped(
         if changed_files.iter().any(|cf| cf == file) {
             continue;
         }
-        if let Ok((tree, source, lang)) = parse_file(file) {
-            let file_counts = count_identifiers_in_tree(&tree, source.as_bytes(), lang);
-            for (name, count) in file_counts {
-                *ref_counts.entry(name).or_insert(0) += count;
+        match parse_file(file) {
+            Ok((tree, source, lang)) => {
+                let file_counts = count_identifiers_in_tree(&tree, source.as_bytes(), lang);
+                for (name, count) in file_counts {
+                    *ref_counts.entry(name).or_insert(0) += count;
+                }
             }
+            Err(e) => skipped.push(tldr_core::fs::skipped_file_warning(file, e)),
         }
     }
 
-    compose_born_dead_with_refcounts(inserted, &ref_counts)
+    let mut findings = compose_born_dead_with_refcounts(inserted, &ref_counts)?;
+    findings.extend(skipped_file_findings(&skipped));
+    Ok(findings)
+}
+
+/// Turn a list of `Skipped <path>: <reason>` warning strings into
+/// informational findings so a scan that dropped a source file is visible
+/// in the same machine-readable output the real findings ride in, instead
+/// of only being printed to stderr.
+fn skipped_file_findings(skipped: &[String]) -> Vec<BugbotFinding> {
+    skipped
+        .iter()
+        .map(|warning| BugbotFinding {
+            finding_type: "skipped-file".to_string(),
+            severity: "low".to_string(),
+            file: PathBuf::new(),
+            function: String::new(),
+            line: 0,
+            message: warning.clone(),
+            evidence: serde_json::Value::Null,
+            confidence: None,
+            finding_id: None,
+        })
+        .collect()
 }
 
 /// Find files that import any of the changed modules.

@@ -320,10 +320,19 @@ fn run_dead_analysis(path: &Path, language: Language) -> RemainingResult<(Vec<To
     };
 
     // Single-pass: collect module infos and identifier reference counts together.
-    // TRDD-O66FM8TN: the skipped-file warnings are deliberately NOT bound to
-    // `_`; `todo` has no warnings channel of its own yet, so they are printed
-    // to stderr rather than dropped. Wiring them into the todo report is the
-    // follow-up on that card.
+    // TRDD-O66FM8TN: a file the scan couldn't read is a file dropped from the
+    // whole-program call graph, so its only-caller functions look dead when
+    // they aren't. Carry the skip list into the emitted `DeadCodeReport`
+    // (`files_skipped`/`warnings`, both already `#[serde(default)]`) so a
+    // machine-readable consumer sees it.
+    //
+    // BOTH channels, deliberately. The stderr line below is NOT redundant with
+    // that wiring: `result_value` reaches the output only through the
+    // `sub_results.insert(..)` at the top of this file, which is gated on
+    // `--detail <this analysis>`. A plain `tldr todo` never evaluates that
+    // branch, so the report fields alone would drop the skip list on the
+    // DEFAULT path — the exact silent-drop this card exists to prevent, and a
+    // regression against the unconditional warning that was here before.
     let (module_infos, merged_ref_counts, skipped) =
         collect_module_infos_with_refcounts(project_root, language, false);
     for warning in &skipped {
@@ -332,8 +341,10 @@ fn run_dead_analysis(path: &Path, language: Language) -> RemainingResult<(Vec<To
     let all_functions: Vec<FunctionRef> = collect_all_functions(&module_infos);
 
     // Run refcount-based analysis (rescues functions that are referenced by name)
-    let report = dead_code_analysis_refcount(&all_functions, &merged_ref_counts, None)
+    let mut report = dead_code_analysis_refcount(&all_functions, &merged_ref_counts, None)
         .map_err(|e| RemainingError::analysis_error(format!("Dead code analysis failed: {}", e)))?;
+    report.files_skipped = skipped.len();
+    report.warnings = skipped;
 
     // Convert to TodoItems. Preserve the real start line from DeadFunction
     // (BUG-05: previously hardcoded 0, losing the line of the dead symbol).
