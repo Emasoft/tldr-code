@@ -151,12 +151,21 @@ fn todo_without_detail_still_names_every_unreadable_file_on_stderr() {
     }
 
     // Deliberately NO exact-count assertion pinning the number of
-    // `Warning: Skipped` lines to UNREADABLE.len(). It would add exactly one
-    // case the loop above misses -- the rival `Warning: skipping` from the
-    // complexity analysis someday being reworded to collide with this shape --
-    // and that is speculative. The loop is the guard that earns its place: it
-    // was red-proofed by measurement -- deleting the `eprintln!` in
-    // run_dead_analysis made this test fail, and restoring it made it pass.
+    // `Warning: Skipped` lines to UNREADABLE.len(). It would catch two things
+    // this loop cannot -- one file announced twice, and a sixth file announced
+    // whose name is in neither fixture list (no assertion in this test touches
+    // such a name). Both are speculative.
+    //
+    // It would NOT catch the case it looks built for. If the rival
+    // `Warning: skipping` were reworded to collide with this shape while this
+    // analysis's `eprintln!` was deleted, the collision SUBSTITUTES one
+    // announcement for another rather than adding to it -- the count is still 5
+    // and still passes, masked exactly as the loop is. The one configuration a
+    // count reds on is both announcing, which is correct code.
+    //
+    // The loop is the guard that earns its place: it was red-proofed by
+    // measurement -- deleting the `eprintln!` in run_dead_analysis made this
+    // test fail, and restoring it made it pass.
     //
     // Do NOT justify the absence by `skipped_file_warning`'s "every command MUST
     // adopt it" doc comment (tldr-core/src/fs/mod.rs:140). That mandates the

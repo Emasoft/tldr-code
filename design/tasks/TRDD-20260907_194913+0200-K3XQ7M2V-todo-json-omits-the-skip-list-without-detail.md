@@ -89,16 +89,29 @@ downward was the wrong fix.
 Both blocking assumptions were read and both hold:
 
 - **There is a root struct.** `TodoReport` (`crates/tldr-cli/src/commands/remaining/types.rs:199`)
-  is built in `TodoCommand::run` at `todo.rs:260` and serialized whole. It already
-  carries a conditionally-emitted field — `sub_results` is
+  is built in `TodoCommand::run` at `todo.rs:260` and serialized whole — via
+  `serde_json::to_string_pretty(&report)` at `todo.rs:270` for `--output`, and
+  `writer.write(&report)` at `todo.rs:284` for stdout. (The `to_value(&report)`
+  calls at 372/422/465 are NOT this: 372 is inside `run_dead_analysis`, which
+  begins at 314. They serialize each SUB-analysis's own report. An earlier
+  version of this section cited them as evidence for the root — the conclusion
+  held, the citation did not.) It already carries a conditionally-emitted
+  field — `sub_results` is
   `#[serde(default, skip_serializing_if = "HashMap::is_empty")]` (types.rs:215),
   added by WRAPPER-CROSS-CONSISTENCY-V1/BUG-19 for exactly this reason: an
   always-present empty `{}` was misleading. So an omitted-when-empty additive
   field is this struct's established pattern, not a new convention.
-- **No consumer uses `deny_unknown_fields`.** Workspace-wide grep returns three
-  hits, all prose: a test comment, a doc comment, and `encoding.rs:157`, which
-  notes that `deny_unknown_fields` on a mirror struct "would break on output it
-  never asked for". Nothing deserializes the todo root strictly.
+- **Nothing IN THIS WORKSPACE uses `deny_unknown_fields`.** Grep over `crates/`
+  returns three hits, all prose: a test comment, a doc comment, and
+  `encoding.rs:157`, which notes that `deny_unknown_fields` on a mirror struct
+  "would break on output it never asked for".
+  **Scope, stated because the search cannot cover the claim's real subject:** a
+  consumer of `tldr todo -f json` is by definition OUTSIDE this repo — another
+  tool, a script, a downstream crate. No grep here can see one, so this is not
+  "no consumer deserializes strictly"; it is "this repo sets no such trap, and
+  the one place that considered it rejected it as wrong for this kind of output".
+  That is the strongest form available without surveying users, and it is what
+  the additive option rests on.
 
 **Remaining design step, not yet done:** the skip list is local to
 `run_dead_analysis`, which returns `(Vec<TodoItem>, Value)`. The warnings reach
