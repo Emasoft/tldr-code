@@ -19,9 +19,12 @@ Not started. Split out of TRDD-O66FM8TN on 2026-09-07 because the parent's
 stderr fix landed while this channel stayed broken, and a line in a commit
 message is not on the board.
 
-**NEXT ACTION:** read how `TodoCommand::run` assembles its root JSON value
-before committing to the shape below — option (c) is *recommended*, not
-*verified feasible*. Nobody has read the root serialization yet.
+**NEXT ACTION:** decide how the skip list reaches `TodoCommand::run`. Feasibility
+of option (c) is now RESOLVED — see the section below; `TodoReport` takes an
+additive field cleanly and no consumer deserializes strictly. What is undecided
+is the plumbing: `run_dead_analysis` returns `(Vec<TodoItem>, Value)` and the
+warnings are buried inside the serialized `DeadCodeReport`, so a third channel
+out of each sub-analysis is needed.
 
 ## What
 
@@ -81,11 +84,30 @@ hedging.
 no recorded trigger. Someone should document it or lower it. Propagating it
 downward was the wrong fix.
 
-## Not yet verified
+## Feasibility of (c) — RESOLVED 2026-09-07, it is feasible
 
-- Whether `TodoCommand::run` has a root object that can take an additive field
-  without disturbing `sub_results` / the summary. **Read this first.** The
-  option table above is a design sketch, not a feasibility finding.
+Both blocking assumptions were read and both hold:
+
+- **There is a root struct.** `TodoReport` (`crates/tldr-cli/src/commands/remaining/types.rs:199`)
+  is built in `TodoCommand::run` at `todo.rs:260` and serialized whole. It already
+  carries a conditionally-emitted field — `sub_results` is
+  `#[serde(default, skip_serializing_if = "HashMap::is_empty")]` (types.rs:215),
+  added by WRAPPER-CROSS-CONSISTENCY-V1/BUG-19 for exactly this reason: an
+  always-present empty `{}` was misleading. So an omitted-when-empty additive
+  field is this struct's established pattern, not a new convention.
+- **No consumer uses `deny_unknown_fields`.** Workspace-wide grep returns three
+  hits, all prose: a test comment, a doc comment, and `encoding.rs:157`, which
+  notes that `deny_unknown_fields` on a mirror struct "would break on output it
+  never asked for". Nothing deserializes the todo root strictly.
+
+**Remaining design step, not yet done:** the skip list is local to
+`run_dead_analysis`, which returns `(Vec<TodoItem>, Value)`. The warnings reach
+`result_value` only inside the serialized `DeadCodeReport`. Lifting them to the
+root needs a third channel out of each sub-analysis (widen the return tuple, or
+a collector passed in) — mechanical, but it touches every sub-analysis, so it is
+the part to scope before writing code.
+
+## Not yet verified
 - Whether the other sub-analyses have skip lists that should ride the same
   field. `skipped_file_warning`'s doc comment (`tldr-core/src/fs/mod.rs:140`)
   says every directory-walking command MUST adopt the helper, so the field
