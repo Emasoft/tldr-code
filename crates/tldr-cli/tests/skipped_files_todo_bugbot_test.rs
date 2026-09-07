@@ -134,10 +134,19 @@ fn todo_without_detail_still_names_every_unreadable_file_on_stderr() {
         );
     }
 
+    // Bind to the ANNOUNCEMENT, not merely the filename, and require both on the
+    // SAME line. Plain `tldr todo` runs every sub-analysis, and another one
+    // already emits `Warning: skipping <path> due to parse error` for these same
+    // fixtures. A bare `stderr.contains(name)` is therefore satisfied with the
+    // `eprintln!` in run_dead_analysis deleted -- measured, not supposed -- so it
+    // would be a test that cannot fail. `Warning: Skipped` (capital S, from
+    // `skipped_file_warning`) is what only the dead-analysis announcement emits.
     for name in UNREADABLE {
         assert!(
-            stderr.contains(name),
-            "default `tldr todo` must name skipped file {name} on stderr, got: {stderr}"
+            stderr
+                .lines()
+                .any(|l| l.contains("Warning: Skipped") && l.contains(name)),
+            "default `tldr todo` must announce skipped file {name}, stderr: {stderr}"
         );
     }
 }
