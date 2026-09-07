@@ -173,18 +173,23 @@ pub async fn dead(
     // build the IR directly here instead of going through the shared,
     // cached ProjectCallGraph used by `calls` — that cache cannot carry
     // warnings because ProjectCallGraph has no field for them.
-    // The bypass is NOT only a caching difference — do not "optimize" it away.
-    // This path builds with `use_type_resolution = true` and, when
-    // `WorkspaceConfig::discover` finds roots, with those workspace roots. The
-    // cached path (`calls`/`impact`/`arch`) calls `build_project_call_graph`
-    // and passes neither. On a multi-root workspace the two produce DIFFERENT
-    // edge sets, and this one sees more. Moving `dead` back onto the shared
-    // cache without reproducing both settings would silently lose edges and
-    // resurrect the dead-code false positives TRDD-O66FM8TN exists to kill —
-    // a correctness regression wearing a performance change's clothes.
+    // The bypass exists for ONE reason: the shared cache stores a
+    // `ProjectCallGraph`, and that type has no field for the skip list —
+    // `project_graph_from_ir`/`_ref` (builder.rs:68, :86) copy edges only. So a
+    // `dead` that went through the cache could not report skipped files at any
+    // price. That is the whole justification.
+    //
+    // The BUILD CONFIG is NOT a reason, and an earlier version of this comment
+    // claimed it was. `build_project_call_graph` also sets
+    // `use_type_resolution = true` (builder.rs:40) and, because `None` is what
+    // TRIGGERS workspace discovery rather than skipping it (builder.rs:48-62),
+    // also discovers and applies workspace roots. The two paths build
+    // equivalently. Anyone unifying them needs to preserve the WARNINGS, not
+    // some config difference — there isn't one.
+    //
     // ponytail: the cost is that `dead` rebuilds the graph every request. If
-    // that ever matters, cache a (graph, warnings) pair built with THIS
-    // config; do not reuse the `calls` cache.
+    // that ever matters, cache a (graph, warnings) pair — the graph half can
+    // safely be the same one `calls` uses.
     let build_root = project.clone();
     let ir = tokio::task::spawn_blocking(move || {
         let mut config = tldr_core::callgraph::BuildConfig {

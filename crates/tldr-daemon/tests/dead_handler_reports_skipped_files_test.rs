@@ -9,9 +9,14 @@
 //! file is reported `possibly_dead` when it is not. The answer is wrong and
 //! nothing in the payload says so — that is the whole defect.
 //!
-//! Before this file, no test in `crates/tldr-daemon/` asserted on ANY handler's
-//! output CONTENT, so a regression that zeroed `files_skipped` would have gone
-//! unnoticed by a green suite.
+//! Before this file, no test in `crates/tldr-daemon/` asserted on the `dead`
+//! handler's output at all, so a regression that zeroed `files_skipped` would
+//! have gone unnoticed by a green suite.
+//!
+//! (An earlier draft of this comment said "no test asserted on ANY handler's
+//! output content". That is false — `handler_path_traversal_audit_test.rs`
+//! inspects handler responses with `json_contains_substring`. The narrower
+//! claim above is the true one.)
 //!
 //! Two cases, not one. `skipped_file_is_announced` alone would still pass if
 //! `files_skipped` were hardcoded to 1, so `clean_project_reports_zero_skipped`
