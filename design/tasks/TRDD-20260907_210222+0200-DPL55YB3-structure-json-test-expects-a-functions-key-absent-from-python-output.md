@@ -3,7 +3,7 @@ trdd-id: DPL55YB3
 title: test_structure_json_output expects a functions key absent from structure's python output
 column: todo
 created: 2026-09-07T21:02:22+0200
-updated: 2026-09-07T22:30:42+0200
+updated: 2026-09-07T22:37:38+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
@@ -61,12 +61,56 @@ a shrinking-delta rename is churn. Noted so the next editor picks that form.
 
 ## Evidence it is pre-existing, not a regression
 
-Measured, not inferred. The same single test was run at HEAD
+The same single test was run at HEAD
 `2d3b87f1ec1cba73699ab3f53577d210f5b17113` in a **detached worktree** with
 `git status --porcelain` empty — i.e. with no uncommitted work present at all —
 and failed identically (`Unexpected stdout, failed var.contains("functions")`,
-`test result: FAILED. 0 passed; 1 failed`). It is not caused by anything in
-flight.
+`test result: FAILED. 0 passed; 1 failed`).
+
+**CORRECTED 2026-09-07 22:37 — that reproduction proves LESS than this section
+claimed.** `git merge-base --is-ancestor 2d3b87f b64d541` returns FALSE:
+`2d3b87f` is **not** an ancestor of the O66FM8TN chain's base, so it sits inside
+or after the chain. The reproduction therefore establishes only *"not caused by
+UNCOMMITTED work"* — never *"predates the chain"*, which is how this section was
+being read. "Pre-existing" was carrying two different meanings.
+
+**What does establish it, read at the pre-chain base.** `b64d541~1` is
+`d8737e7`, and at that commit `crates/tldr-core/src/types.rs` ALREADY carries
+
+    #[serde(skip_serializing)]
+    #[serde(default)]
+    pub functions: Vec<String>,
+
+and the identical treatment on `pub methods`. The suppression predates the whole
+chain, from the file's own state at the base — not from a diff-grep of one
+commit inside it. An earlier draft argued this from `git show b64d541 -- …`
+returning no hits, which inspects ONE commit of ten and cannot see a change to a
+line's neighbour; it was dropped rather than qualified.
+
+## The sweep is wider than one test — cluster 2
+
+`crates/tldr-cli/tests/elixir_method_infos_v1.rs` fails two tests for the SAME
+reason with a different key, and they meet this card's own evidence bar:
+
+- `:64-66` — `.get("methods").and_then(Value::as_array).expect("methods array present")`
+- `:140` — the same access via `.unwrap()`
+- `types.rs:1297-1299` — `#[serde(skip_serializing)] #[serde(default)] pub methods: Vec<String>`,
+  doc comment: *"schema-cleanup-v1 BUG-13 … JSON output emits `method_infos`
+  (objects) and `definitions` instead."*
+- the test's own assertion message calls it **"legacy methods[]"**
+
+So `a5c2e3b`'s alignment sweep missed at least two cells, not one. **A fix that
+touches only `cli_tests.rs` leaves the suite red.**
+
+**The fix here is NOT a key swap.** The test asserts `methods` *contains* the
+strings `"bar"` and `"baz"`; `method_infos` holds OBJECTS. Reading names out of
+`method_infos`/`definitions[]` is a different assertion, not a renamed one.
+
+**Not in this card:** the 36 `exhaustive_matrix.rs` failures over a
+`function_name` key. Different command, different struct, no `skip_serializing`,
+no BUG-13 reference — grouping them here would have decided their (a)/(b)
+question by placement, which is the exact failure this card documents twice.
+They are TRDD-8K4YKK1Q, cause explicitly undecided.
 
 **RESOLVED — it is (a). Settled from PRODUCTION SOURCE at both ends, 2026-09-07.**
 This section reached the right answer on its third try; the two wrong routes are
@@ -249,8 +293,14 @@ before it is accepted as passing.
       assertion.** Removing the assertion proves only that the assertion runs;
       removing the thing it looks for proves it can still fail for the right
       reason.
+- [ ] Cluster 2 lands too: `elixir_method_infos_v1.rs` `:66` and `:140` stop
+      asserting on the suppressed `methods` key. Reading names out of
+      `method_infos`/`definitions[]` is a NEW assertion, not a key swap —
+      `methods` holds strings, `method_infos` holds objects. Red-proof each.
 - [ ] `cargo test -p tldr-cli` (UNFILTERED) is fully green — capture cargo's
-      OWN exit status, never a wrapper's.
+      OWN exit status, never a wrapper's. Note this ALSO requires TRDD-8K4YKK1Q
+      (36 `exhaustive_matrix` failures), which is a different mechanism and is
+      NOT this card's work.
 - [ ] If (b): a note on whether any other command's JSON carries the same
       rename, since a consumer reading `functions` would break everywhere at once.
 

@@ -3,7 +3,7 @@ trdd-id: OGK2ROKJ
 title: tldr todo names skipped files only on stderr while dead and calls name them in the report
 column: todo
 created: 2026-09-07T22:14:49+0200
-updated: 2026-09-07T22:30:42+0200
+updated: 2026-09-07T22:37:38+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
@@ -84,6 +84,40 @@ Not a silent failure — a divergence from the siblings:
 A user who redirects stdout to a file, pipes it, or reads it in a pager gets a
 report whose own text does not say it is partial. That is a real gap. It is NOT
 a claim that the user was never told.
+
+**`--output <path>` is the sharpest case.** `todo.rs:286-291` writes
+`format_todo_text(..)` to a FILE while the warnings still go to the process's
+stderr. A user who runs `tldr todo -o report.txt` and reads `report.txt` later
+has no way at all to learn the analysis was partial.
+
+**Scope of the claim, closed properly this time.** The retraction above happened
+because a grep scoped to `format_todo_text` missed an announcement in its
+CALLER. So the same check was then run over the WHOLE FILE:
+`grep -n 'println!\|print!\|stdout' todo.rs` returns exactly three lines — a doc
+comment at `:155`, the `// Write to stdout` comment at `:297`, and the
+`eprintln!` at `:475`. There is no `println!` anywhere in the file. Reading
+`:285-303` shows text-mode stdout content is EXACTLY `format_todo_text(..)`'s
+return value. So "stdout omits the skip line" is now established over the file,
+not over a function chosen in advance.
+
+## The real decision this card forces — and it is NOT count-vs-names
+
+`todo.rs:458-461` does not merely happen to write to stderr. It records an
+INTENT: *"BOTH channels, deliberately, and the stderr line is the load-bearing
+one on the default path."* Adding a `Files skipped:` line to stdout is a change
+**against a stated design decision**, so this card carries the same (a)/(b) fork
+TRDD-DPL55YB3 exists to force:
+
+| | Change | What it means |
+|---|---|---|
+| a | add the stdout line to `todo` | the comment is wrong; the report body should be self-describing, as `dead`/`calls` already assume |
+| b | change nothing | stderr is the right channel and `dead`/`calls` are the outliers |
+
+(a) is probably right — a report that cannot say it is partial when written to a
+file is hard to defend. But it must be ARGUED, not assumed, and whichever way it
+goes, the comment at `:458-461` must end up agreeing with the code. Leaving a
+comment asserting an intent the code no longer follows is how the next reader
+gets misled — which is exactly how this card was filed wrong in the first place.
 
 **Consequence for the parent, CORRECTED.** The filed version said O66FM8TN
 "MUST NOT close without it", on the strength of the silence claim. **That reason
