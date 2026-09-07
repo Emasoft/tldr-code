@@ -32,8 +32,14 @@ fn dead_reports_every_unreadable_file_by_name_in_warnings() {
     let text = &result.content.first().expect("content item").text;
     let report: serde_json::Value = serde_json::from_str(text).expect("valid JSON report");
 
+    // Assert the ONE wire name, not either-of-two. The previous version tried
+    // `filesSkipped` and fell back to `files_skipped`, which meant it could not
+    // fail on a wire-name change — the exact thing a consumer would break on.
+    // The hedge also actively misled a later reading of this file into claiming
+    // the tool emits camelCase; it does not. `DeadCodeReport`'s hand-rolled
+    // Serialize (tldr-core/src/types.rs:2521) writes `files_skipped`.
     assert_eq!(
-        report["filesSkipped"].as_u64().or_else(|| report["files_skipped"].as_u64()),
+        report["files_skipped"].as_u64(),
         Some(UNREADABLE.len() as u64),
         "report: {text}"
     );
