@@ -96,8 +96,27 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1]
     calls a handler; neither inspects graph contents. So the bypass cannot redden them. That is
     measured two ways: the bodies above, and `cargo test -p tldr-daemon` exiting 0 with unit 5's
     modified handler present in the tree.
-  - **THE CLAIM "no daemon test exercises any handler's OUTPUT CONTENT" — how it is actually
-    supported, after three insufficient attempts.** Names cannot carry it; bodies can:
+  - **⚠ THE CLAIM "no daemon test exercises any handler's OUTPUT CONTENT" IS FALSE. Retracted
+    2026-09-07, one commit after it was written.** `tests/handler_path_traversal_audit_test.rs`
+    (423 lines) imports SEVEN handlers directly — `handlers::ast::{imports}`,
+    `handlers::flow::{…}`, `handlers::quality::{…}` — calls them against a real `DaemonState`,
+    and inspects the returned `Json<Value>` with a recursive `json_contains_substring` helper
+    plus a `files_analyzed == 0` assertion. That is output-content testing, by any reading.
+    **What survives is the NARROW claim, and it is the one that mattered all along: no daemon
+    test touches the `dead` handler.** That file has ZERO references to `callgraph` or `dead`
+    (the `dead` handler lives in `handlers::callgraph`, which nothing imports), and the
+    both-spellings `files_skipped` grep found nothing outside the implementation line.
+    **How the false version got committed:** I dismissed this file because the other traversal
+    file's names end `_rejects_absolute_path_outside_project`, so "traversal tests assert
+    rejection" — reasoning from ONE file's naming pattern to a differently-named file I had not
+    opened. It was the highest-`handlers::`-count file of the four and the likeliest falsifier,
+    and I read two `state::` bodies a reviewer handed me instead of the one file whose name said
+    *audit*. Ninth instance this session of a proxy standing in for the thing.
+  - **This file is the TEMPLATE for the test unit 5 is missing.** It shows the working shape:
+    build a `DaemonState` over a tempdir, call the handler function directly with its request
+    struct, assert on the returned JSON. Whoever implements the daemon decision below should
+    copy that pattern rather than invent one.
+  - Superseded support for the retracted claim, kept because the method is the lesson:
     `crates/tldr-daemon/tests/` holds FOUR files (`daemon_tests.rs`,
     `handler_path_traversal_audit_test.rs`, `path_traversal_test.rs`,
     `val004_cache_oncecell_test.rs`), and `grep -c 'handlers::\|handle_'` over them gives
