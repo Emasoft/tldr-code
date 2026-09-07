@@ -96,12 +96,48 @@ section for the message, not an extrapolation from the two that were read.
 pub function_name: String,
 ```
 
-Landed in `66fa8bc` — *"cross-command-consistency-v1: align call-graph, metrics,
-paths, schema field names (BUG-5, BUG-7, BUG-8, BUG-14)"*. The field is still
-named `function_name` in Rust; the WIRE name is `function`, by a custom
-`Serialize` impl. That is why `git log -S 'function_name'` found the literal in
-src while the payload does not carry it — both observations were right and
-neither implied the other.
+**THE COMMENT IS NOT THE EVIDENCE — the impl is. Read it, `types.rs:765`:**
+
+```rust
+impl Serialize for ExplainReport {
+    ...
+    s.serialize_field("function", &self.function_name)?;
+    s.serialize_field("file", &self.file)?;
+    s.serialize_field("line_start", ...)  ("line_end", ...)  ("line", &self.line_start)
+    s.serialize_field("language", ...)  ("signature", ...)  ("purity", ...)
+```
+
+Unconditional — no `cfg`, no feature gate, no branch — and it emits `function`
+ONLY, never both spellings. The emitted field ORDER matches the observed failing
+payload exactly (`function, file, line_start, line_end, line, language,
+signature, purity, …`), which is what ties this struct to that output.
+
+**This paragraph replaces one that rested on the doc comment alone, and the
+correction is the point.** A review caught the card applying two opposite
+standards to comments in a single commit: on TRDD-OGK2ROKJ it argued at length
+that a doc comment is weak evidence of intent, then here it resolved a card,
+excluded a branch and ticked a box on a comment describing code nobody had
+opened. **A doc comment is a claim, exactly like the test's `SILENT_FAIL`
+message this card already discounts.** Both were written by someone who could
+not see what would happen next.
+
+It also refutes an alternative that was live while only the comment was read:
+`ExplainReport` derives `Deserialize` but NOT `Serialize`, and
+`#[serde(alias = "function")]` affects deserialization only — which is equally
+what a tolerant CONSUMER type looks like. The missing derive could not
+discriminate; the hand-written impl does.
+
+The attribute and doc comment landed in `66fa8bc` — *"cross-command-consistency-v1:
+align call-graph, metrics, paths, schema field names (BUG-5, BUG-7, BUG-8,
+BUG-14)"*. Stated at that strength deliberately: `-S` reports commits where the
+literal's OCCURRENCE COUNT changed, so it dates the attribute, not necessarily
+the impl. `d64dead` ("Initial release") also appears, so `function_name` has
+existed since the beginning — which makes "the test was wrong from birth"
+unlikely on evidence rather than on assertion.
+
+That is also why `git log -S 'function_name'` found the literal in src while the
+payload does not carry it: the Rust field keeps the name, the wire does not.
+Both observations were right and neither implied the other.
 
 **And `taint` was covered SEPARATELY, because `ExplainReport` does not cover it.**
 18 of the 36 are `taint` tests, and the read above is `explain`'s struct — so
@@ -119,10 +155,20 @@ decision — a plain serde `rename` rather than a custom `Serialize` impl. Same
 deliberate wire name `function`, same `alias` keeping the old name readable on
 input. Two independent reads, both halves covered.
 
-**So (b) is affirmatively excluded**: emitting `function_name` again would revert
-a cross-command consistency guarantee whose whole purpose is that this key is
-spelled the same in `slice`, `dead-stores`, `resources`, `reaching-defs`, `taint`
-and `explain`. The 36 assertions are stale.
+**(b) is excluded AS A REMEDY, which is narrower than it first read here.**
+Emitting `function_name` again would revert a cross-command consistency
+guarantee whose whole purpose is that this key is spelled the same in `slice`,
+`dead-stores`, `resources`, `reaching-defs`, `taint` and `explain`. So the 36
+assertions are stale and the fix belongs in the tests.
+
+**That is NOT the same as "no product defect exists here", and the card said
+"affirmatively excluded" as though it were.** What was read is two structs'
+serialization of ONE field. Nothing here investigated whether BUG-14's rename was
+applied completely across the six commands it names, whether either custom impl
+dropped or altered anything else, or whether a non-test consumer still reads the
+old spelling. A card labelled `stale-test` with (b) crossed off will be read as
+"this area is fine"; it means "this remedy is wrong". Whether a defect exists
+nearby is **uninvestigated**, not excluded.
 
 **The test's own `SILENT_FAIL` wording is wrong about its cause**, and that is
 the lesson to carry: `SILENT_FAIL — missing \`function_name\` field` reads as
