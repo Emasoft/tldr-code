@@ -3,11 +3,11 @@ trdd-id: 8K4YKK1Q
 title: explain and taint emit a function key where exhaustive_matrix requires function_name
 column: todo
 created: 2026-09-07T22:37:38+0200
-updated: 2026-09-07T22:37:38+0200
+updated: 2026-09-07T22:44:00+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
-labels: [test-failure, json-output, schema, undecided-cause]
+labels: [test-failure, json-output, schema, stale-test]
 ---
 
 # explain and taint emit a function key where exhaustive_matrix requires function_name
@@ -15,8 +15,18 @@ labels: [test-failure, json-output, schema, undecided-cause]
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body)
 
 Filed 2026-09-07 from an unfiltered `cargo test -p tldr-cli --no-fail-fast` run.
-**Not started. The cause is UNDECIDED and that is the point of the card** — see
-"Do not assume this is a stale test".
+
+**RESOLVED to (a) the same day, from production source. The tests are stale.**
+Filed with cause UNDECIDED; that was the right posture for ~20 minutes and it is
+now settled — see "RESOLVED". The fix itself is not started.
+
+**And the card's original framing was wrong in a way worth keeping.** It argued
+cluster 3 was a *different mechanism* from TRDD-DPL55YB3's. It is the same
+INTENT (a deliberate schema alignment, with the test sweep left incomplete)
+implemented a different WAY (a custom `Serialize` impl instead of a serde
+attribute). An adversarial review predicted exactly this before the emitter was
+read: *"different implementation of the same intent is exactly what a
+split-by-implementation hides."*
 
 ## What is measured
 
@@ -72,7 +82,55 @@ count above — 36 failures, 36 occurrences of that exact message, in a section
 bounded by the target's own `Running` lines. That is total coverage of the
 section for the message, not an extrapolation from the two that were read.
 
-## Do not assume this is a stale test — the cause is genuinely open
+## RESOLVED — it is (a). The rename is deliberate and documented at the field.
+
+`crates/tldr-cli/src/commands/remaining/types.rs:730`, `ExplainReport`:
+
+```rust
+/// cross-command-consistency-v1 (BUG-14): emitted in JSON as
+/// `function` so the function-name field is identical across commands
+/// (`slice`, `dead-stores`, `resources`, `reaching-defs`, `taint`,
+/// `explain`, ...). The custom `Serialize` impl below handles the
+/// rename; deserialise still accepts both names via `alias`.
+#[serde(alias = "function")]
+pub function_name: String,
+```
+
+Landed in `66fa8bc` — *"cross-command-consistency-v1: align call-graph, metrics,
+paths, schema field names (BUG-5, BUG-7, BUG-8, BUG-14)"*. The field is still
+named `function_name` in Rust; the WIRE name is `function`, by a custom
+`Serialize` impl. That is why `git log -S 'function_name'` found the literal in
+src while the payload does not carry it — both observations were right and
+neither implied the other.
+
+**So (b) is affirmatively excluded**: emitting `function_name` again would revert
+a cross-command consistency guarantee whose whole purpose is that this key is
+spelled the same in `slice`, `dead-stores`, `resources`, `reaching-defs`, `taint`
+and `explain`. The 36 assertions are stale.
+
+**The test's own `SILENT_FAIL` wording is wrong about its cause**, and that is
+the lesson to carry: `SILENT_FAIL — missing \`function_name\` field` reads as
+*the product dropped a field*, and it was cited in this card's first draft as
+evidence for (b). It is the test author's guess at a cause, written before the
+rename existed. **A test's error message is a claim, not a measurement** — it
+was authored by someone who could not see the change that would later break it.
+
+## Why the original framing was wrong — do not repeat the taxonomy
+
+This card was created to keep cluster 3 out of DPL55YB3, on the grounds that it
+had "no `skip_serializing`, no BUG-13 reference" and therefore a different
+mechanism. **Nobody had looked.** The absence of a FOUND mechanism is not a
+FOUND absence — the same error this card's sibling commits spent the day
+correcting, committed here as a taxonomy, which is worse because taxonomies
+persist and a later reader inherits "different mechanism, established".
+
+The split by CARD is still fine — different file, different fix, and the
+`function`-vs-`method_infos` remedies genuinely differ. The split by MECHANISM
+was not. Both cards are cells of ONE incomplete test sweep across at least two
+schema efforts (BUG-13 suppression, BUG-14 rename), and the open question that
+generalizes is: **what else did those sweeps miss?**
+
+## Superseded framing, kept because the correction is only legible beside it
 
 **This card was nearly filed as one more cell of TRDD-DPL55YB3's stale-test
 sweep. An adversarial review refused it, correctly.** DPL55YB3's clusters have a
@@ -119,9 +177,11 @@ regression. Either way, not drift.
 
 ## Acceptance
 
-- [ ] The struct behind the `explain` / `taint` payload is located and read, and
+- [x] The struct behind the `explain` / `taint` payload is located and read, and
       whether `function` is a deliberate rename of `function_name` is settled
       from source and history — not from which side is the smaller diff.
+      **DONE: `ExplainReport` at `remaining/types.rs:730`; deliberate rename,
+      `cross-command-consistency-v1` BUG-14, landed `66fa8bc`. See RESOLVED.**
 - [ ] Whether the two panic sites (`:1137`, `:1185`) are one shared assertion
       helper or two independent ones is read, since that decides whether this is
       one fix or two.

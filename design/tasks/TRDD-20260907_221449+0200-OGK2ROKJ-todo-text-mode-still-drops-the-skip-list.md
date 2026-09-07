@@ -3,7 +3,7 @@ trdd-id: OGK2ROKJ
 title: tldr todo names skipped files only on stderr while dead and calls name them in the report
 column: todo
 created: 2026-09-07T22:14:49+0200
-updated: 2026-09-07T22:37:38+0200
+updated: 2026-09-07T22:44:00+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
@@ -112,6 +112,18 @@ TRDD-DPL55YB3 exists to force:
 |---|---|---|
 | a | add the stdout line to `todo` | the comment is wrong; the report body should be self-describing, as `dead`/`calls` already assume |
 | b | change nothing | stderr is the right channel and `dead`/`calls` are the outliers |
+
+**The comment has a SECOND reading, and it weakens (b).** A review offered it and
+it is well supported: the comment sits beside a long *"Why the complexity warning
+is not this one"* defence whose evident purpose is stopping someone DELETING the
+stderr line. Under that reading, *"BOTH channels, deliberately"* means **do not
+remove either**, and *"load-bearing on the default path"* is a statement about
+CURRENT coverage — the JSON field is gated behind `--detail` — rather than a
+prohibition on a third channel. The phrase "on the default path" even concedes
+non-default paths behave differently, which reads as documenting a gap, not
+endorsing it. **A comment written to prevent a removal is weak evidence about an
+addition.** Weigh both readings against the surrounding code; do not treat the
+fork as settled by the quote alone.
 
 (a) is probably right — a report that cannot say it is partial when written to a
 file is hard to defend. But it must be ARGUED, not assumed, and whichever way it
