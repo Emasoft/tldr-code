@@ -381,23 +381,22 @@ mislabelling the file as binary here. **Not established either way; assess in co
       `design/reproducers/TRDD-BKALIK1B/`, asserting the warning is present — not merely that the
       file is absent from the results, which is what the buggy behaviour also produces.
       — `dead_json_names_every_skipped_file` + the UTF-16-caller scenario test.
-- [x] `tldr specs --from-tests` names an unreadable test file it drops. — `eprintln!` in
-      `36c4838`; test + red-proof in `85c700e`.
-      **NOT COVERED — and this is a QUESTION, not an assumed gap.** The test pins `TMPDIR` to
-      defeat daemon socket discovery, so it proves the warning on the DIRECT path only.
-      Whether `specs` can route through a daemon at all is unchecked; one grep settles it. If
-      it can, a daemon caller's stderr may go nowhere and the fix is invisible to exactly
-      those users.
-      **Settled in passing, so it stops being re-litigated:** reading `36c4838^` confirmed at
-      source that `recognize()` runs AFTER the read and `test_files_scanned += 1` sits inside
-      `if info.is_test_file`. The count was never wrong — an unreadable file was correctly
-      not counted. That claim had been asserted from memory three times before it was read.
+- [x] `tldr specs --from-tests` names an unreadable test file it drops, ON THE DIRECT PATH.
+      — `eprintln!` in `36c4838`; test + red-proof in `85c700e`; assertion strengthened in
+      `c683b7a` after the first one proved satisfiable by a hollow report.
+      **Confirmed at source while red-proofing (`36c4838^`), so it stops being re-derived:**
+      `recognize()` runs AFTER the read and `test_files_scanned += 1` sits inside
+      `if info.is_test_file`, so an unreadable file was correctly never counted.
+- [ ] Whether `specs` can route through a daemon AT ALL — UNCHECKED, and one grep settles it.
+      A QUESTION, not an asserted gap. The test above pins `TMPDIR` to defeat daemon socket
+      discovery, so it proves the direct path only. If `specs` does have a daemon path, that
+      caller's stderr may go nowhere and the fix would be invisible to exactly those users.
 - [ ] Every one of the 56 SILENT sites has a recorded decision: warn, propagate, or
       deliberately-silent-with-a-reason.
-      — **The denominator 56 is STALE; do not tick this box against it.** `dead.rs:267` and
-      `:316` were among the 56 and were already fixed in piece 1, so the survey counted as
-      defects two sites that no longer are. Re-derive the count before closing; do not
-      reconcile a new number against 56.
+      — **The denominator 56 is UNVERIFIED; re-derive it before ticking.** At least two
+      surveyed `dead.rs` sites are BELIEVED already fixed in piece 1 — believed, not
+      re-verified this session — so the survey may count as defects sites that no longer are.
+      Derive a fresh count from source; do not reconcile a new number against 56.
 - [x] The `File::open` / `read_to_end` / `.read(&mut …)` sites carry **zero new instances of
       this card's defect** — no silently dropped file among them.
       — DONE 2026-09-08, and all 32 raw hits audited first-hand (8 production sites:
