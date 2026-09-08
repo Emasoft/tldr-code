@@ -3,7 +3,7 @@ trdd-id: 6CKB3RRH
 title: test_l2_all_engines_budget asserts a wall-clock budget inside a parallel suite so it measures contention
 column: todo
 created: 2026-09-08T13:07:39+0200
-updated: 2026-09-08T14:41:07+0200
+updated: 2026-09-08T15:08:00+0200
 current-owner: main-session
 task-type: bugfix
 scope: project
@@ -12,8 +12,34 @@ min-approval-requirement: none
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-08
 
+**BEFORE YOU RUN ANY `cargo test` IN THIS REPO — read this first, it is the one thing on this
+card that can cause NEW damage rather than merely a wrong belief.** This suite's failures are
+concurrency-dependent; that is this card's central finding. So a second concurrent runner
+**fabricates failures in both runs**, at HEAD, under your own hand, with nothing marking them
+as artifacts — you would manufacture exactly the phenomenon this card characterizes and have
+every reason to read it as a real regression. Check first by snapshotting the process table to
+a file and grepping THAT FILE (never `pgrep -f` or `ps | grep` — they match their own argv):
+`ps -eo pid,ppid,etime,command > /tmp/ps-check.txt` then grep it for `cargo test`. **A failure
+observed while another run is live is not evidence of a defect.**
+
+**DO NOT ORIENT FROM `git log --oneline`.** Two commit SUBJECTS on this card assert claims that
+were later retracted, and the log shows them without the retraction: `cb2e4ed` ("it is suite
+self-interference") and `47c5ed4`'s release-budget "second defect". Both are retracted by
+`1af53fb`. History cannot be edited safely, so the correction lives only here. Read the card,
+not the log.
+
 Filed from a measurement, not a report. Nothing fixed yet. The card exists because a test
 fails at HEAD and no other card mentions it.
+
+**The HEAD integration-failure set is now measured** (2026-09-08, 116 targets, all at
+`--test-threads=1`): 9 targets FAILED (26 tests), 1 genuine timeout
+(`path_and_schema_cleanup_v3`, wedged on a spawned `tldr coupling` child, diagnostics captured
+live before the kill), 1 vacuous (`semantic_lang_flag_test` — runs nothing, reports `ok`).
+Report: `reports/integration-failure-set/20260908_140723+0200-head-integration-failures.md`.
+Two things that measurement corrects, because both were believed here earlier: `contracts_test`
+does **not** hang (21 passed, 211s), and `l2_daemon_cache_bench_test` **passes** (12 passed, 0
+failed) — so the "4 bench_* failures" premise never reproduced. The sweep is **HEAD-only** and
+cannot attribute anything to `0063e1b`.
 
 **The discriminator RAN on 2026-09-08, and it establishes LESS than the first version of this
 line claimed.** What it shows: the cause is INTERNAL TO THE SUITE, not the external machine, so
