@@ -1,7 +1,7 @@
 ---
 trdd-id: 6CKB3RRH
 title: test_l2_all_engines_budget asserts a wall-clock budget inside a parallel suite so it measures contention
-column: todo
+column: complete
 created: 2026-09-08T13:07:39+0200
 updated: 2026-09-08T23:11:00+0200
 current-owner: main-session
