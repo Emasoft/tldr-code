@@ -2,6 +2,7 @@
 //!
 //! Phase 8: CLI integration for taint analysis
 
+use assert_cmd::assert::OutputAssertExt;
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
@@ -50,21 +51,13 @@ def vulnerable(user_data):
         .arg("-f")
         .arg("json");
 
-    // Parse rather than substring-match. The wire key is `function` (TaintInfo:
-    // #[serde(rename = "function")]), but `"function"` also occurs as a VALUE in
-    // taint payloads (kind/type fields under sources, sinks, flows), so a
-    // substring check could pass on a payload missing the key entirely.
+    // Parse rather than substring-match: `"function"` matches the wire key
+    // (TaintInfo: #[serde(rename = "function")]) but equally any string VALUE
+    // spelled `function`, so a substring check could pass on a payload missing
+    // the key. `assert()` consumes `out`, hence the owned stdout read first.
     let out = cmd.output().unwrap();
-    // Carry stderr into the failure message. `.assert().success()` used to print
-    // it for us; a bare `assert!(status.success())` would discard the only
-    // diagnostic the binary emits, at exactly the moment it matters.
-    assert!(
-        out.status.success(),
-        "taint exited {}: {}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    out.assert().success();
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("taint --format json");
     assert_eq!(
         json.get("function").and_then(|v| v.as_str()),
