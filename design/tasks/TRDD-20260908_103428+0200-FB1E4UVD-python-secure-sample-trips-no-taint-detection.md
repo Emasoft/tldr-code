@@ -50,12 +50,22 @@ untrusted *parameter* should itself count as a taint source is a legitimate
 engine-design question. It is not a regression, so it does not belong on this
 card — if it is worth pursuing, it is a new one.
 
-### Probe results, 2026-09-08 — recorded here because they are ENGINE facts
+### Probe observations, 2026-09-08
 
-Six one-file probes through `target/debug/tldr secure <file>`. They are on this
-card and not in a source comment: engine behaviour ages out of a fixture
-comment, and a claim in source gets read as current fact with no commit message
-beside it to date it.
+Eight one-file probes through `target/debug/tldr secure <file>`. **Observations,
+not engine facts** — the header said "ENGINE facts" and that was the wrong noun
+for a black-box result. They are on this card and not in a source comment:
+engine behaviour ages out of a fixture comment, and a claim in source gets read
+as current fact with no commit message beside it to date it.
+
+Each probe is described by its SHAPE below rather than by a path, because the
+files were written to a session scratchpad that will not survive. The shapes are
+three to twelve lines each and reconstructing one is faster than locating it.
+
+**A residual `d_control` left open, now closed by `g`:** `d` reporting a
+resource leak proves the RESOURCE pass ran on that file, not that the TAINT pass
+did — `secure` runs several sub-analyses. `g` closes it, because `g`'s finding
+is itself a taint finding in the same file as the unreported cross-call flow.
 
 | probe | shape | taint_count |
 |---|---|---|

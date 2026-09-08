@@ -599,8 +599,10 @@ def main():
 // Python code with security issues (for secure command).
 //
 // `tainted_command` is the only source->sink flow here and the only reason
-// `test_secure_detects_taint` passes; the other sinks are fed by parameters and
-// report nothing. Why that is, is an engine question -- see TRDD-FB1E4UVD.
+// `test_secure_detects_taint` passes. The other sinks take their input from a
+// parameter and are never called anywhere in this file. Whether an uncalled
+// function's parameter should itself count as untrusted is an open engine
+// question -- see TRDD-FB1E4UVD.
 const PYTHON_SECURE_SAMPLE: &str = r#"
 import os
 import pickle
@@ -1461,6 +1463,12 @@ mod secure_command {
     }
 
     #[test]
+    #[ignore = "cannot discriminate: every finding this analyzer emits is severity \
+                high, so the sort comparison is true in either order. Measured \
+                2026-09-08 over 6 vulnerability patterns (taint, resource_leak, \
+                weak hash, missing timeout, insecure deser, unbounded index) -- \
+                all high. Needs a fixture yielding >=2 DISTINCT severities. \
+                See TRDD-FB1E4UVD."]
     fn test_secure_severity_sorting() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "sample.py", PYTHON_SECURE_SAMPLE);
@@ -1473,12 +1481,24 @@ mod secure_command {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let report: SecureReport = serde_json::from_str(&stdout).unwrap();
 
-        // windows(2) yields nothing on a shorter slice -- without this the
-        // loop below never runs and any ordering passes.
+        // Two preconditions, because len() >= 2 alone is NOT enough: windows(2)
+        // yields nothing on a shorter slice, but a pair of EQUAL severities
+        // compares true in either order, so the loop runs and still cannot fail.
+        // Measured 2026-09-08: this fixture yields exactly two findings and both
+        // are "high", so the length guard alone left the test vacuous.
         assert!(
             report.findings.len() >= 2,
-            "fixture must yield >=2 findings or the sort assertion is vacuous; got {}",
+            "sort check needs >=2 findings to mean anything; got {}",
             report.findings.len()
+        );
+        let distinct: std::collections::HashSet<&str> = report
+            .findings
+            .iter()
+            .map(|f| f.severity.as_str())
+            .collect();
+        assert!(
+            distinct.len() >= 2,
+            "sort check needs >=2 DISTINCT severities or it cannot fail; got {distinct:?}"
         );
 
         // Findings should be sorted by severity (critical first)
