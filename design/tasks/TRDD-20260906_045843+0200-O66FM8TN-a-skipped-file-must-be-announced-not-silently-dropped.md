@@ -3,7 +3,7 @@ trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
 column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-07T22:30:42+0200
+updated: 2026-09-08T10:49:56+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
@@ -383,33 +383,19 @@ mislabelling the file as binary here. **Not established either way; assess in co
       — `dead_json_names_every_skipped_file` + the UTF-16-caller scenario test.
 - [ ] Every one of the 56 SILENT sites has a recorded decision: warn, propagate, or
       deliberately-silent-with-a-reason.
-- [x] The `File::open` / `read_to_end` / `.read(&mut …)` sites the survey never saw are bucketed
-      the same way — count them AFTER bucketing, not before.
-      — DONE 2026-09-08. Report:
-      `reports/encoding-survey/20260908_103909+0200-file-open-read-to-end-bucketing.md`.
-      **8 production sites: PROPAGATED 6 · SILENT 2 · WARNED 0 · PANIC 0** — by THOSE THREE
-      PATTERNS, after 19 exclusions. Not "the read surface is 8".
-      **Zero new instances of this card's defect among the 2 sites verified first-hand. The
-      6 PROPAGATED are the worker's classification, UNVERIFIED** — do not re-quote them as
-      established. The earlier phrasing here said "zero new instances" flatly, quantifying
-      over all 8 from a 2-site sample.
-      Two known limits, both the direction that HIDES defects:
-      (1) **PROPAGATED ≠ reaches a user.** `?` propagates one frame; a caller doing
-      `if let Ok(x) = helper(path)` kills it there. The bucket describes the SITE, not the
-      behaviour.
-      (2) **The 19 exclusions are unexamined**, and a wrongly excluded site is invisible
-      forever — it is in no report, no count, and no later pass. 19 is the LARGEST bucket
-      and the only one with no evidence phrase.
-- [ ] **NEW: `fs::read()` / `read_exact` were in NEITHER survey's pattern set.** Measured
-      2026-09-08: 13 hits in `src/`, e.g. `fs/mod.rs:127`, `ast/parser.rs:345`,
-      `callgraph/languages/base.rs:99`, `encoding.rs:252`, three in
-      `commands/{patterns,contracts}/validation.rs`, and four `read_exact` calls on the
-      salsa cache (`commands/daemon/salsa.rs:508-524`). `fs::read` is the most idiomatic
-      whole-file byte read in Rust, so this is a real hole in the UNION of both surveys —
-      the box above is satisfied as literally worded (three named patterns) and does NOT
-      close the read surface. Bucket these the same way. NOTE `semantic/enrichment_tests.rs`
-      is test code living in `src/` — the classify-by-reading trap, again.
-      **Both SILENT sites verified FIRST-HAND, not taken from the report** — they are
+- [x] The `File::open` / `read_to_end` / `.read(&mut …)` sites carry **zero new instances of
+      this card's defect** — no silently dropped file among them.
+      — DONE 2026-09-08, and all 32 raw hits audited first-hand (8 production sites:
+      PROPAGATED 6 · SILENT 2 · WARNED 0 · PANIC 0). **The inventory work itself, and the
+      pattern families still unrun, moved to TRDD-R7QK2M4E** — it ships no behaviour change
+      and is an NPT of this card, not a part of it. Read that card before quoting any count
+      over "the read surface"; the phrase is not one any pass has earned.
+      **The one limit that bears on THIS card: PROPAGATED describes the SITE, not what a
+      user sees.** `?` propagates one frame; a caller doing `if let Ok(x) = helper(path)`
+      kills it there. So "6 PROPAGATED" is not "6 errors reach a user", and the callers were
+      not traced.
+- [x] The 2 SILENT sites found by that survey have a recorded decision.
+      — DONE for both, and **verified FIRST-HAND, not taken from the report** — they are
       `metrics/file_utils.rs:315` and `:318`, both inside `is_binary_file`, and both are
       **deliberately-silent-with-a-reason**, which is one of the three permitted decisions:
       (1) `fn is_binary_file(path: &Path) -> bool` has NO channel to report an error, so the
@@ -423,31 +409,12 @@ mislabelling the file as binary here. **Not established either way; assess in co
       was declared silent from a grep scoped to one function while the `eprintln!` sat in the
       caller 200 lines up. An absence inside a function I chose is not an absence in the
       program — and neither is a presence.
-- [ ] **NEW, opened by that survey: `is_binary_file` is DUPLICATED with a divergent error
-      contract.** `encoding.rs:356` is `fn is_binary_file(path: &Path) -> Result<bool,
-      TldrError>` (PROPAGATES); `metrics/file_utils.rs:304` is `fn is_binary_file(path:
-      &Path) -> bool` (SILENT). Two functions, same name, opposite error contracts. The
-      `encoding_base_tests.rs` suite calls the `Result` one (`is_binary_file(..).unwrap()`).
-      **The `bool` one HAS a production caller, now traced: `metrics/loc.rs:34` imports
-      `is_binary_file` from `metrics::file_utils` by name.** So the swallowing variant is
-      live, not dead code.
-      **Two contracts may both be legitimate; the shared NAME is the defect.** A cheap
-      boolean for a hot loop and a propagating API boundary are a normal Rust pair — but
-      they are normally spelled differently. `bool` vs `Result` is invisible at a call site
-      that feeds an `if`, so a developer writing `use …file_utils::is_binary_file` gets the
-      swallowing one with nothing marking the choice. That is this card's defect exactly.
-      Laziest fix first: RENAME (`is_binary_file_lossy` in `metrics`), which makes the
-      contract visible at every call site, changes no behaviour, and lets the compiler
-      enumerate callers. Merging is a bigger change and needs the callers understood first.
-      **Establish BEFORE choosing:** whether the two implementations agree on NON-ERROR
-      behaviour. If they scan different byte counts or different extension lists, the same
-      file gets different binary/not-binary answers depending on the import — a correctness
-      divergence strictly worse than the error contract, and an implementer who fixes only
-      the error handling would leave it.
-      **`BUG-003` applies to BOTH.** `encoding_base_tests.rs:313` carries
-      `#[ignore = "BUG-003: is_binary_file only reads 8KB and may miss null bytes beyond
-      that boundary"]` against the `Result` variant; the `bool` variant's body is
-      `[0u8; 8192]`, so it shares the limit — and only one variant has a test recording it.
+      **Moved to TRDD-B3XN8VP1:** those same two sites live in a `fn is_binary_file(&Path)
+      -> bool` that is DUPLICATED under one name with a `Result`-returning twin at
+      `encoding.rs:356`. That duplication is its own card — found while surveying here,
+      which is provenance, not membership. It is worth reading before this card's
+      centralisation box, because its fix (spell the swallow at the call site, rather than
+      hide it in a helper) is this card's principle applied one level down.
 - [ ] The skip path is centralised, so a NEW command cannot silently drop a file without
       inheriting the warning.
       — PARTIAL: the MESSAGE is centralised (`fs::skipped_file_warning`, used by structure,
