@@ -1,5 +1,5 @@
-//! TRDD-O66FM8TN — `tldr dead`, `tldr calls` and `tldr smells` must NAME every
-//! source file they drop from the scan.
+//! TRDD-O66FM8TN — `tldr dead`, `tldr calls`, `tldr smells` and `tldr specs`
+//! must NAME every file they drop from the scan.
 //!
 //! Absence from the result is exactly what the buggy behaviour produced too
 //! (the file was silently excluded), so every assertion here is on the
@@ -227,5 +227,88 @@ fn dead_over_a_project_with_an_unreadable_caller_warns_about_the_caller() {
     assert!(
         !warnings.iter().any(|w| w.contains("lib.py")),
         "lib.py is readable and must not be reported as skipped: {warnings:?}"
+    );
+}
+
+/// `tldr specs` drops an unreadable test file, and until 36c4838 the non-Python
+/// arm of `run_specs`'s walk did it with a bare `Err(_) => continue` — while the
+/// Python arm above already announced its own failures.
+///
+/// This one asserts on STDERR, unlike every test above it, and that is forced
+/// rather than chosen: `SpecsReport` has exactly two fields (`functions`,
+/// `summary`) and no warnings channel, so `eprintln!` is the only surface the
+/// skip is visible on. If a `warnings` vec is ever added to `SpecsReport`, move
+/// this assertion onto it — stderr is the weaker contract.
+///
+/// Red-proofed 2026-09-08 against `36c4838^` (byte-identically
+/// `Err(_) => continue,`): the reverted build fails here with stderr EMPTY --
+/// so no other site prints that basename, and the assertion discriminates on
+/// this `eprintln!` alone.
+#[test]
+fn specs_names_a_test_file_it_cannot_read() {
+    let scratch = TempDir::new().expect("scratch tempdir");
+    let dir = TempDir::new().expect("fixture tempdir");
+
+    std::fs::write(
+        dir.path().join("good_test.rs"),
+        "#[test]\nfn test_ok() {\n    assert_eq!(1, 1);\n}\n",
+    )
+    .expect("write good_test.rs");
+
+    // A lone 0xE9 (latin-1 'é'): invalid UTF-8, so the strict `read_to_string`
+    // fails, while the file still reaches the walk looking like a Rust test.
+    // Written as bytes because this content cannot be spelled as a &str.
+    std::fs::write(
+        dir.path().join("bad_test.rs"),
+        b"#[test]\nfn test_caf\xe9() {\n    assert_eq!(1, 1);\n}\n",
+    )
+    .expect("write bad_test.rs");
+
+    let out = tldr(&scratch)
+        .args(["specs", "--from-tests"])
+        .arg(dir.path())
+        .output()
+        .expect("failed to run tldr specs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    // The walk must CONTINUE past the bad file, not abort on it.
+    assert!(
+        out.status.success(),
+        "tldr specs exited {:?} on a directory holding one unreadable file; \
+         the bad file must be skipped, not fatal. stderr: {stderr}",
+        out.status.code()
+    );
+    assert!(
+        stderr.contains("bad_test.rs"),
+        "specs dropped bad_test.rs and said nothing that names it — the user \
+         cannot tell this apart from a directory that simply holds fewer \
+         tests. stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("good_test.rs"),
+        "good_test.rs is readable and must not be reported as skipped: {stderr}"
+    );
+
+    // The `continue` has to continue USEFULLY. Every assertion above is also
+    // satisfied by an implementation that warns, skips, and then returns an
+    // empty report -- so without this one the test does not distinguish
+    // "recovered from a bad file" from "gave up after announcing it".
+    //
+    // It is deliberately NOT part of the red-proof: it holds both before and
+    // after the `eprintln!` fix, because the skip behaviour never changed.
+    // What it does buy is turning the count claim in `specs.rs`'s comment --
+    // that `test_files_scanned` counts only files actually read -- from
+    // something read off the control flow into something measured.
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "specs stdout was not JSON: {e}\nstdout: {}\nstderr: {stderr}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    });
+    assert_eq!(
+        json["summary"]["test_files_scanned"].as_u64(),
+        Some(1),
+        "the readable test file must still be scanned after the unreadable one \
+         is skipped, and the unreadable one must not be counted: {json}"
     );
 }
