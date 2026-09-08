@@ -16,8 +16,10 @@ labels: [test-defect, statistics, benchmarks]
 Filed from a measurement, not a report. Nothing fixed yet.
 
 `bench_concurrent_access_latency` fails **in release, in an isolated single-target run**
-(12 tests, 0.30s). Suite contention cannot explain it, which is what separates this card from
-TRDD-6CKB3RRH — that one is suite self-interference and passes at `--test-threads=1`.
+(12 tests, 0.30s). No suite-level effect can reach it, which is what separates this card from
+TRDD-6CKB3RRH — that one's failure is internal to its suite and clears when the suite is
+serialized. **Do not restate that as "thread contention": which internal mechanism it is has
+explicitly NOT been discriminated there.**
 
 **Mechanism established by reading the source, not inferred from the numbers:** for any
 `n <= 100`, `p99_us()` returns the maximum sample. The writer thread collects `n = 50`, so its
@@ -120,7 +122,12 @@ re-derive them as open failures.
 ## Relationships
 
 - TRDD-6CKB3RRH — same family (timing assertions that do not measure what they name), different
-  mechanism: that card is suite thread contention and clears at `--test-threads=1`; this one
-  fails in isolation and is a sample-size defect. Neither subsumes the other.
+  mechanism. **Cite that card, never a verdict about it.** Its failure is internal to its suite
+  and clears when serialized; WHICH internal mechanism — CPU contention, shared on-disk state,
+  or lock contention among the `tldr` subprocesses — is explicitly undischarged there, and an
+  earlier revision of that card overclaimed exactly this and was corrected.
+  **This card's separation does not depend on the answer:** the failure here reproduces in an
+  isolated release run of one target (12 tests, 0.30s), so no suite-level effect of any kind
+  reaches it. Neither card subsumes the other.
 - Surfaced while verifying the suite state for TRDD-K3XQ7M2V. Not caused by it —
   `0063e1b` touches `todo.rs`, `types.rs` and its own test file, and not this bench file.
