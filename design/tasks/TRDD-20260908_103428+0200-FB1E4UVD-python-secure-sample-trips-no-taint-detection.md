@@ -172,6 +172,34 @@ is not wholly broken, and the difference between the two samples is the lead.
 assertion that cannot fail is worse than a red test; the whole reason this was
 invisible until today is that an earlier error stopped it being evaluated.
 
+## Open: does `secure` ever emit a non-high severity?
+
+`test_secure_severity_sorting` is `#[ignore]`d because every finding on this
+fixture is `"high"`, making its sort comparison true in either order. Six Python
+patterns were probed; the three that produced findings were all `high`.
+
+**That is a fact about six probes, not about the analyzer, and the distinction
+decides who owns the bug:**
+
+- If `secure` CAN emit low/medium/critical and these probes just missed those
+  paths → the fixture is inadequate, and the fix is a richer fixture.
+- If `secure` emits only `high` → the severity field carries no information, a
+  security dashboard rates a resource leak identically to command injection,
+  and that is an ENGINE defect. The ignored test would then be reporting a real
+  product problem, and "fix the fixture" would be exactly the wrong instruction.
+
+**A first attempt to resolve this by grep was itself wrong, and is recorded so
+nobody repeats it.** Counting severity string literals under `commands/remaining/`
+returned 3 `high`, 2 `low`, 1 `medium` — which looks like a clean refutation. It
+is not. Reading the hits: `types.rs:648` is `confidence: "low"`, a DIFFERENT
+FIELD that the pattern matched on the literal alone; `api_check.rs:2803-2804` are
+`serialize_misuse_severity`, belonging to the api_check sub-analysis, which has
+not been shown to feed a `SecureFinding` at all.
+
+**Resolve it by reading the emitter that builds `SecureFinding`, not by grepping
+for severity words.** Anything that matches a bare string literal will keep
+picking up other fields with the same vocabulary.
+
 ## Acceptance
 
 - [ ] `test_secure_detects_taint` passes, and the (a)/(b) decision above is

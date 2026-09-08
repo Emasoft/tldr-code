@@ -1463,12 +1463,14 @@ mod secure_command {
     }
 
     #[test]
-    #[ignore = "cannot discriminate: every finding this analyzer emits is severity \
-                high, so the sort comparison is true in either order. Measured \
-                2026-09-08 over 6 vulnerability patterns (taint, resource_leak, \
-                weak hash, missing timeout, insecure deser, unbounded index) -- \
-                all high. Needs a fixture yielding >=2 DISTINCT severities. \
-                See TRDD-FB1E4UVD."]
+    #[ignore = "cannot discriminate on THIS fixture: its findings are all severity \
+                high, so the sort comparison is true in either order and the test \
+                passes on unsorted output. Measured 2026-09-08: 6 Python patterns \
+                probed, 3 produced findings, all high. That is a fact about these \
+                probes, NOT about the analyzer -- whether `secure` can emit a \
+                non-high severity at all is UNRESOLVED, and if it cannot, the \
+                defect is a severity field that carries no information, which is \
+                an engine bug and not a fixture gap. See TRDD-FB1E4UVD."]
     fn test_secure_severity_sorting() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "sample.py", PYTHON_SECURE_SAMPLE);
