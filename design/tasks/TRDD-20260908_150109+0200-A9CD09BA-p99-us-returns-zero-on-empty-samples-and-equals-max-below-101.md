@@ -28,9 +28,13 @@ worth fixing first — see §Verified for why it is worse than defect 2.
 **Do not inherit:** any claim about *which* tests are affected. See
 §Not established. In particular this card does NOT assert that the bench
 failures discussed elsewhere this session touch `p99_us` at all — at HEAD
-with `--test-threads=1`, `l2_daemon_cache_bench_test` was measured **passing**
+with `--test-threads=1`, `l2_daemon_cache_bench_test` was reported **passing**
 (12 passed, 0 failed), so the "4 bench_* failures" premise did not reproduce.
-These defects are established from the code, not from any failing run.
+**That passing figure is RELAYED** — it comes from an agent's report I read in
+full plus a re-measurement worker, not from a run I performed. The source
+defects below ARE first-hand; this one is not, and the two must not be read in
+the same register. These defects are established from the code, not from any
+failing run.
 
 ## Symptom
 
@@ -63,8 +67,21 @@ collected zero samples. A collection loop that never ran, exited early, or
 silently dropped every measurement is indistinguishable from a fast one. This
 is a property of the helper alone and needs no call-site knowledge.
 
-This is the worse of the two defects: truncation (defect 2) makes an assertion
-*stricter* than advertised, which fails safe. Vacuity makes it *unfalsifiable*.
+**Both defects degrade the assertion, in opposite directions, and NEITHER is
+safe.** An earlier revision of this card said truncation "makes an assertion
+stricter, which fails safe" — that is wrong and it was the one line most likely
+to steer a fix, so it is corrected here rather than quietly edited. Vacuity makes
+the assertion *unfalsifiable*: it cannot fail. Truncation-to-max makes it strict
+**and noisy** — a true p99 discards the tail, whereas a max *is* the tail, so at
+n ≤ 100 one GC pause or scheduler hiccup sets the reported value outright. That
+is the textbook shape of a flaky latency test, and the usual repair for a flaky
+latency test is to raise the limit, which permanently weakens the real guarantee.
+"Stricter" is not "safer" when the strictness is noise.
+
+The two also compose: if a threshold here was ALREADY loosened to accommodate
+max-behaviour, then fixing the truncation shrinks the statistic and leaves an
+over-loose limit that now catches nothing. Box 4 must check that direction too,
+not only the flip-to-failing one.
 
 **2. Degeneracy — p99 is identically the maximum for every n ≤ 100.**
 `as usize` truncates toward zero, so `idx == floor(0.99 * n)`. Arithmetic,
@@ -81,10 +98,27 @@ a genuine percentile only at n ≥ 101. A single outlier therefore sets the
 reported "p99" outright at small n, which is the opposite of why a percentile
 is chosen.
 
+Two caveats on that table, both of which a fix must respect:
+
+- **The n=100 row is true by IEEE ROUNDING, not by exact arithmetic.** `f64(0.99)`
+  is `0.98999999999999999111…`, strictly below 0.99, so the true product is
+  ~8.9e-16 under 99.0 — inside half an ULP at that magnitude, so it rounds to
+  exactly 99.0 and `as usize` yields 99. Had it rounded the other way the
+  boundary would be n ≤ 99. The general claim is still safe (`99n/100` is an
+  integer only when `100 | n`; otherwise the fractional part is ≥ 0.01, dwarfing
+  ~1e-14 of error), but the exact boundary should not be quoted as if it were
+  pure integer arithmetic.
+- **n=0 never reaches the index code, and that guard is load-bearing against
+  UNDERFLOW, not just vacuity.** `sorted.len() - 1` on an empty vec is
+  `0usize - 1`. So a fix that closes defect 1 by simply deleting the early
+  return produces a panic — but an underflow/out-of-bounds one with a useless
+  message. The fix must be an explicit panic or a `Result`/`Option`, never a
+  deletion.
+
 **3. `idx.min(sorted.len() - 1)` is dead code.**
-`floor(0.99n) < n` for every n ≥ 1, so `idx` is always already a valid index and
-the clamp never binds. Not a bug on its own; noted because it reads as a guard
-and so discourages looking at the truncation above it.
+`floor(0.99n) ≤ 0.99n < n` for every n ≥ 1, so `idx ≤ n-1` always and the clamp
+never binds. Not a bug on its own; noted because it reads as a guard and so
+discourages looking at the truncation above it.
 
 ## Not established — do not inherit these as facts
 
@@ -138,12 +172,19 @@ debug-vs-release behaviour of any test.
       `reports/integration-failure-set/20260908_150341+0200-verify-semantic-and-p99-callsites.md`
 - [ ] **2. Vacuity is closed by construction, not by assertion.** An empty
       `samples` vector cannot yield a value that satisfies a `<` threshold — the
-      helper panics, returns an error the caller must handle, or an explicit
-      non-empty precondition is enforced at every call site found in box 1.
-      Demonstrated by a check that FAILS if the empty case is made to pass
-      silently again: construct the empty-sample state and show the assertion
-      path does not report success. A test that merely calls `p99_us()` on a
-      populated vector and passes does NOT satisfy this box.
+      helper panics with an explicit message, or returns an `Option`/`Result` the
+      caller must handle. Demonstrated by a check that FAILS if the empty case is
+      made to pass silently again: `p99_us` takes `&self` and an integration-test
+      file is its own crate, so a `#[test]` fn **in that same file** can construct
+      the collector with zero samples and assert the new behaviour
+      (`#[should_panic(expected = "…")]`, or `assert!(x.is_none())`). A test that
+      merely calls `p99_us()` on a populated vector and passes does NOT satisfy
+      this box.
+      **"Every call site guards its own input" does NOT satisfy this box on its
+      own** — that is a review claim over a set, with no single failing check
+      behind it, so it would let a future session close the box by pointing at a
+      survey. If that route is taken it must be paired with the box-1 table AND a
+      per-site check.
 - [ ] **3. The percentile is a percentile, evidenced at a boundary.** The index
       computation is corrected (rounding rule chosen and stated — e.g.
       nearest-rank `ceil(0.99n) - 1`), and correctness is shown at the boundary
