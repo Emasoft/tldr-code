@@ -35,10 +35,15 @@ revisions before anyone read it against the conclusion it undercuts.
 contention will not fix a shared-resource problem. Then acceptance box 2. The sample is n=2 per
 arm; see §Discriminator for what that does and does not support.
 
-**A SECOND, INDEPENDENT DEFECT is assertable from numbers already held, and must not be lost
-inside the debug-budget work:** the release budget is 2000ms and this test needs 2.11s SOLO on
-an idle machine. It cannot pass in release at n=1 uncontended. A fix that greens debug and
-never runs `--release` ships broken. This likely deserves its own card.
+**RETRACTED the same day it was written — it was a category error.** This block briefly claimed
+a "second, independent defect": that the 2000ms release budget cannot be met because the test
+needs 2.11s solo. **The 2.11s was measured in a DEBUG build.** `cargo test` defaults to debug,
+and the budget is `if cfg!(debug_assertions) { 5000 } else { 2000 }` — so comparing that figure
+to the RELEASE threshold divides across build profiles. That is the same cross-condition
+division this card bans two sections below, committed one paragraph from where the ban is
+written. A release build optimises both the engine and the `tldr` binary it shells out to.
+**Release behaviour has NEVER BEEN MEASURED: it is unknown, not broken.** Do not file a card
+for it — measure `--release` first.
 
 `column: todo` deviates from the authoring default of `backburner`, deliberately: `backburner`
 means explicitly deferred, and a test failing at HEAD is not deferred. `planned` was rejected
@@ -188,10 +193,12 @@ The two predictions that failed here (that this would settle nothing; that `--te
 might also fail on intrinsic spawn cost) were adversarial guesses in a review prompt, not
 registered hypotheses. Do not read "prediction" as pre-registration.
 
-**A SEPARATE defect, assertable from numbers already held and NOT merely "still open":** the
-release budget is 2000ms and this test needs 2.11s SOLO, uncontended. It cannot pass in release
-even at n=1. Different fix, different acceptance criteria — probably its own card. A repair
-that greens debug and never runs `--release` ships broken.
+**`--release` is UNMEASURED, and the claim that it is broken was retracted the day it was made.**
+Every number on this card comes from a DEBUG build. Comparing 2.11s (debug) against the 2000ms
+release budget divides across build profiles and establishes nothing: a release build optimises
+both the engine and the `tldr` binary it spawns, and the code's own doc comment says FlowEngine
+"adds ~1500ms in release", which points at landing near the budget rather than above it. Run
+`--release` before asserting anything about it, in either direction.
 
 ## Not established — do not inherit these as facts
 
