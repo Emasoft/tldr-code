@@ -3,7 +3,7 @@ trdd-id: 8K4YKK1Q
 title: explain and taint emit a function key where exhaustive_matrix requires function_name
 column: todo
 created: 2026-09-07T22:37:38+0200
-updated: 2026-09-08T10:23:23+0200
+updated: 2026-09-08T10:28:19+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
@@ -28,28 +28,47 @@ attribute). An adversarial review predicted exactly this before the emitter was
 read: *"different implementation of the same intent is exactly what a
 split-by-implementation hides."*
 
-## CORRECTION to commit 5c1d56d's message — a false claim, uncorrectable in place
+## CORRECTION to commit 5c1d56d's message — a false claim, not corrected in place
 
 **`5c1d56d` says BUG-14 "updated exactly one test literal in the same diff".
-That is FALSE, and this card is the correction of record** — the commit names
-this TRDD, so a reader following the reference lands here.
+That is FALSE.** A `git notes` correction is attached to the commit itself
+(`git log --notes` shows it), so a reader is no longer dependent on following
+the TRDD reference to learn it. This section is the long form.
 
-Measured against the whole commit, unfiltered:
+**The comparable measurement — the one that answers the claim as stated:**
 
 | check | result |
 |---|---|
-| `git show 66fa8bc --name-only \| grep -c 'tests/'` | **7** |
-| `git show 66fa8bc \| grep -cE '^[+-].*"function_name"'` | **12** |
+| `git show 66fa8bc -- '*tests/*' \| grep -cE '^-.*"function_name"'` | **8** |
 
-So the true figures are 7 test files and 12 changed literal lines — 7× and 12×
-what the commit message asserts.
+So BUG-14 removed **8** `"function_name"` literals under `tests/`, not one.
 
-**How the false number was produced, because this is the recurring shape.** The
-evidence was `git show 66fa8bc -- <two source paths>`. Within those two files
-the grep was correct; across the commit it measured nothing. **A quantifier was
-stated over a region I had selected myself** — the same error this card's "What
-is measured" section documents twice already, now committed to permanent
-history.
+**Two figures written into an earlier draft of this section were themselves
+wrong, and are recorded here rather than quietly replaced.** They were "7 test
+files" (from `--name-only | grep -c 'tests/'`) and "12 changed literal lines"
+(from `grep -cE '^[+-]...'`), presented as "7× and 12×" the asserted one.
+Neither is commensurable with "one test literal":
+
+- `--name-only` counts files under `tests/` touched for **any** reason — an
+  unrelated import edit counts. It measures touched files, not changed literals.
+- `^[+-]` counts **additions as well as removals**, source as well as test. It
+  therefore counts the `alias = "function_name"` line the rename *added*.
+  Whole-commit: 10 removed, 2 added — the "12" was those two summed.
+
+So a correction of an over-scoped quantifier was drafted using two more
+over-scoped quantifiers. Recorded because the recurrence is the point.
+
+**How the original false number was produced.** The evidence was
+`git show 66fa8bc -- <two source paths>`. Within those two files the grep was
+correct; across the commit it measured nothing. **A quantifier was stated over a
+region I had selected myself.**
+
+**An earlier draft claimed this card's "What is measured" section "documents
+this same error twice already". That is false** — the two errors documented
+there are a *conflation* error (`grep -c` counting occurrences instead of
+distinct test names) and a *false-independence* error (three observations that
+share one panic event). Neither is the self-selected-region error. The filtered
+`git show` is the FIRST instance of that class in this card.
 
 **What survives and what does not.** The CONCLUSION is untouched: BUG-14 renamed
 the wire key and left these 44 assertions behind, so the sweep was incomplete.
@@ -69,10 +88,22 @@ claim is **"the residue in `tldr-cli`"**.
 `git_safety_guard.py` blocked it, offering a single-use override
 (`GIT_GUARD_OTP`). The override was DECLINED: rewriting history is gated behind
 explicit approval that no one has given in this session, and a guard's escape
-hatch existing is not the same as being authorized to use it. The cost of
-declining is real and is stated plainly here — `git log` shows the false
-sentence first, and only a reader who follows the TRDD reference reaches this
-correction.
+hatch existing is not the same as being authorized to use it.
+
+**The amend-or-nothing framing was itself wrong.** An earlier draft argued the
+cost of declining was that `git log` shows the false sentence and only a reader
+who follows the TRDD reference reaches the correction. That treated
+`--amend` and this card as the only two options. **`git notes add` is a third**:
+it attaches to the commit without rewriting it (the SHA is unchanged; the note
+lives in `refs/notes/commits`), and `git log --notes` displays it. It was
+applied to `5c1d56d` and the guard did not object, because nothing was
+rewritten. Most of the cost the refusal appeared to incur simply did not have to
+be paid.
+
+**Limit of the note, stated so nobody over-reads it:** `git notes` do NOT
+propagate on a normal `push`/`fetch` — `refs/notes/commits` needs an explicit
+refspec. The note reaches anyone reading THIS clone's log; it does not reach a
+fresh cloner. This card remains the durable, tracked correction of record.
 
 ## What is measured
 
