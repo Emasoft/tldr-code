@@ -387,9 +387,28 @@ mislabelling the file as binary here. **Not established either way; assess in co
       the same way — count them AFTER bucketing, not before.
       — DONE 2026-09-08. Report:
       `reports/encoding-survey/20260908_103909+0200-file-open-read-to-end-bucketing.md`.
-      **8 production sites: PROPAGATED 6 · SILENT 2 · WARNED 0 · PANIC 0.** The
-      non-`read_to_string` read surface is far smaller than the 56, and it adds
-      **zero new instances of this card's defect**.
+      **8 production sites: PROPAGATED 6 · SILENT 2 · WARNED 0 · PANIC 0** — by THOSE THREE
+      PATTERNS, after 19 exclusions. Not "the read surface is 8".
+      **Zero new instances of this card's defect among the 2 sites verified first-hand. The
+      6 PROPAGATED are the worker's classification, UNVERIFIED** — do not re-quote them as
+      established. The earlier phrasing here said "zero new instances" flatly, quantifying
+      over all 8 from a 2-site sample.
+      Two known limits, both the direction that HIDES defects:
+      (1) **PROPAGATED ≠ reaches a user.** `?` propagates one frame; a caller doing
+      `if let Ok(x) = helper(path)` kills it there. The bucket describes the SITE, not the
+      behaviour.
+      (2) **The 19 exclusions are unexamined**, and a wrongly excluded site is invisible
+      forever — it is in no report, no count, and no later pass. 19 is the LARGEST bucket
+      and the only one with no evidence phrase.
+- [ ] **NEW: `fs::read()` / `read_exact` were in NEITHER survey's pattern set.** Measured
+      2026-09-08: 13 hits in `src/`, e.g. `fs/mod.rs:127`, `ast/parser.rs:345`,
+      `callgraph/languages/base.rs:99`, `encoding.rs:252`, three in
+      `commands/{patterns,contracts}/validation.rs`, and four `read_exact` calls on the
+      salsa cache (`commands/daemon/salsa.rs:508-524`). `fs::read` is the most idiomatic
+      whole-file byte read in Rust, so this is a real hole in the UNION of both surveys —
+      the box above is satisfied as literally worded (three named patterns) and does NOT
+      close the read surface. Bucket these the same way. NOTE `semantic/enrichment_tests.rs`
+      is test code living in `src/` — the classify-by-reading trap, again.
       **Both SILENT sites verified FIRST-HAND, not taken from the report** — they are
       `metrics/file_utils.rs:315` and `:318`, both inside `is_binary_file`, and both are
       **deliberately-silent-with-a-reason**, which is one of the three permitted decisions:
@@ -408,12 +427,27 @@ mislabelling the file as binary here. **Not established either way; assess in co
       contract.** `encoding.rs:356` is `fn is_binary_file(path: &Path) -> Result<bool,
       TldrError>` (PROPAGATES); `metrics/file_utils.rs:304` is `fn is_binary_file(path:
       &Path) -> bool` (SILENT). Two functions, same name, opposite error contracts. The
-      `encoding_base_tests.rs` suite calls the `Result` one (`is_binary_file(..).unwrap()`);
-      the `bool` one's production callers are UNTRACED — `metrics/loc.rs:34` imports from
-      `file_utils` but whether it imports THIS symbol was not checked.
-      Decide: unify on the propagating contract, or record why two must coexist. Until then
-      the SILENT count of 2 is honest about the sites but silent about the duplication,
-      which is the more interesting defect.
+      `encoding_base_tests.rs` suite calls the `Result` one (`is_binary_file(..).unwrap()`).
+      **The `bool` one HAS a production caller, now traced: `metrics/loc.rs:34` imports
+      `is_binary_file` from `metrics::file_utils` by name.** So the swallowing variant is
+      live, not dead code.
+      **Two contracts may both be legitimate; the shared NAME is the defect.** A cheap
+      boolean for a hot loop and a propagating API boundary are a normal Rust pair — but
+      they are normally spelled differently. `bool` vs `Result` is invisible at a call site
+      that feeds an `if`, so a developer writing `use …file_utils::is_binary_file` gets the
+      swallowing one with nothing marking the choice. That is this card's defect exactly.
+      Laziest fix first: RENAME (`is_binary_file_lossy` in `metrics`), which makes the
+      contract visible at every call site, changes no behaviour, and lets the compiler
+      enumerate callers. Merging is a bigger change and needs the callers understood first.
+      **Establish BEFORE choosing:** whether the two implementations agree on NON-ERROR
+      behaviour. If they scan different byte counts or different extension lists, the same
+      file gets different binary/not-binary answers depending on the import — a correctness
+      divergence strictly worse than the error contract, and an implementer who fixes only
+      the error handling would leave it.
+      **`BUG-003` applies to BOTH.** `encoding_base_tests.rs:313` carries
+      `#[ignore = "BUG-003: is_binary_file only reads 8KB and may miss null bytes beyond
+      that boundary"]` against the `Result` variant; the `bool` variant's body is
+      `[0u8; 8192]`, so it shares the limit — and only one variant has a test recording it.
 - [ ] The skip path is centralised, so a NEW command cannot silently drop a file without
       inheriting the warning.
       — PARTIAL: the MESSAGE is centralised (`fs::skipped_file_warning`, used by structure,
