@@ -15,14 +15,30 @@ min-approval-requirement: none
 Filed from a measurement, not a report. Nothing fixed yet. The card exists because a test
 fails at HEAD and no other card mentions it.
 
-**The discriminator RAN on 2026-09-08 and is decisive: this is SUITE SELF-INTERFERENCE.**
-Same commit, same binary, full suite, machine clear, only `--test-threads` varied — 2/2 FAILED
-at the default thread count, 2/2 PASSED (`1438 passed; 0 failed`) at `--test-threads=1`. The
-fix belongs in the test, not the environment. See §Discriminator.
+**The discriminator RAN on 2026-09-08, and it establishes LESS than the first version of this
+line claimed.** What it shows: the cause is INTERNAL TO THE SUITE, not the external machine, so
+the fix belongs in the test rather than the environment. What it does NOT show: WHICH internal
+mechanism. `--test-threads=1` changes parallelism, test ORDER, and which tests run concurrently
+with this one, so suite self-interference, shared on-disk state, and lock/daemon contention
+among the `tldr` subprocesses ALL predict the observed pass-serial / fail-parallel result.
+§Discriminator's own preamble says an experiment collapsing several candidates at once is not a
+discriminator between them — the first version of this STATE block violated that warning three
+paragraphs above where the warning is written.
 
-**NEXT ACTION: fix the test** per acceptance box 2. The mechanism is no longer in question;
-only the repair is. Everything in §Not established is still not established and must not be
-inherited as if it were.
+**Evidence already in the committed output points AWAY from CPU contention:** serializing to one
+thread slowed the suite only ~2x (52.26s → 103.96s) for roughly an 8x drop in thread count. A
+CPU-saturated suite should slow by about `num_cpus`. Sublinear slowdown means the suite is
+mostly subprocess/IO-bound, favouring RESOURCE contention. This number sat in the card for two
+revisions before anyone read it against the conclusion it undercuts.
+
+**NEXT ACTION: separate the internal mechanisms** before designing a repair — one aimed at CPU
+contention will not fix a shared-resource problem. Then acceptance box 2. The sample is n=2 per
+arm; see §Discriminator for what that does and does not support.
+
+**A SECOND, INDEPENDENT DEFECT is assertable from numbers already held, and must not be lost
+inside the debug-budget work:** the release budget is 2000ms and this test needs 2.11s SOLO on
+an idle machine. It cannot pass in release at n=1 uncontended. A fix that greens debug and
+never runs `--release` ships broken. This likely deserves its own card.
 
 `column: todo` deviates from the authoring default of `backburner`, deliberately: `backburner`
 means explicitly deferred, and a test failing at HEAD is not deferred. `planned` was rejected
@@ -145,21 +161,37 @@ binary, full `--lib` suite, machine otherwise clear, 2 reps per arm:
 | default thread count | FAILED, `1436 passed; 2 failed`, 52.26s | FAILED, `1436 passed; 2 failed`, 39.65s |
 | `--test-threads=1` | **ok, `1438 passed; 0 failed`**, 103.96s | **ok, `1438 passed; 0 failed`**, 74.12s |
 
-**Conclusion: suite self-interference. The fix belongs in the test, not the environment.**
+**Conclusion, at the strength this experiment supports: the cause is INTERNAL to the suite, not
+the external machine.** That licenses "fix the test, not the environment" and nothing further.
+It does NOT single out suite self-interference: the arms differ in parallelism, test ORDER, and
+which tests run concurrently, so shared on-disk state and lock/daemon contention among the
+`tldr` subprocesses survive untouched. Separating them needs another experiment — same thread
+count with shuffled order, or instrumenting the engine's own subprocess waits.
 
 Neither arm is vacuous: `0 filtered out` and 1438 executed in all four runs, so the passing arm
-ran exactly the tests the failing arm ran. The direction of the wall clock is the corroborating
-detail — single-threaded is ~2x SLOWER overall (103.96s vs 52.26s) while the budget test inside
-it drops under its threshold. **A test that gets faster as its suite gets slower is measuring
-contention**, which is the finding.
+ran exactly the tests the failing arm ran.
 
-Two predictions were made before this ran and both were wrong, which is why it was worth
-running: that it would return four passes and settle nothing, and that `--test-threads=1` might
-also fail if the cost were intrinsic subprocess-spawn time rather than contention. It does not
-fail — serialized spawning stays under budget.
+**The wall clock argues against CPU contention specifically.** Serializing to one thread slowed
+the suite only ~2x (52.26s → 103.96s, 39.65s → 74.12s) for roughly an 8x drop in thread count.
+A CPU-saturated suite serialized to one thread should slow by about `num_cpus`. Sublinear
+slowdown means most of the suite is subprocess/IO-bound, so this test is more likely contending
+for a RESOURCE than for CPU — which favours the mechanism an earlier revision set aside.
 
-**Still open, and NOT answered by this:** `--release`. The panic text cites a release target and
-the release budget is 2000ms, which is below the 2.11s the test needs even solo on this machine.
+**On sample size.** "2/2 vs 2/2" both understates the evidence and overstates its certainty:
+under a 50/50 flake null that split alone is p = 1/16. But the concurrency variable has SEVEN
+observations — 4 failures in 4 concurrent runs, 3 passes in 3 non-concurrent runs (two
+`--test-threads=1`, plus the solo `--exact` run). A perfect split across 7 is p ≈ 0.008
+one-tailed. Quote that. The solo run is rightly excluded from any elapsed RATIO (different
+condition) but still counts as an OUTCOME.
+
+The two predictions that failed here (that this would settle nothing; that `--test-threads=1`
+might also fail on intrinsic spawn cost) were adversarial guesses in a review prompt, not
+registered hypotheses. Do not read "prediction" as pre-registration.
+
+**A SEPARATE defect, assertable from numbers already held and NOT merely "still open":** the
+release budget is 2000ms and this test needs 2.11s SOLO, uncontended. It cannot pass in release
+even at n=1. Different fix, different acceptance criteria — probably its own card. A repair
+that greens debug and never runs `--release` ships broken.
 
 ## Not established — do not inherit these as facts
 
