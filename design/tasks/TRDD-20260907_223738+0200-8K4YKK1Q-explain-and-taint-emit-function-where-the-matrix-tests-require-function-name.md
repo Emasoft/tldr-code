@@ -3,7 +3,7 @@ trdd-id: 8K4YKK1Q
 title: explain and taint emit a function key where exhaustive_matrix requires function_name
 column: todo
 created: 2026-09-07T22:37:38+0200
-updated: 2026-09-07T22:52:00+0200
+updated: 2026-09-08T10:23:23+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
@@ -27,6 +27,52 @@ implemented a different WAY (a custom `Serialize` impl instead of a serde
 attribute). An adversarial review predicted exactly this before the emitter was
 read: *"different implementation of the same intent is exactly what a
 split-by-implementation hides."*
+
+## CORRECTION to commit 5c1d56d's message — a false claim, uncorrectable in place
+
+**`5c1d56d` says BUG-14 "updated exactly one test literal in the same diff".
+That is FALSE, and this card is the correction of record** — the commit names
+this TRDD, so a reader following the reference lands here.
+
+Measured against the whole commit, unfiltered:
+
+| check | result |
+|---|---|
+| `git show 66fa8bc --name-only \| grep -c 'tests/'` | **7** |
+| `git show 66fa8bc \| grep -cE '^[+-].*"function_name"'` | **12** |
+
+So the true figures are 7 test files and 12 changed literal lines — 7× and 12×
+what the commit message asserts.
+
+**How the false number was produced, because this is the recurring shape.** The
+evidence was `git show 66fa8bc -- <two source paths>`. Within those two files
+the grep was correct; across the commit it measured nothing. **A quantifier was
+stated over a region I had selected myself** — the same error this card's "What
+is measured" section documents twice already, now committed to permanent
+history.
+
+**What survives and what does not.** The CONCLUSION is untouched: BUG-14 renamed
+the wire key and left these 44 assertions behind, so the sweep was incomplete.
+The supporting FIGURE is false by an order of magnitude. Do not restate the
+error as harmless because the conclusion held — the conclusion surviving is luck
+about this instance, not evidence about the method. (A first draft of this
+paragraph said the measurement "changes the story for the better"; a review
+correctly called that spin, since it attaches a positive valence to a
+self-inflicted scoping error. Removed.)
+
+A second sentence in the same message is scoped the same wrong way: *"these are
+the residue"* was measured over `-p tldr-cli` only. `tldr-core`, `tldr-daemon`
+and `tldr-mcp` have their own test targets and were never run. The supported
+claim is **"the residue in `tldr-cli`"**.
+
+**Why the message was not amended.** `git commit --amend` was attempted and
+`git_safety_guard.py` blocked it, offering a single-use override
+(`GIT_GUARD_OTP`). The override was DECLINED: rewriting history is gated behind
+explicit approval that no one has given in this session, and a guard's escape
+hatch existing is not the same as being authorized to use it. The cost of
+declining is real and is stated plainly here — `git log` shows the false
+sentence first, and only a reader who follows the TRDD reference reaches this
+correction.
 
 ## What is measured
 
