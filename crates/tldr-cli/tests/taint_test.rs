@@ -54,7 +54,9 @@ def vulnerable(user_data):
     // Parse rather than substring-match: `"function"` matches the wire key
     // (TaintInfo: #[serde(rename = "function")]) but equally any string VALUE
     // spelled `function`, so a substring check could pass on a payload missing
-    // the key. `assert()` consumes `out`, hence the owned stdout read first.
+    // the key. Keep `out.assert()` rather than `assert!(out.status.success())`:
+    // it carries assert_cmd's full failure report — command, status, stdout AND
+    // stderr — into the panic, all of which a bare status check throws away.
     let out = cmd.output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     out.assert().success();
