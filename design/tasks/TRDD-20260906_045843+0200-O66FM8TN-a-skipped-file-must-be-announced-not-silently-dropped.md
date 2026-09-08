@@ -3,7 +3,7 @@ trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
 column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-08T14:12:00+0200
+updated: 2026-09-08T12:35:06+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
@@ -387,10 +387,13 @@ mislabelling the file as binary here. **Not established either way; assess in co
       **Confirmed at source while red-proofing (`36c4838^`), so it stops being re-derived:**
       `recognize()` runs AFTER the read and `test_files_scanned += 1` sits inside
       `if info.is_test_file`, so an unreadable file was correctly never counted.
-- [ ] Whether `specs` can route through a daemon AT ALL — UNCHECKED, and one grep settles it.
-      A QUESTION, not an asserted gap. The test above pins `TMPDIR` to defeat daemon socket
-      discovery, so it proves the direct path only. If `specs` does have a daemon path, that
-      caller's stderr may go nowhere and the fix would be invisible to exactly those users.
+- [x] `specs`' daemon path also names the skipped file — OR no daemon route to `specs` exists.
+      ESTABLISHED 2026-09-08 by the second disjunct: no route exists in the workspace today —
+      `run_specs` has zero callers outside `tldr-cli`, and neither `tldr-daemon` nor `tldr-mcp`
+      reaches it at Rust or process level. The four `Cargo.toml` members are all under
+      `crates/`, so the caller sweep covered every one. Evidence in the commit.
+      **Snapshot, not a guarantee: no test stands behind it — re-check if a contracts handler
+      or a `tldr_specs` MCP tool is ever added.**
 - [ ] Every one of the 56 SILENT sites has a recorded decision: warn, propagate, or
       deliberately-silent-with-a-reason.
       — **The denominator 56 is UNVERIFIED; re-derive it before ticking.** At least two
