@@ -35,13 +35,28 @@ That is FALSE.** A `git notes` correction is attached to the commit itself
 (`git log --notes` shows it), so a reader is no longer dependent on following
 the TRDD reference to learn it. This section is the long form.
 
-**The comparable measurement — the one that answers the claim as stated:**
+**The comparable measurement — per FILE, so no two figures can be juxtaposed
+into a false implication.** BUG-14 removed 10 `"function_name"` literals:
 
-| check | result |
+| file | removals |
 |---|---|
-| `git show 66fa8bc -- '*tests/*' \| grep -cE '^-.*"function_name"'` | **8** |
+| `crates/tldr-core/tests/bench_quality_multilang.rs` | **8** (all the test-side ones) |
+| `crates/tldr-cli/src/commands/remaining/types.rs` | 2 (production source) |
 
-So BUG-14 removed **8** `"function_name"` literals under `tests/`, not one.
+So the test-side total is 8, and it is confined to a SINGLE file — not spread
+across the 7 test files the commit touches. Stating "8 across 7 test files"
+(as the first version of the `git notes` correction did) implies a spread that
+does not exist; the note now carries this breakdown instead.
+
+**The `'*tests/*'` scoping was checked rather than assumed** — a `#[cfg(test)]`
+module inside `src/` would not match that pathspec, so 8 could have been an
+undercount. It is not: the only two non-`tests/` removals are in `types.rs` and
+are production lines (the rename itself), not test code.
+
+**This has a consequence for the sibling claim.** BUG-14's sweep DID reach a
+`tldr-core` test file. The residue claim was measured over `-p tldr-cli` only,
+so whether `tldr-core` carries its own stale assertions is UNMEASURED, not
+known-clean. `bench_quality_multilang.rs` is the obvious place to look first.
 
 **Two figures written into an earlier draft of this section were themselves
 wrong, and are recorded here rather than quietly replaced.** They were "7 test

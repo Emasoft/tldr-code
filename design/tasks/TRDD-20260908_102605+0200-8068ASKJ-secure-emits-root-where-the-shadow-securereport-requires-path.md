@@ -14,9 +14,35 @@ labels: [test-failure, json-output, schema, stale-test]
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body)
 
-Filed 2026-09-08. **Not started.** Cause is SETTLED from production source
-before filing — these tests are stale, production is correct. This is the
-sibling of TRDD-8K4YKK1Q: the same commit, the same intent, a different field.
+Filed 2026-09-08. **FIX LANDED in `3bd0efb` the same day.** Cause was settled
+from production source before filing — these tests are stale, production is
+correct. Sibling of TRDD-8K4YKK1Q: same commit, same intent, different field.
+
+**Result: 9 passed / 1 failed, from 3 passed / 7 failed.** Both mechanisms this
+card identified are fixed. The remaining failure is a DIFFERENT defect that the
+schema fix UNMASKED — `test_secure_detects_taint` now deserializes fine and
+fails on `summary.taint_count > 0`. It is filed as **TRDD-FB1E4UVD** and is not
+a residue of this card. Taint detection itself is confirmed working
+(`taint_count: 2` on a hand-written `input()`→`eval()` sample); the fixture
+`PYTHON_SECURE_SAMPLE` is the suspect.
+
+**The "which SecureReport is on the wire" question is CLOSED, and by better
+evidence than this card asked for.** The card demanded reading the
+serialization call path. Two things were done instead, and the second is
+stronger: `crates/tldr-cli/src/commands/remaining/secure.rs:56` imports the type
+from `super::types` (still an inference — naming a type is not proof it is the
+one serialized), and then the command was RUN, yielding a payload with `root`
+present and `path` absent. A behavioural observation of the actual output beats
+reading either type definition, and it is self-verifying: had the `tldr-core`
+type been on the wire, `root` would not appear and the fix would have failed
+loudly rather than silently.
+
+**What is NOT verified, stated so nobody ticks it by inspection:** the six
+deserialization guards were genuinely observed red-then-green (they failed on
+the stale key before the fix, which is exactly the mutation the acceptance list
+asks for). The NON-EMPTY half of the `:1550` predicate was never observed
+failing — no payload with a null or empty `root` was constructed. That box
+stays open.
 
 Until this card existed the work was queued only as a parenthetical inside
 commit `5c1d56d`'s body, which is the weakest possible queue — not on the board,
