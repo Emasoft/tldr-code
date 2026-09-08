@@ -240,18 +240,23 @@ fn dead_over_a_project_with_an_unreadable_caller_warns_about_the_caller() {
 /// skip is visible on. If a `warnings` vec is ever added to `SpecsReport`, move
 /// this assertion onto it — stderr is the weaker contract.
 ///
-/// Red-proofed 2026-09-08 against `36c4838^` (byte-identically
-/// `Err(_) => continue,`): the reverted build fails here with stderr EMPTY --
-/// so no other site prints that basename, and the assertion discriminates on
-/// this `eprintln!` alone.
+/// Red-proofed 2026-09-08 against `36c4838^`, whose arm is byte-identically
+/// `Err(_) => continue,`: under that revert this test fails at the
+/// `bad_test.rs` assertion with stderr EMPTY -- nothing else wrote to stderr
+/// on this fixture, so the assertion turns on this `eprintln!`.
 #[test]
 fn specs_names_a_test_file_it_cannot_read() {
     let scratch = TempDir::new().expect("scratch tempdir");
     let dir = TempDir::new().expect("fixture tempdir");
 
+    // The readable test must name a function under test, or the report comes
+    // back `functions: []` and the assertion below passes for a walk that
+    // produced nothing. The two files name DIFFERENT functions on purpose:
+    // that is what makes `functions_found == 1` also fail if the unreadable
+    // one is ever processed anyway.
     std::fs::write(
         dir.path().join("good_test.rs"),
-        "#[test]\nfn test_ok() {\n    assert_eq!(1, 1);\n}\n",
+        "#[test]\nfn test_add_sums_its_arguments() {\n    assert_eq!(add(2, 3), 5);\n}\n",
     )
     .expect("write good_test.rs");
 
@@ -260,7 +265,7 @@ fn specs_names_a_test_file_it_cannot_read() {
     // Written as bytes because this content cannot be spelled as a &str.
     std::fs::write(
         dir.path().join("bad_test.rs"),
-        b"#[test]\nfn test_caf\xe9() {\n    assert_eq!(1, 1);\n}\n",
+        b"#[test]\nfn test_caf\xe9() {\n    assert_eq!(multiply(2, 3), 6);\n}\n",
     )
     .expect("write bad_test.rs");
 
@@ -289,16 +294,9 @@ fn specs_names_a_test_file_it_cannot_read() {
         "good_test.rs is readable and must not be reported as skipped: {stderr}"
     );
 
-    // The `continue` has to continue USEFULLY. Every assertion above is also
-    // satisfied by an implementation that warns, skips, and then returns an
-    // empty report -- so without this one the test does not distinguish
-    // "recovered from a bad file" from "gave up after announcing it".
-    //
-    // It is deliberately NOT part of the red-proof: it holds both before and
-    // after the `eprintln!` fix, because the skip behaviour never changed.
-    // What it does buy is turning the count claim in `specs.rs`'s comment --
-    // that `test_files_scanned` counts only files actually read -- from
-    // something read off the control flow into something measured.
+    // Every assertion above is also satisfied by an implementation that warns,
+    // skips, and then returns an empty report. Deliberately outside the
+    // red-proof: these hold before and after the fix.
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
         panic!(
             "specs stdout was not JSON: {e}\nstdout: {}\nstderr: {stderr}",
@@ -308,7 +306,12 @@ fn specs_names_a_test_file_it_cannot_read() {
     assert_eq!(
         json["summary"]["test_files_scanned"].as_u64(),
         Some(1),
-        "the readable test file must still be scanned after the unreadable one \
-         is skipped, and the unreadable one must not be counted: {json}"
+        "the unreadable file must not be counted as scanned: {json}"
+    );
+    assert_eq!(
+        json["summary"]["functions_found"].as_u64(),
+        Some(1),
+        "expected exactly `add`: 0 means the walk gave up after announcing the \
+         skip, 2 means it processed the unreadable file anyway: {json}"
     );
 }
