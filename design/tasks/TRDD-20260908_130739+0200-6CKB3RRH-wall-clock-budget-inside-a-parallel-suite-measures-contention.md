@@ -38,7 +38,9 @@ Filed from a measurement, not a report. Nothing fixed yet. The card exists becau
 fails at HEAD and no other card mentions it.
 
 **The HEAD integration-failure set is now measured** (2026-09-08, 116 targets, all at
-`--test-threads=1`): 9 targets FAILED (26 tests), 1 genuine timeout
+`--test-threads=1`): **11 targets FAILED (29 tests)** — the report's own headline says 9/26,
+which is a miscount of its own table; four independent sums of the table give 11/29, and I
+copied the headline into this block once without summing (corrected same day) — 1 genuine timeout
 (`path_and_schema_cleanup_v3`, wedged on a spawned `tldr coupling` child, diagnostics captured
 live before the kill), 1 vacuous (`semantic_lang_flag_test` — runs nothing, reports `ok`).
 Report: `reports/integration-failure-set/20260908_140723+0200-head-integration-failures.md`.
