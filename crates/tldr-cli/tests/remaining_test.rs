@@ -183,6 +183,12 @@ mod remaining_types {
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct ExplainReport {
+        // `rename`, deliberately NOT `alias`. This struct is an independent
+        // restatement of the wire contract — its value is that it CAN disagree
+        // with production. `alias` would make it accept both `function` and
+        // `function_name`, which is exactly the distinction it exists to pin
+        // down, so a later revert of the rename would pass silently.
+        #[serde(rename = "function")]
         pub function_name: String,
         pub file: String,
         pub line_start: u32,
@@ -1314,8 +1320,9 @@ mod explain_command {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let value: Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
 
-        // Verify required fields
-        assert!(value.get("function_name").is_some());
+        // Verify required fields (wire names — see the ExplainReport shadow
+        // struct above; the emitted key is `function`, not `function_name`).
+        assert!(value.get("function").is_some());
         assert!(value.get("file").is_some());
         assert!(value.get("line_start").is_some());
         assert!(value.get("signature").is_some());

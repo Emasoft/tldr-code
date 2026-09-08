@@ -50,10 +50,27 @@ def vulnerable(user_data):
         .arg("-f")
         .arg("json");
 
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("function_name"))
-        .stdout(predicate::str::contains("vulnerable"));
+    // Parse rather than substring-match. The wire key is `function` (TaintInfo:
+    // #[serde(rename = "function")]), but `"function"` also occurs as a VALUE in
+    // taint payloads (kind/type fields under sources, sinks, flows), so a
+    // substring check could pass on a payload missing the key entirely.
+    let out = cmd.output().unwrap();
+    // Carry stderr into the failure message. `.assert().success()` used to print
+    // it for us; a bare `assert!(status.success())` would discard the only
+    // diagnostic the binary emits, at exactly the moment it matters.
+    assert!(
+        out.status.success(),
+        "taint exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("taint --format json");
+    assert_eq!(
+        json.get("function").and_then(|v| v.as_str()),
+        Some("vulnerable"),
+        "taint JSON must carry the wire key `function`; got: {stdout}"
+    );
 }
 
 #[test]

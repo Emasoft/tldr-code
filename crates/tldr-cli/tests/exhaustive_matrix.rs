@@ -1133,9 +1133,23 @@ fn check_explain(lang: &str) {
             "--quiet",
         ],
     );
-    if !json.is_object() || json.get("function_name").is_none() {
+    // Wire key is `function`, not the Rust field name `function_name`:
+    // BUG-14 (66fa8bc) changed `ExplainReport`'s hand-written `Serialize` from
+    // `function_name` to `function`. Assert the WIRE name, and never relax this
+    // to accept both spellings — tolerating either is what would let a revert
+    // of that rename pass unnoticed.
+    //
+    // Require a non-empty string rather than mere presence: `get` returns
+    // `Some(Value::Null)` for an explicit null, so a presence-only check would
+    // pass on exactly the empty payload this guard is named for.
+    if !json.is_object()
+        || json
+            .get("function")
+            .and_then(|v| v.as_str())
+            .is_none_or(str::is_empty)
+    {
         panic!(
-            "[explain × {lang}] SILENT_FAIL — missing `function_name` field\n--- stdout ---\n{}\n--- stderr ---\n{stderr}",
+            "[explain × {lang}] SILENT_FAIL — missing `function` field\n--- stdout ---\n{}\n--- stderr ---\n{stderr}",
             truncate(&stdout, 400)
         );
     }
@@ -1181,9 +1195,17 @@ fn check_taint(lang: &str) {
             "--quiet",
         ],
     );
-    if !json.is_object() || json.get("function_name").is_none() {
+    // Wire key is `function` — `TaintInfo` carries #[serde(rename = "function")]
+    // from the same BUG-14 commit. Same contract, same non-empty-string check as
+    // the explain guard above, and for the same reason.
+    if !json.is_object()
+        || json
+            .get("function")
+            .and_then(|v| v.as_str())
+            .is_none_or(str::is_empty)
+    {
         panic!(
-            "[taint × {lang}] SILENT_FAIL — missing `function_name` field\n--- stdout ---\n{}\n--- stderr ---\n{stderr}",
+            "[taint × {lang}] SILENT_FAIL — missing `function` field\n--- stdout ---\n{}\n--- stderr ---\n{stderr}",
             truncate(&stdout, 400)
         );
     }
