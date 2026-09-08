@@ -12,15 +12,21 @@ min-approval-requirement: none
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-08
 
-**BEFORE YOU RUN ANY `cargo test` IN THIS REPO — read this first, it is the one thing on this
-card that can cause NEW damage rather than merely a wrong belief.** This suite's failures are
-concurrency-dependent; that is this card's central finding. So a second concurrent runner
+**BEFORE YOU RUN `cargo test -p tldr-cli --lib` — read this first, it is the one thing on this
+card that can cause NEW damage rather than merely a wrong belief.** The LIB suite's failures
+are concurrency-dependent; that is this card's central finding. So a second concurrent runner
 **fabricates failures in both runs**, at HEAD, under your own hand, with nothing marking them
 as artifacts — you would manufacture exactly the phenomenon this card characterizes and have
 every reason to read it as a real regression. Check first by snapshotting the process table to
 a file and grepping THAT FILE (never `pgrep -f` or `ps | grep` — they match their own argv):
 `ps -eo pid,ppid,etime,command > /tmp/ps-check.txt` then grep it for `cargo test`. **A failure
 observed while another run is live is not evidence of a defect.**
+
+**Scope, stated because an earlier draft of this warning dropped it:** the measured evidence is
+the LIB target only (1438 passed at `--test-threads=1`; 2 failures at the default thread count).
+Extending it to the integration targets is UNESTABLISHED — plausible, since they spawn `tldr`
+subprocesses that contend for the same resources, but not measured. Do not cite this card for
+an integration-target failure.
 
 **DO NOT ORIENT FROM `git log --oneline`.** Two commit SUBJECTS on this card assert claims that
 were later retracted, and the log shows them without the retraction: `cb2e4ed` ("it is suite
