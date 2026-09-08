@@ -606,9 +606,13 @@ def main():
 //
 // `swallow_errors` exists for `test_secure_severity_sorting`, and it is the
 // ONLY finding here that is not `high`: the bare-except emitter
-// (`secure.rs:932`) is hardcoded `behavioral`/`medium`. Remove it and that
-// test stops being able to fail -- a single-severity list compares true in
-// either order -- so it goes vacuously green rather than red.
+// (`secure.rs:932`) is hardcoded `behavioral`/`medium`. Delete it and that
+// test goes RED -- MEASURED 2026-09-08, not reasoned: it fails at the
+// distinct-severity precondition with `got {"high"}`, which is that guard
+// doing its job. An earlier version of this comment claimed it would go
+// "vacuously green"; that described the code before the precondition
+// existed, and it would have taught the next reader to distrust the one
+// assertion that actually protects this test.
 const PYTHON_SECURE_SAMPLE: &str = r#"
 import os
 import pickle
