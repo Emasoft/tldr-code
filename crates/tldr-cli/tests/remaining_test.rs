@@ -603,6 +603,12 @@ def main():
 // parameter and are never called anywhere in this file. Whether an uncalled
 // function's parameter should itself count as untrusted is an open engine
 // question -- see TRDD-FB1E4UVD.
+//
+// `swallow_errors` exists for `test_secure_severity_sorting`, and it is the
+// ONLY finding here that is not `high`: the bare-except emitter
+// (`secure.rs:932`) is hardcoded `behavioral`/`medium`. Remove it and that
+// test stops being able to fail -- a single-severity list compares true in
+// either order -- so it goes vacuously green rather than red.
 const PYTHON_SECURE_SAMPLE: &str = r#"
 import os
 import pickle
@@ -641,6 +647,13 @@ def weak_crypto():
     """Using weak hash algorithm."""
     import hashlib
     return hashlib.md5(b"password").hexdigest()
+
+def swallow_errors():
+    """Bare except - the fixture's only non-high finding."""
+    try:
+        os.remove("test.txt")
+    except:
+        pass
 "#;
 
 /// Python code for definition command
@@ -1463,14 +1476,6 @@ mod secure_command {
     }
 
     #[test]
-    #[ignore = "cannot discriminate on THIS fixture: its findings are all severity \
-                high, so the sort comparison is true in either order and the test \
-                passes on unsorted output. Measured 2026-09-08: 6 Python patterns \
-                probed, 3 produced findings, all high. That is a fact about these \
-                probes, NOT about the analyzer -- whether `secure` can emit a \
-                non-high severity at all is UNRESOLVED, and if it cannot, the \
-                defect is a severity field that carries no information, which is \
-                an engine bug and not a fixture gap. See TRDD-FB1E4UVD."]
     fn test_secure_severity_sorting() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "sample.py", PYTHON_SECURE_SAMPLE);
@@ -1483,16 +1488,11 @@ mod secure_command {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let report: SecureReport = serde_json::from_str(&stdout).unwrap();
 
-        // Two preconditions, because len() >= 2 alone is NOT enough: windows(2)
-        // yields nothing on a shorter slice, but a pair of EQUAL severities
-        // compares true in either order, so the loop runs and still cannot fail.
-        // Measured 2026-09-08: this fixture yields exactly two findings and both
-        // are "high", so the length guard alone left the test vacuous.
-        assert!(
-            report.findings.len() >= 2,
-            "sort check needs >=2 findings to mean anything; got {}",
-            report.findings.len()
-        );
+        // The precondition that matters, because a length check is NOT enough:
+        // windows(2) yields nothing on a shorter slice, but a pair of EQUAL
+        // severities compares true in either order, so the loop runs and still
+        // cannot fail. A set of >=2 DISTINCT values cannot come from fewer than
+        // 2 findings, so this subsumes the length guard that used to sit here.
         let distinct: std::collections::HashSet<&str> = report
             .findings
             .iter()

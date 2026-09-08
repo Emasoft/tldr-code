@@ -172,33 +172,33 @@ is not wholly broken, and the difference between the two samples is the lead.
 assertion that cannot fail is worse than a red test; the whole reason this was
 invisible until today is that an earlier error stopped it being evaluated.
 
-## Open: does `secure` ever emit a non-high severity?
+## CLOSED: `secure` does emit non-high severities — the fixture was thin
 
-`test_secure_severity_sorting` is `#[ignore]`d because every finding on this
-fixture is `"high"`, making its sort comparison true in either order. Six Python
-patterns were probed; the three that produced findings were all `high`.
+Settled 2026-09-08 by reading every `SecureFinding` construction in
+`commands/remaining/secure.rs`, then confirming with a probe. The engine branch
+is dead; the severity field carries information.
 
-**That is a fact about six probes, not about the analyzer, and the distinction
-decides who owns the bug:**
+| site | category | severity |
+|---|---|---|
+| `secure.rs:932` bare `except:` | `behavioral` | **`medium`** |
+| `secure.rs:1030` Rust `.unwrap()` | `unwrap` | `medium` |
+| `secure.rs:1041` `todo!()` | `todo_marker` | `low` |
+| `:745`, `:794` taint projections | `taint` | `critical`/`high`/`medium`/`low`, mapped from the `VulnFinding` |
 
-- If `secure` CAN emit low/medium/critical and these probes just missed those
-  paths → the fixture is inadequate, and the fix is a richer fixture.
-- If `secure` emits only `high` → the severity field carries no information, a
-  security dashboard rates a resource leak identically to command injection,
-  and that is an ENGINE defect. The ignored test would then be reporting a real
-  product problem, and "fix the fixture" would be exactly the wrong instruction.
+Only the first is reachable from Python, and it was not among the six probes —
+which is exactly why they all came back `high`. A two-function probe (`input()`
+→ `os.system` plus a bare `except:`) returns `taint`/`high` at line 5 and
+`behavioral`/`medium` at line 10.
 
-**A first attempt to resolve this by grep was itself wrong, and is recorded so
-nobody repeats it.** Counting severity string literals under `commands/remaining/`
-returned 3 `high`, 2 `low`, 1 `medium` — which looks like a clean refutation. It
-is not. Reading the hits: `types.rs:648` is `confidence: "low"`, a DIFFERENT
-FIELD that the pattern matched on the literal alone; `api_check.rs:2803-2804` are
-`serialize_misuse_severity`, belonging to the api_check sub-analysis, which has
-not been shown to feed a `SecureFinding` at all.
+So `test_secure_severity_sorting` is **un-ignored**: the fixture gained a
+`swallow_errors` with a bare except, and the test now goes RED when the
+comparator at `secure.rs:273` is reversed — failing at the sort assertion
+itself, not at a precondition.
 
-**Resolve it by reading the emitter that builds `SecureFinding`, not by grepping
-for severity words.** Anything that matches a bare string literal will keep
-picking up other fields with the same vocabulary.
+**The grep that tried to settle this first was wrong, and the reusable part is
+one line:** severity string literals also appear in `confidence:` fields and in
+`MisuseSeverity`, so a grep for severity WORDS does not find severity
+ASSIGNMENTS. Reading the construction sites does.
 
 ## Acceptance
 
@@ -208,7 +208,12 @@ picking up other fields with the same vocabulary.
       still asserts `taint_count > 0` — not a weakened predicate.
 - [ ] Red-proofed: the assertion is observed FAILING against a fixture with the
       taint pattern removed, so it is known to discriminate.
-- [ ] `cargo test -p tldr-cli --test remaining_test secure_command` is 10/10.
+      — NOT DONE for `taint_count > 0`. What WAS red-proofed is a different
+      assertion: `test_secure_severity_sorting` fails at its sort comparison
+      when `secure.rs:273`'s comparator is reversed. That does not discharge
+      this box.
+- [x] `cargo test -p tldr-cli --test remaining_test secure_command` is 10/10.
+      — 10 passed, 0 failed, **0 ignored** (2026-09-08).
 
 ## Origin
 
