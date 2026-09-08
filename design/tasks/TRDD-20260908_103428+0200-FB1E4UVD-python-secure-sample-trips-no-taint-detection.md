@@ -66,6 +66,7 @@ beside it to date it.
 | `d_control` | as `b_withcaller`, plus a resource leak | 0 — **leak IS reported** |
 | `a_nocaller` | param-fed `os.system` alone, no source | 0 findings at all |
 | **`g_both_in_one_file`** | **a same-body flow AND a cross-call flow in ONE file** | **1, at line 5** |
+| **`h_three_flows`** | **three same-body flows, one file** | **3, at lines 5, 9, 13** |
 
 **`g` is the probe that settles it, and it is the only one that needs no
 cross-file inference.** One file, three functions: a same-body `input()` →
@@ -76,12 +77,28 @@ this file and entered a function body, and still did not follow the call. Every
 earlier conclusion here rested on importing a fact from file `c` into a claim
 about file `d`; `g` removes that join.
 
-**One mechanism explains all seven probes: analysis is per-function-body and
-does not follow calls.** Same body → found (`c`, `g` line 5). Split across two
-bodies → not found (`b`, `d`, `g`'s other flow). Module level, which has no
-function body at all → not found (`e`, `f`). No source anywhere → not found
-(`a`). This is the best-supported reading; it is not proof, because no
-implementation was read.
+**`h` kills the alternative that would have undone `g`.** Every probe that found
+taint at all found exactly ONE, and the fixture's two findings were one taint
+plus one resource_leak — i.e. one per CATEGORY. So "the engine emits at most one
+taint finding per file" explained `g`'s single result just as well as
+"the cross-call flow was not found", and would have made `g` worthless. `h` puts
+three same-body flows in one file and gets **3**, at three distinct lines. No
+cap, no per-category dedup. `g`'s 1 is therefore a real absence.
+
+**One mechanism explains all eight probes: analysis is per-function-body and
+does not follow calls.** Same body → found (`c`, `g` line 5, `h` ×3). Split
+across two bodies → not found (`b`, `d`, `g`'s other flow). Module level, which
+has no function body at all → not found (`e`, `f`). No source anywhere → not
+found (`a`).
+
+**Parsimony is not proof, and it is worth saying why the hedge is not a
+formality here.** No implementation was read. "One mechanism fits everything"
+is the standard shape of a story that fits because it was built after seeing
+the data — every probe above was designed by me, so the set is not a random
+sample of engine behaviour and cannot rule out mechanisms nobody thought to
+probe. What would settle it is reading the analyzer's traversal, which is
+cheap and has not been done. Until then this is the best-supported reading, not
+a fact about the engine.
 
 **Superseded:** an earlier version of this section asserted "the flow is not
 followed across a CALL" on the `b`/`c` pair alone, which `f` refuted — `f` has
