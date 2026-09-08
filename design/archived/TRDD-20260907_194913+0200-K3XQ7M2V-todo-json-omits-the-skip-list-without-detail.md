@@ -1,9 +1,9 @@
 ---
 trdd-id: K3XQ7M2V
 title: tldr todo JSON omits the skip list unless --detail dead is passed
-column: testing
+column: complete
 created: 2026-09-07T19:49:13+0200
-updated: 2026-09-07T22:12:00+0200
+updated: 2026-09-08T23:02:29+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
@@ -14,13 +14,13 @@ implementation-commits: [0063e1b]
 
 # tldr todo JSON omits the skip list unless --detail dead is passed
 
-## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-07 19:49
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-08 23:02
 
-Not started. Split out of TRDD-O66FM8TN on 2026-09-07 because the parent's
+Split out of TRDD-O66FM8TN on 2026-09-07 because the parent's
 stderr fix landed while this channel stayed broken, and a line in a commit
 message is not on the board.
 
-**IMPLEMENTED 2026-09-07, NOT YET COMMITTED.** Working tree carries the change:
+**IMPLEMENTED 2026-09-07, committed in `0063e1b`.** That commit carries the change:
 `todo.rs` +40/-0, `types.rs` +16/-0, test +88/-21. Those are LINE COUNTS, and a
 line count cannot say what the lines are: the lift itself was read back verbatim
 at `todo.rs:243-247`, and the four skipped-files tests pass. Cite that, not the
@@ -41,7 +41,7 @@ signature changed; no sub-analysis was touched.
 (`skip_serializing_if = "Vec::is_empty"`) + a by-key lift in the existing loop,
 placed BEFORE the insert that moves `result_value`.
 
-**NEXT ACTION: commit.** All four acceptance boxes hold; see them below.
+**CLOSED 2026-09-08.** All four acceptance boxes hold; see them below.
 
 **The unfiltered `cargo test -p tldr-cli` returned cargo exit=101** with one
 failure, `test_structure_json_output` (`cli_tests.rs:80`). **That failure
@@ -398,3 +398,7 @@ Revisit when a second producer lands; it is a breaking change by then.
       was printed sorted), so this is a claim about the key set, not a
       byte-identical-output claim — an ordinal-index consumer, if one existed,
       would see `total_elapsed_ms` shift when warnings ARE present.
+
+## Approval log
+
+- 2026-09-08T23:02:29+0200 — COMPLETE by session tldr-code-7a; testing → complete under the user's delegation of 2026-09-08 ("you are in charge, so decide by yourself"). ai_review = this session's pre-close review fork; human_review not recorded as a column (precedent TRDD-PX8JOJY4). Acceptance re-run 2026-09-08: `cargo test -p tldr-cli --test skipped_files_todo_bugbot_test -- --test-threads=1` → 4 passed, 0 failed, cargo exit 0; `cargo test -p tldr-cli --lib lift_warnings -- --test-threads=1` → 3 passed, 0 failed, cargo exit 0. The HEAD sweep's failing test names in `remaining_test`, `schema_cleanup_v1`, `schema_unification_v1`, `quality_metrics_and_schema_v1` were read: none names `todo`; `todo_aggregation_tests` 27/27 and `cli_remaining_tests` 80/80 passed in the same sweep.
