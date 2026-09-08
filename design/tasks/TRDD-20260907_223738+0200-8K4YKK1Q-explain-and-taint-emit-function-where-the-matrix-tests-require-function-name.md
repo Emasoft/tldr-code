@@ -38,20 +38,27 @@ the TRDD reference to learn it. This section is the long form.
 **The comparable measurement — per FILE, so no two figures can be juxtaposed
 into a false implication.** BUG-14 removed 10 `"function_name"` literals:
 
-| file | removals |
-|---|---|
-| `crates/tldr-core/tests/bench_quality_multilang.rs` | **8** (all the test-side ones) |
-| `crates/tldr-cli/src/commands/remaining/types.rs` | 2 (production source) |
+| file | removals | kind |
+|---|---|---|
+| `crates/tldr-core/tests/bench_quality_multilang.rs` | 8 | test literals |
+| `crates/tldr-cli/src/commands/remaining/types.rs` | 1 | test literal, in an inline `#[cfg(test)]` block |
+| `crates/tldr-cli/src/commands/remaining/types.rs` | 1 | production `serialize_field` line |
 
-So the test-side total is 8, and it is confined to a SINGLE file — not spread
-across the 7 test files the commit touches. Stating "8 across 7 test files"
-(as the first version of the `git notes` correction did) implies a spread that
-does not exist; the note now carries this breakdown instead.
+**Test-side total: 9**, not one.
 
-**The `'*tests/*'` scoping was checked rather than assumed** — a `#[cfg(test)]`
-module inside `src/` would not match that pathspec, so 8 could have been an
-undercount. It is not: the only two non-`tests/` removals are in `types.rs` and
-are production lines (the rename itself), not test code.
+**The `'*tests/*'` pathspec undercounted, and that was the THIRD instance of the
+scoping error this section is about.** A `#[cfg(test)]` module inside `src/`
+does not match that pathspec, so the 8 it returned excluded
+`assert!(json.contains(r#""function_name":"calculate_total""#));` — a test
+literal living in `types.rs`. A reviewer predicted this before it was measured.
+The lesson is not "count more carefully"; it is that **every one of these
+figures was produced by a filter chosen before the question was settled**, and
+each successive filter looked obviously adequate at the time.
+
+Stopping here deliberately: the `git notes` on `5c1d56d` carries the corrected
+breakdown, which is the artifact a reader actually meets. This claim changes no
+decision — "one" and "nine" both support "the sweep was incomplete" — so it gets
+one correct statement in two places and no further prose.
 
 **This has a consequence for the sibling claim.** BUG-14's sweep DID reach a
 `tldr-core` test file. The residue claim was measured over `-p tldr-cli` only,
