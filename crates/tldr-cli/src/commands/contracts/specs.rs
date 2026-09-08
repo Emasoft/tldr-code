@@ -223,11 +223,12 @@ pub fn run_specs(test_path: &Path, function_filter: Option<&str>) -> ContractsRe
             let source = match std::fs::read_to_string(file_path) {
                 Ok(s) => s,
                 // TRDD-O66FM8TN: was a bare `Err(_) => continue`. The Python
-                // branch a few lines above already announces a test file it
-                // could not handle; this arm dropped one just as silently and
-                // said nothing, so `test_files_scanned` under-counted with no
-                // hint why. Both arms skip the file -- only one used to admit
-                // it. Keep them saying the same thing.
+                // branch above already announces a test file it could not
+                // handle; this arm dropped one just as silently. Note the
+                // COUNT was never wrong -- `test_files_scanned` increments
+                // below, after a successful read, so an unreadable file was
+                // correctly not counted. What was missing is any way to tell
+                // that apart from a directory that simply holds fewer tests.
                 Err(e) => {
                     eprintln!("Warning: Failed to read {}: {}", file_path.display(), e);
                     continue;
