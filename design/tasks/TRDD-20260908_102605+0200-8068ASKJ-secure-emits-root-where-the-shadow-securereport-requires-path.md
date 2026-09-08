@@ -37,6 +37,23 @@ reading either type definition, and it is self-verifying: had the `tldr-core`
 type been on the wire, `root` would not appear and the fix would have failed
 loudly rather than silently.
 
+**A schema break MASKS the content failures underneath it, so "N tests now
+pass" is never "N tests now validate."** Those 6 tests died on the SECOND field
+in declaration order, so every subject-matter assertion after it had gone
+unevaluated for as long as the rename was unswept. The five that went green were
+therefore untested claims, not verified ones. They were spot-checked:
+
+| test | verdict |
+|---|---|
+| `basic_analysis`, `detects_resource_leak`, `rust_summary_metrics`, `quick_mode` | substantive and discriminating (`leak_count > 0`, `unwrap_calls > 0`, …) |
+| `severity_sorting` | **VACUOUS-CAPABLE — green whether or not it discriminates** |
+
+`severity_sorting` iterates `report.findings.windows(2)`. When `findings.len() <
+2` that yields nothing and the assertion never runs, and NOTHING in the test
+pins the length — no non-empty check, no minimum. It is currently green, but its
+greenness carries no information about sortedness. Recorded, not fixed: it is a
+pre-existing weakness this card merely made visible, not a regression it caused.
+
 **What is NOT verified, stated so nobody ticks it by inspection:** the six
 deserialization guards were genuinely observed red-then-green (they failed on
 the stale key before the fix, which is exactly the mutation the acceptance list

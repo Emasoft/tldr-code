@@ -18,7 +18,37 @@ Filed 2026-09-08. **Not started.** This failure was UNMASKED by `3bd0efb`
 (TRDD-8068ASKJ) — it did not exist as a visible failure before, because the test
 died earlier on a deserialization error and never reached this assertion.
 
-**Production is NOT broken. Do not open this expecting a taint-engine bug.**
+**RESOLVED to (a) — the fixture. The fork below is settled; it is kept only to
+show what was weighed.** The filed version asserted "Production is NOT broken"
+in this block while the body still offered fork (b) "genuine detection
+regression → fix the ENGINE". Those contradict, and STATE supersedes the body,
+so an implementer would have been told authoritatively not to look at the engine
+and then handed the engine as a candidate. The contradiction existed because the
+strongest claim was made without the cheapest measurement: **the fixture was
+never opened.**
+
+It has now been read. `PYTHON_SECURE_SAMPLE` contains SINKS but no SOURCE:
+
+```python
+from flask import request          # imported, never used
+def unsafe_command(filename):
+    os.system(f"cat {filename}")   # sink, fed by a PARAMETER
+def unsafe_deserialize(data):
+    return pickle.loads(data)      # sink, fed by a PARAMETER
+```
+
+Every tainted value arrives as a function parameter. The control sample that
+DOES report `taint_count: 2` differs in exactly one relevant way — it opens with
+`user_input = input("id: ")`, an explicit source. So the engine is not failing to
+propagate; there is no source→sink flow in this fixture to propagate.
+
+**The fix is the FIXTURE.** Give it a real source (`input()`, or the `request`
+it already imports) flowing into one of the sinks it already has.
+
+**One design question this leaves open, and it is NOT a blocker:** whether an
+untrusted *parameter* should itself count as a taint source is a legitimate
+engine-design question. It is not a regression, so it does not belong on this
+card — if it is worth pursuing, it is a new one.
 
 ## What fails
 

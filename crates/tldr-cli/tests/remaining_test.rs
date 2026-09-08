@@ -1555,9 +1555,9 @@ mod secure_command {
         assert!(value.get("wrapper").is_some());
         // `root`, not `path` — see SecureReport above. Asserted as a non-empty
         // string rather than mere presence, because `get` returns
-        // Some(Value::Null) for an explicit null. That is a deliberate scope
-        // call, not a consequence of the rename: the sibling `is_some()` checks
-        // below carry the same weakness and are left for their own change.
+        // Some(Value::Null) for an explicit null. The sibling checks below are
+        // presence-only and carry that weakness; strengthening them is not part
+        // of the rename this guard is about.
         assert!(
             value
                 .get("root")

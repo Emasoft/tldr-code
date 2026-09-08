@@ -383,8 +383,37 @@ mislabelling the file as binary here. **Not established either way; assess in co
       — `dead_json_names_every_skipped_file` + the UTF-16-caller scenario test.
 - [ ] Every one of the 56 SILENT sites has a recorded decision: warn, propagate, or
       deliberately-silent-with-a-reason.
-- [ ] The `File::open` / `read_to_end` / `.read(&mut …)` sites the survey never saw are bucketed
+- [x] The `File::open` / `read_to_end` / `.read(&mut …)` sites the survey never saw are bucketed
       the same way — count them AFTER bucketing, not before.
+      — DONE 2026-09-08. Report:
+      `reports/encoding-survey/20260908_103909+0200-file-open-read-to-end-bucketing.md`.
+      **8 production sites: PROPAGATED 6 · SILENT 2 · WARNED 0 · PANIC 0.** The
+      non-`read_to_string` read surface is far smaller than the 56, and it adds
+      **zero new instances of this card's defect**.
+      **Both SILENT sites verified FIRST-HAND, not taken from the report** — they are
+      `metrics/file_utils.rs:315` and `:318`, both inside `is_binary_file`, and both are
+      **deliberately-silent-with-a-reason**, which is one of the three permitted decisions:
+      (1) `fn is_binary_file(path: &Path) -> bool` has NO channel to report an error, so the
+      silence is structural, not a discarded error on a skip path; and (2) the direction is
+      the safe one — `Err(_) => false` means "not binary", so the file is NOT dropped HERE.
+      Returning `true` on error is what would have been this card's defect.
+      **VERIFIED: (1) and (2), by reading the function.**
+      **NOT VERIFIED, and explicitly not claimed:** that the file then "proceeds to the real
+      read, which surfaces the actual error". That is a CALLER-level claim and no caller was
+      traced. Asserting it would repeat this card's own retraction, where `todo`'s skip list
+      was declared silent from a grep scoped to one function while the `eprintln!` sat in the
+      caller 200 lines up. An absence inside a function I chose is not an absence in the
+      program — and neither is a presence.
+- [ ] **NEW, opened by that survey: `is_binary_file` is DUPLICATED with a divergent error
+      contract.** `encoding.rs:356` is `fn is_binary_file(path: &Path) -> Result<bool,
+      TldrError>` (PROPAGATES); `metrics/file_utils.rs:304` is `fn is_binary_file(path:
+      &Path) -> bool` (SILENT). Two functions, same name, opposite error contracts. The
+      `encoding_base_tests.rs` suite calls the `Result` one (`is_binary_file(..).unwrap()`);
+      the `bool` one's production callers are UNTRACED — `metrics/loc.rs:34` imports from
+      `file_utils` but whether it imports THIS symbol was not checked.
+      Decide: unify on the propagating contract, or record why two must coexist. Until then
+      the SILENT count of 2 is honest about the sites but silent about the duplication,
+      which is the more interesting defect.
 - [ ] The skip path is centralised, so a NEW command cannot silently drop a file without
       inheriting the warning.
       — PARTIAL: the MESSAGE is centralised (`fs::skipped_file_warning`, used by structure,
