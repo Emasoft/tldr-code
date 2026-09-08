@@ -242,6 +242,12 @@ mod remaining_types {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct SecureReport {
         pub wrapper: String,
+        // Wire key is `root`: BUG-14 (66fa8bc) renamed it so project-root
+        // naming matches across commands. `rename`, deliberately NOT `alias` —
+        // production carries `alias = "path"`, so accepting both spellings here
+        // would blind this struct to the exact distinction it exists to pin
+        // down, and a revert of the rename would pass unnoticed.
+        #[serde(rename = "root")]
         pub path: String,
         pub findings: Vec<SecureFinding>,
         pub summary: SecureSummary,
@@ -1547,7 +1553,18 @@ mod secure_command {
         let value: Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
 
         assert!(value.get("wrapper").is_some());
-        assert!(value.get("path").is_some());
+        // `root`, not `path` — see SecureReport above. Asserted as a non-empty
+        // string rather than mere presence, because `get` returns
+        // Some(Value::Null) for an explicit null. That is a deliberate scope
+        // call, not a consequence of the rename: the sibling `is_some()` checks
+        // below carry the same weakness and are left for their own change.
+        assert!(
+            value
+                .get("root")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty()),
+            "secure JSON must carry a non-empty `root`; got: {stdout}"
+        );
         assert!(value.get("findings").is_some());
         assert!(value.get("summary").is_some());
 
