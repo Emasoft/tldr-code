@@ -3,7 +3,7 @@ trdd-id: 6CKB3RRH
 title: test_l2_all_engines_budget asserts a wall-clock budget inside a parallel suite so it measures contention
 column: todo
 created: 2026-09-08T13:07:39+0200
-updated: 2026-09-08T13:07:39+0200
+updated: 2026-09-08T13:14:24+0200
 current-owner: main-session
 task-type: bugfix
 scope: project
@@ -19,6 +19,11 @@ fails at HEAD and no other card mentions it.
 already established; everything in §Not established is not, and must not be inherited as if
 it were.
 
+`column: todo` deviates from the authoring default of `backburner`, deliberately: `backburner`
+means explicitly deferred, and a test failing at HEAD is not deferred. `planned` was rejected
+because it is an off-board bracket value and would park this card beside the board rather than
+on it.
+
 ## Symptom
 
 `commands::bugbot::check::tests::test_l2_all_engines_budget` (`crates/tldr-cli/src/commands/bugbot/check.rs:2829`)
@@ -30,8 +35,13 @@ Engine breakdown: ["TldrDifferentialEngine=9368ms"]
 ```
 
 Because it lives in the `--lib` target, which cargo runs first, a plain `cargo test -p tldr-cli`
-**fail-fasts on it** and never reaches any of the integration binaries. That is how it hides: a
-run that aborts here looks like "one failure" when ~97 binaries were never executed.
+**fail-fasts on it** and never reaches any of the integration binaries. That is how it hides:
+the run emits exactly one `Running` line and one `test result:` line (reporting `0 filtered
+out`), so it reads as "one failure" when in fact cargo aborted before any integration binary
+ran. No count of the skipped binaries is given here on purpose — the first version of this card
+carried "~97", which was `116 − 19` borrowed from TRDD-K3XQ7M2V where 19 was *that* run's
+result-line count. This run produced one. A borrowed subtraction in a committed card is how a
+qualifier gets stripped.
 
 ## Measured (2026-09-08, HEAD 2d4e7f7, `git status --short` clean)
 
@@ -49,17 +59,19 @@ target at `1436 passed; 2 failed` in 41.84s — the same budget test plus
 `commands::bugbot::runner::tests::test_large_stdout_is_truncated`, which appears in no other
 run. Whether that second failure belongs on this card or its own is open (see §Scope).
 
-## Why this is a test defect and not a flake
+## Why this is structural, not environmental
 
-The assertion is a wall-clock budget evaluated inside a suite that libtest runs across
-`num_cpus` threads. Several sibling tests in the same binary spawn `tldr` subprocesses
-(`test_run_tldr_command_not_found`, `test_run_tldr_flow_command_*`). So the number the
-assertion compares against 5000ms is **the suite's contention**, not the engines' speed — and
-that is true on every full-suite run, including CI, on any machine with enough tests per core.
+**Supported:** the assertion is a wall-clock budget evaluated inside a suite libtest runs
+across `num_cpus` threads, and the observed spread is 4.4x (n=2 loaded, n=1 quiet). A
+wall-clock threshold measured under unspecified concurrency cannot mean the same thing on two
+machines or two runs, so the assertion is ill-posed **independently of which mechanism produces
+the spread**.
 
-Calling it "load-flaky" understates it and converts a reproducible defect into an
-environmental excuse. The isolated pass does not exonerate the test; it demonstrates the
-sensitivity.
+**NOT supported, and must not be read out of this heading: WHICH mechanism produces it.** Four
+fit every number held (see §Discriminator) and none has been tested. "Load-flaky" would
+understate the problem by making it environmental; "suite self-interference" would overstate
+what has been measured. The isolated pass neither exonerates the test nor identifies the cause
+— it demonstrates the sensitivity and nothing more.
 
 ## The budget already has the obvious fix applied, so do not re-apply it
 
@@ -118,6 +130,33 @@ What discriminates:
   never checked. Treat this as unknown.
 - **Whether `test_large_stdout_is_truncated` is new.** It appeared once, under the heaviest
   observed contention. One sample.
+- **WHICH of the four mechanisms produces the spread.** Unresolved until the discriminator
+  runs. Every phrase in this card that reads as causal is provisional on it.
+- **That sibling tests spawn `tldr` subprocesses.** Inferred from test NAMES seen in the log
+  (`test_run_tldr_command_not_found`, `test_run_tldr_flow_command_*`); their bodies were never
+  read, and `..._command_not_found` may well assert the behaviour when no subprocess spawns at
+  all. A token search standing in for a behavioural claim.
+- **Why a SINGLE engine holds the entire cost.** The breakdown is
+  `["TldrDifferentialEngine=9368ms"]`. Suite-wide CPU contention would be expected to spread
+  across engines; a one-engine concentration is at least as consistent with that engine's own
+  subprocess spawning degrading under load — same family, different mechanism, and a different
+  fix (the engine's concurrency, not the suite's). This reading was missed in the first draft
+  and is not yet tested.
+
+## A second, unrelated hang found while measuring this one — do not conflate them
+
+`cargo test -p tldr-cli --no-fail-fast` does not finish. Process evidence at 13:11 local:
+`tests/contracts_test.rs` had started (the 23rd `Running` line against only 22 `test result:`
+lines) and its child `target/debug/tldr verify` had been alive 12m42s, while the other 22
+binaries each finished in under 12s. TRDD-PX8JOJY4 already records "1 unreproducible hang
+tracked as proposal TRDD-0M2P188T"; this is plausibly the same one, and `verify.rs` is a
+`run_specs` caller (`:38`, `:476`). **Not this card's subject** — recorded so the next reader
+knows why no complete `--no-fail-fast` failure list exists for HEAD.
+
+Two concurrent full suites were alive during that window (PIDs 20454 and 49019), the first
+launched by a subagent. It started ~12:56:18; the 9.37s measurement was logged at 12:52:49, so
+it was **not** a confound for that number — established by comparing the clocks, not assumed
+in either direction.
 
 ## Scope
 
@@ -130,10 +169,15 @@ it in here; if it is a genuine regression, it needs its own card.
 - [ ] The discriminator in §Discriminator is run and its result recorded here, with the
       thread-count condition stated for every number. A duration recorded without its
       concurrency condition is not evidence.
-- [ ] `test_l2_all_engines_budget` either no longer asserts wall-clock inside the parallel
-      suite, or is changed so that what it measures is independent of sibling tests. Relaxing
-      the constant does not satisfy this box.
+- [ ] `test_l2_all_engines_budget` is either **DELETED** — an acceptable outcome, stated
+      explicitly rather than left to slip through loose wording, because a measurement of
+      contention measures nothing — or changed so that it passes at **both** `--test-threads=1`
+      and the default thread count, with the full suite running, n>=5 each. Relaxing the
+      constant satisfies neither branch.
 - [ ] The whole `:2653` doc comment is read and corrected so its numbers match
       `check.rs:2823-2828`.
-- [ ] The fix is red-proofed: a mutation that should break it does break it, named here with
-      the observed failure output — not asserted.
+- [ ] The fix is red-proofed by a mutation attacking the FIX's substance, not the assert's
+      reachability. Dropping the budget to 1ms proves only that the assert can fire and does
+      NOT satisfy this box. The mutation must break the property the fix establishes — e.g. if
+      the fix isolates the measurement, re-introducing the shared resource must red it. Name
+      the mutation and paste the observed failure output.
