@@ -596,7 +596,11 @@ def main():
     print(doubled)
 "#;
 
-/// Python code with security issues (for secure command)
+// Python code with security issues (for secure command).
+//
+// `tainted_command` is the only source->sink flow here and the only reason
+// `test_secure_detects_taint` passes; the other sinks are fed by parameters and
+// report nothing. Why that is, is an engine question -- see TRDD-FB1E4UVD.
 const PYTHON_SECURE_SAMPLE: &str = r#"
 import os
 import pickle
@@ -614,6 +618,10 @@ def unsafe_command(filename):
 def unsafe_deserialize(data):
     """Insecure deserialization."""
     return pickle.loads(data)
+
+def tainted_command():
+    target = input("path: ")
+    os.system(f"cat {target}")
 
 def resource_leak():
     """File not closed properly."""
@@ -1464,6 +1472,14 @@ mod secure_command {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let report: SecureReport = serde_json::from_str(&stdout).unwrap();
+
+        // windows(2) yields nothing on a shorter slice -- without this the
+        // loop below never runs and any ordering passes.
+        assert!(
+            report.findings.len() >= 2,
+            "fixture must yield >=2 findings or the sort assertion is vacuous; got {}",
+            report.findings.len()
+        );
 
         // Findings should be sorted by severity (critical first)
         let severity_order = |s: &str| match s {

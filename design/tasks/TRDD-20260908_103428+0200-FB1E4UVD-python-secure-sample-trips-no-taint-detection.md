@@ -50,6 +50,51 @@ untrusted *parameter* should itself count as a taint source is a legitimate
 engine-design question. It is not a regression, so it does not belong on this
 card — if it is worth pursuing, it is a new one.
 
+### Probe results, 2026-09-08 — recorded here because they are ENGINE facts
+
+Six one-file probes through `target/debug/tldr secure <file>`. They are on this
+card and not in a source comment: engine behaviour ages out of a fixture
+comment, and a claim in source gets read as current fact with no commit message
+beside it to date it.
+
+| probe | shape | taint_count |
+|---|---|---|
+| `c_samebody` | `input()` → `os.system` inside ONE `def` | **1** |
+| `f_modlevel_direct` | `input()` → `os.system`, module level, no call | **0** |
+| `e_modlevel_call` | module-level `input()` → call into param-fed sink | 0 |
+| `b_withcaller` | `input()` in one `def` → call into a param-fed sink in another | 0 |
+| `d_control` | as `b_withcaller`, plus a resource leak | 0 — **leak IS reported** |
+| `a_nocaller` | param-fed `os.system` alone, no source | 0 findings at all |
+| **`g_both_in_one_file`** | **a same-body flow AND a cross-call flow in ONE file** | **1, at line 5** |
+
+**`g` is the probe that settles it, and it is the only one that needs no
+cross-file inference.** One file, three functions: a same-body `input()` →
+`os.system`, a parameter-fed sink, and a caller passing a source into it. Result:
+`taint_count: 1`, reported at **line 5** — the same-body flow. The cross-call
+flow in that same file is not reported. So the taint pass demonstrably RAN on
+this file and entered a function body, and still did not follow the call. Every
+earlier conclusion here rested on importing a fact from file `c` into a claim
+about file `d`; `g` removes that join.
+
+**One mechanism explains all seven probes: analysis is per-function-body and
+does not follow calls.** Same body → found (`c`, `g` line 5). Split across two
+bodies → not found (`b`, `d`, `g`'s other flow). Module level, which has no
+function body at all → not found (`e`, `f`). No source anywhere → not found
+(`a`). This is the best-supported reading; it is not proof, because no
+implementation was read.
+
+**Superseded:** an earlier version of this section asserted "the flow is not
+followed across a CALL" on the `b`/`c` pair alone, which `f` refuted — `f` has
+source and sink in the same scope with NO call and still reports 0. The claim is
+now back, but on `g`'s evidence rather than that pair's.
+
+**Ruled out:** a missing `import os` (every probe file carries it).
+
+**NOT ruled out, though an earlier version said it was:** that `os.system` is
+recognised as a sink *in general*. `c` and `g` show the PAIR (`input()` source,
+`os.system` sink, one body) yields a finding. If a sink is only observable when
+a tainted value reaches it, no probe here isolates the sink on its own.
+
 ## What fails
 
 `crates/tldr-cli/tests/remaining_test.rs:1409`:

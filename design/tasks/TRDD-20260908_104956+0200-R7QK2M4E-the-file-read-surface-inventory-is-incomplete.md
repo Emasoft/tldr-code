@@ -7,7 +7,6 @@ updated: 2026-09-08T10:49:56+0200
 current-owner: session-claude
 task-type: audit
 min-approval-requirement: none
-parent-trdd: O66FM8TN
 labels: [audit, error-handling, inventory]
 ---
 
@@ -17,9 +16,18 @@ labels: [audit, error-handling, inventory]
 
 Split out of **TRDD-O66FM8TN** on 2026-09-08. That card is about a user-visible
 behaviour (a skipped file must be announced). This one is about the
-**inventory** that behaviour work reads from: which file-read call sites exist
-at all. It ships no behaviour change, which is exactly why it is a separate
-card — it is an **NPT of O66FM8TN**, not a part of it.
+**inventory**: which file-read call sites exist at all. It ships no behaviour
+change.
+
+**SIBLING, not a prerequisite.** An earlier draft called this an NPT of
+O66FM8TN and carried `parent-trdd:`. Both were wrong. The `parent-trdd:` broke
+the depth-1 rule (the edge belongs on the parent's `npt:`, so writing it on the
+child put it on the wrong end and left the right end empty). And the
+relationship itself was false: O66FM8TN's remaining work is decisions on 56
+ALREADY-ENUMERATED sites plus centralising the skip path — **neither depends on
+this card.** Calling it an NPT would have promoted a self-imposed blocker into a
+declared dependency, which is worse than a box, because a box can be skipped and
+a declared NPT cannot.
 
 The split was made because O66FM8TN had grown to five acceptance boxes, three
 of which were about *how to measure the read surface* rather than about
