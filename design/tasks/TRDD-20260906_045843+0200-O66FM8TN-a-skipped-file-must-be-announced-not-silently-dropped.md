@@ -3,7 +3,7 @@ trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
 column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-08T10:49:56+0200
+updated: 2026-09-08T14:12:00+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
@@ -381,8 +381,23 @@ mislabelling the file as binary here. **Not established either way; assess in co
       `design/reproducers/TRDD-BKALIK1B/`, asserting the warning is present — not merely that the
       file is absent from the results, which is what the buggy behaviour also produces.
       — `dead_json_names_every_skipped_file` + the UTF-16-caller scenario test.
+- [x] `tldr specs --from-tests` names an unreadable test file it drops. — `eprintln!` in
+      `36c4838`; test + red-proof in `85c700e`.
+      **NOT COVERED — and this is a QUESTION, not an assumed gap.** The test pins `TMPDIR` to
+      defeat daemon socket discovery, so it proves the warning on the DIRECT path only.
+      Whether `specs` can route through a daemon at all is unchecked; one grep settles it. If
+      it can, a daemon caller's stderr may go nowhere and the fix is invisible to exactly
+      those users.
+      **Settled in passing, so it stops being re-litigated:** reading `36c4838^` confirmed at
+      source that `recognize()` runs AFTER the read and `test_files_scanned += 1` sits inside
+      `if info.is_test_file`. The count was never wrong — an unreadable file was correctly
+      not counted. That claim had been asserted from memory three times before it was read.
 - [ ] Every one of the 56 SILENT sites has a recorded decision: warn, propagate, or
       deliberately-silent-with-a-reason.
+      — **The denominator 56 is STALE; do not tick this box against it.** `dead.rs:267` and
+      `:316` were among the 56 and were already fixed in piece 1, so the survey counted as
+      defects two sites that no longer are. Re-derive the count before closing; do not
+      reconcile a new number against 56.
 - [x] The `File::open` / `read_to_end` / `.read(&mut …)` sites carry **zero new instances of
       this card's defect** — no silently dropped file among them.
       — DONE 2026-09-08, and all 32 raw hits audited first-hand (8 production sites:
@@ -427,6 +442,12 @@ mislabelling the file as binary here. **Not established either way; assess in co
       ticked on vibes or never. Same defect as the unfalsifiable standard caught on
       TRDD-MWLIUB72. Centralisation is the mechanism that actually generalises the guarantee, and
       it is checkable.
+      — **EXCEPTION, record it before this box is ever ticked: `specs` does NOT use
+      `fs::skipped_file_warning`.** `contracts/specs.rs:233` emits its own
+      `Warning: Failed to read {}: {}` (36c4838), matching its Python sibling in the same walk
+      rather than the centralised `Skipped <path>: <reason>` — a THIRD format. The test guarding
+      it asserts on the BASENAME, not the format, so it survives the migration; do not let a
+      later cleanup "tighten" it to match the message text.
 
 ## Why the complexity warning is not this one
 
