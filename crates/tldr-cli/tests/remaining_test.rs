@@ -604,15 +604,9 @@ def main():
 // function's parameter should itself count as untrusted is an open engine
 // question -- see TRDD-FB1E4UVD.
 //
-// `swallow_errors` exists for `test_secure_severity_sorting`, and it is the
-// ONLY finding here that is not `high`: the bare-except emitter
-// (`secure.rs:932`) is hardcoded `behavioral`/`medium`. Delete it and that
-// test goes RED -- MEASURED 2026-09-08, not reasoned: it fails at the
-// distinct-severity precondition with `got {"high"}`, which is that guard
-// doing its job. An earlier version of this comment claimed it would go
-// "vacuously green"; that described the code before the precondition
-// existed, and it would have taught the next reader to distrust the one
-// assertion that actually protects this test.
+// `swallow_errors` is here for `test_secure_severity_sorting`: a bare except
+// yields a `behavioral`/`medium` finding, and that test needs >=2 DISTINCT
+// severities before its sort check can fail. Don't delete it.
 const PYTHON_SECURE_SAMPLE: &str = r#"
 import os
 import pickle
