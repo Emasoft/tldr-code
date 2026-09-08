@@ -222,7 +222,16 @@ pub fn run_specs(test_path: &Path, function_filter: Option<&str>) -> ContractsRe
             // Non-Python: use the language-specific test recogniser.
             let source = match std::fs::read_to_string(file_path) {
                 Ok(s) => s,
-                Err(_) => continue,
+                // TRDD-O66FM8TN: was a bare `Err(_) => continue`. The Python
+                // branch a few lines above already announces a test file it
+                // could not handle; this arm dropped one just as silently and
+                // said nothing, so `test_files_scanned` under-counted with no
+                // hint why. Both arms skip the file -- only one used to admit
+                // it. Keep them saying the same thing.
+                Err(e) => {
+                    eprintln!("Warning: Failed to read {}: {}", file_path.display(), e);
+                    continue;
+                }
             };
             let info = super::test_recognizer::recognize(file_path, &source, language);
             if info.is_test_file {
