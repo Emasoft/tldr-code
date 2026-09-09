@@ -3,7 +3,7 @@ trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
 column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-09T12:24:15+0200
+updated: 2026-09-09T12:44:49+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
@@ -16,16 +16,16 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75, 0
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-09 12:08
 
-### 2026-09-09 — box 5's denominator re-derived on HEAD; box 8's mechanism PROPOSED (round 2), not built
+### 2026-09-09 — box 5's denominator re-derived on HEAD; box 8's mechanism PROPOSED (round 3), step 1 done
 
 - **Two boxes remain, not three.** The `File::open`/`read_to_end` box closed 2026-09-08
   (TRDD-R7QK2M4E). The "three unticked boxes" NEXT ACTION further down is stale.
 - **Box 5 denominator, re-derived 2026-09-09 on HEAD `3ecb2af` by script** (worker-written
   `scripts_dev/read_site_survey.py`, gitignored, not read line by line; report
   `reports/colony/20260909_121627+0200-silent-sites-rederived.md`), applying the 2026-09-06
-  six-step method literally: raw 221 → 154 production sites → **SILENT at most 56 · WARNED 1 ·
-  PROPAGATED 97 · PANIC 0** (an upper bound, see limit 1 below). The 56 is a coincidence, not a
-  confirmation: 52 old sites carried,
+  six-step method literally: raw 221 → 154 production sites, bucketed by the script as
+  **SILENT 56 · WARNED 1 · PROPAGATED 97 · PANIC 0**; the 56 is an upper bound on truly silent
+  sites (limit 1 below). It is also a coincidence, not a confirmation: 52 old sites carried,
   4 left the bucket (`contracts/specs.rs` is WARNED since the `eprintln!` of `36c4838`;
   `ast/function_finder.rs:985` with `.ok()?`, `surface/lua.rs:91` and `surface/luau.rs:122` are
   PROPAGATED by the method's priority order), 4 are NEW (`remaining/secure.rs:461`,
@@ -49,26 +49,37 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75, 0
   which the coordinator verified ONE.
   Not a recorded decision in this card's sense until it is in this card.
 - **NEXT ACTION, boxes 5 and 8 together, in this order (PROPOSAL, round 2, NOT implemented):**
-  1. Pull TRDD-GYNBICF9 (`make lint` red, 53 style lints): `cargo clippy --fix`, read the diff
-     hunk by hunk, `make test`, commit. Without it the guard in step 3 enforces nothing.
+  1. DONE 2026-09-09 in `25b583f`: TRDD-GYNBICF9 closed, `make lint` green. `cargo fmt --check`
+     stays red on 188 files, a separate gate, TRDD-U5KJ5A8R.
   2. Facade in `tldr_core::fs`: `read_to_string(path) -> io::Result<String>`, a passthrough for
      sites that propagate, and `read_source(path, warnings: &mut Vec<String>) -> Option<String>`,
      wrapping `read_to_string_tolerant`: on `Err`, `NonUtf8` or `WideEncoded` it pushes
      `skipped_file_warning(path, reason)` itself and returns `None`, so a caller cannot take the
      source and drop the message. Sites that branch on `ReadOutcome` variants (`secure`, `vuln`)
-     keep `read_to_string_tolerant`.
+     keep `read_to_string_tolerant`. A third function, `read_optional(path) -> Option<String>`,
+     for sites silent by design: its NAME is the greppable decision, with a one-line reason
+     comment at each call. An `#[allow]` cannot sit on an expression (`match` scrutinee, `if let`
+     condition), so an attribute is not the record.
   3. Guard: one `disallowed-methods` entry for `std::fs::read_to_string` in the existing
      `clippy.toml`, its `reason` naming the two facade functions and this card; the facade
      carries the single `#[allow]`. Clippy resolves the method path, so `Read::read_to_string`
      on a stream, comments and pattern-table string literals do not fire, which is exactly what
-     a source-grepping test would have had to lex around.
+     a source-grepping test would have had to lex around (by clippy's definition; unmeasured
+     until the entry lands). The entry lands LAST, in the commit that migrates the final site:
+     under `-D warnings` it reds every unmigrated site at once, so adding it early would leave
+     `make lint` red for the whole migration, the state step 1 just ended. `cargo clippy
+     --workspace` lints lib and bin targets, so `src/bin/callgraph_resolution_stats.rs:150` is
+     in scope. Callers of `read_to_string_tolerant` (`secure.rs:461`, `:517`, `vuln.rs:194`,
+     `builder_v2.rs:111`) are never red; their decisions are taken by reading and recorded in
+     box 5's line, not by the lint.
   4. Every red site visited in phases of at most 5 files, one rubric: warn → `read_source`;
-     propagate → `crate::fs::read_to_string`; deliberately silent →
-     `#[allow(clippy::disallowed_methods)]` plus a one-line reason at the site. Those `#[allow]`
-     lines ARE box 5's recorded decisions, greppable; the 21 `.ok()?` sites are red like any
-     other and get decided in the same pass. No table in this card.
+     propagate → `crate::fs::read_to_string`; deliberately silent → `crate::fs::read_optional`
+     plus a one-line reason comment. The `read_optional` calls ARE box 5's recorded decisions,
+     greppable; the `.ok()?` sites on `std::fs::read_to_string` are red like any other and get
+     decided in the same pass. No table in this card.
   5. One regression test per report type that gains warnings, on the BKALIK1B fixtures.
-  Cost, stated: the 97 propagating sites change one path each for no behavioural gain; that is
+  Cost, stated: at most 76 propagating sites (97 minus the 21 `.ok()?`) change one path each
+  for no behavioural gain; that is
   the price of a guard clippy can enforce, paid once. Not covered, on purpose: `std::fs::read`,
   `File::open`, `read_to_end` (TRDD-R7QK2M4E bucketed those; its 2 SILENT sit in
   `is_binary_file`, TRDD-B3XN8VP1).
@@ -76,8 +87,12 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75, 0
   allowlist. Round 2 replaced it with the clippy guard above: a source-grepping test is a linter
   in test's clothing, fires on `Read::read_to_string` and string literals unless it carries the
   survey script's lexer, and would outlive the red lint gate it was built to route around.
-  Phased-execution rule: phase 1 = steps 1-3 plus at most 5 files of step 4, then verification
-  and a report to the user before phase 2.
+  Round 3 (2026-09-09): the entry moved to LAST; `#[allow]` replaced by `read_optional` because
+  an attribute is illegal in expression position; `src/bin` and the tolerant-helper callers
+  stated; the "97 propagating" corrected for the 21 `.ok()?`.
+  Phased-execution rule: phase 1 = step 1 (done) plus the facade of step 2 in `fs/mod.rs`, then
+  a report to the user and their go before any migration phase; the entry (step 3) closes the
+  last phase.
 
 ### 2026-09-07 — daemon + MCP done. Only units 2-4 remain.
 
