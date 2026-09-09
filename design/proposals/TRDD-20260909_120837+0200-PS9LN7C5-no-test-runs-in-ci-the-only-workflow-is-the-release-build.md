@@ -3,7 +3,7 @@ trdd-id: PS9LN7C5
 title: No test runs in CI because the only workflow is the cargo-dist release build
 column: proposal
 created: 2026-09-09T12:08:37+0200
-updated: 2026-09-09T12:08:37+0200
+updated: 2026-09-09T12:24:15+0200
 current-owner: main-session
 task-type: infra
 scope: project
@@ -37,7 +37,9 @@ Add `.github/workflows/ci.yml`: triggers `pull_request` and `push` to `main`; to
 `permissions: contents: read`; `concurrency` with cancel-in-progress; `timeout-minutes` on the
 job; `actions/checkout` at its latest major and a SHA-pinned Rust toolchain action, both versions
 checked with `gh api … /releases/latest` at authoring time; one step: `make test`. Nothing else
-in the first version.
+in the first version. That step runs the two `--lib` suites only: every integration target
+still runs by hand until the third acceptance box decides otherwise, so "CI runs the tests"
+is not what this first version delivers.
 
 ## Acceptance
 

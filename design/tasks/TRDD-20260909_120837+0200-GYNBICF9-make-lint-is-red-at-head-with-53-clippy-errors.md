@@ -1,9 +1,9 @@
 ---
 trdd-id: GYNBICF9
 title: make lint is red at HEAD with 53 clippy errors so the lint gate gates nothing
-column: backburner
+column: dev
 created: 2026-09-09T12:08:37+0200
-updated: 2026-09-09T12:08:37+0200
+updated: 2026-09-09T12:24:15+0200
 current-owner: main-session
 task-type: infra
 scope: project
@@ -28,6 +28,8 @@ labels: [lint, gates]
   TRDD-O66FM8TN's box 8, where a `disallowed-methods` entry in the existing `clippy.toml` was the
   obvious guard and had to be replaced by a `--lib` test because of this.
 - Not measured: whether these are the same 53 lines an earlier `--all-targets` run reported.
+- Pulled to `dev` 2026-09-09 12:24 as step 1 of TRDD-O66FM8TN's box-8 plan: its clippy
+  `disallowed-methods` guard enforces nothing while this gate is red.
 
 ## Next action
 
