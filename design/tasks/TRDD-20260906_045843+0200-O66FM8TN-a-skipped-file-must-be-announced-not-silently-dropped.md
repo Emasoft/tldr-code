@@ -1,9 +1,9 @@
 ---
 trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
-column: dev
+column: backburner
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-09T13:47:32+0200
+updated: 2026-09-09T14:04:14+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
@@ -18,6 +18,10 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75, 0
 
 ### 2026-09-09 — box 5's denominator re-derived on HEAD; box 8's mechanism PROPOSED (round 3), step 1 done
 
+- **Parked `dev` → `backburner` 2026-09-09 14:04.** Six of the eight acceptance boxes are ticked;
+  the two open ones (the 56 decisions, the centralised skip path) are a plan that waits for the
+  user's go (phase rule at the end of this section). A card in `dev` claims someone is working it
+  now; nobody is. Restore to `dev` the moment the go arrives; nothing else changes.
 - **Two boxes remain, not three.** The `File::open`/`read_to_end` box closed 2026-09-08
   (TRDD-R7QK2M4E). The "three unticked boxes" NEXT ACTION further down is stale.
 - **Box 5 denominator, re-derived 2026-09-09 on HEAD `3ecb2af` by script** (worker-written
