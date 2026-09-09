@@ -3,7 +3,7 @@ trdd-id: 9788CCBA
 title: semantic_lang_flag_test compiles to zero tests and reports ok so three tests never run anywhere
 column: complete
 created: 2026-09-08T15:05:56+0200
-updated: 2026-09-09T11:32:06+0200
+updated: 2026-09-09T11:43:29+0200
 current-owner: main-session
 task-type: bugfix
 scope: project
@@ -142,3 +142,4 @@ failures from the sweep.
 ## Approval log
 
 - 2026-09-09T11:32:06+0200 — COMPLETE by session tldr-code-7a; todo → complete under the user's delegation of 2026-09-08 ("you are in charge, so decide by yourself"). ai_review = this session's pre-write review fork (its findings applied: box 3 rewritten to what was delivered with the guard split out, box 1 states that no CI or Makefile path runs any integration target, "one build, two executions", unread sibling files marked as unread). testing = the two runs quoted in boxes 2 and 3. human_review not recorded as a column (precedent TRDD-PX8JOJY4). Code and this close are one commit.
+- 2026-09-09T11:43:29+0200 — CORRECTION, appended here because the body of a complete card is frozen. Box 4's "no other crate-level `#![cfg(feature` under `crates/*/tests/`" is FALSE: `crates/tldr-core/tests/semantic_tests.rs:1` and `crates/tldr-core/tests/semantic_test.rs:1` carry the same gate, found by `grep -rn '^#!\[cfg' crates/*/tests/` after this card was archived. Both are tracked in TRDD-V7Q2KM8H. The column stands: this card's fix was one target, and that target is fixed.
