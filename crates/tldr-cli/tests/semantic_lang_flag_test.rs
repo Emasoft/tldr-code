@@ -1,4 +1,3 @@
-#![cfg(feature = "semantic")]
 //! Regression test for the `semantic`/`embed` clap TypeId mismatch panic.
 //!
 //! Root cause (pre-VAL-009): the global CLI flag `--lang` is defined as
@@ -17,6 +16,11 @@
 //! new `--langs` flag and the inherited global `--lang` flag. We care
 //! only about "no panic" here; search correctness is covered by
 //! `crates/tldr-core/tests/semantic_tests.rs`.
+//!
+//! The tests are gated per function with `ignore`, not with a crate-level
+//! `#![cfg(feature = "semantic")]`: a crate-level gate compiles the whole
+//! target down to zero tests and `cargo test` reports that as `ok`, so nobody
+//! can see they never ran. `ignore` keeps them in the listing (TRDD-9788CCBA).
 
 use std::fs;
 use std::process::Command;
@@ -28,6 +32,7 @@ fn tldr_cmd() -> Command {
 
 /// `tldr semantic --langs rust` must not trigger a clap TypeId panic.
 #[test]
+#[cfg_attr(not(feature = "semantic"), ignore)]
 fn test_semantic_langs_flag_does_not_panic() {
     let tmp = tempdir().expect("create tempdir");
     fs::write(tmp.path().join("a.rs"), "pub fn x() {}").expect("write fixture");
@@ -57,6 +62,7 @@ fn test_semantic_langs_flag_does_not_panic() {
 
 /// `tldr semantic --lang rust` (global flag) must not trigger a clap TypeId panic.
 #[test]
+#[cfg_attr(not(feature = "semantic"), ignore)]
 fn test_semantic_global_lang_flag_does_not_panic() {
     let tmp = tempdir().expect("create tempdir");
     fs::write(tmp.path().join("a.rs"), "pub fn x() {}").expect("write fixture");
@@ -89,6 +95,7 @@ fn test_semantic_global_lang_flag_does_not_panic() {
 /// `embed` had the exact same `Option<Vec<String>>` shape as `semantic`
 /// and was fixed in the same commit to preempt the identical bug.
 #[test]
+#[cfg_attr(not(feature = "semantic"), ignore)]
 fn test_embed_langs_flag_does_not_panic() {
     let tmp = tempdir().expect("create tempdir");
     fs::write(tmp.path().join("a.rs"), "pub fn x() {}").expect("write fixture");

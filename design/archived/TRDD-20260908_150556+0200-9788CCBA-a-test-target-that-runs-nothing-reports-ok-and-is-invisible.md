@@ -1,9 +1,9 @@
 ---
 trdd-id: 9788CCBA
 title: semantic_lang_flag_test compiles to zero tests and reports ok so three tests never run anywhere
-column: todo
+column: complete
 created: 2026-09-08T15:05:56+0200
-updated: 2026-09-08T15:05:56+0200
+updated: 2026-09-09T11:32:06+0200
 current-owner: main-session
 task-type: bugfix
 scope: project
@@ -14,8 +14,10 @@ min-approval-requirement: none
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-08 15:05
 
-Nothing implemented. Cause fully established and read first-hand; the open
-question is policy, not diagnosis.
+**CLOSED 2026-09-09 11:32.** The crate-level gate is replaced by a per-test
+`#[cfg_attr(not(feature = "semantic"), ignore)]`; evidence in §Acceptance. Box 3's
+undelivered half (a guard that FAILS a zero-test target) and the item-level sibling gates
+box 4 found are tracked as TRDD-V7Q2KM8H (`backburner`), not here.
 
 **The defect is NOT the feature gate.** Gating semantic tests behind a
 non-default feature is a legitimate choice. The defect is that the resulting
@@ -23,9 +25,8 @@ signal is `test result: ok` — a target that ran nothing is byte-indistinguisha
 from a target that passed, so nothing anywhere reports that these three tests are
 not being exercised.
 
-**NEXT ACTION: box 1** — determine whether any CI job builds `tldr-cli` with
-`--features semantic`. That answer decides between the two fixes in §Scope, and
-it is NOT yet known. Do not assume either way.
+Box 1 answered 2026-09-09: nothing in CI or the Makefile executes ANY integration
+target, so the fix changes what a human sees running it by hand. See §Acceptance.
 
 Same defect FAMILY as [[TRDD-A9CD09BA]] (`p99_us` returning 0.0 on empty
 samples): in both, an empty measurement is reported as a pass. Different
@@ -97,23 +98,47 @@ failures from the sweep.
 
 ## Acceptance
 
-- [ ] **1. CI answer, from the config.** State whether any workflow/job builds or
+- [x] **1. CI answer, from the config.** State whether any workflow/job builds or
       tests `tldr-cli` with `--features semantic`, citing the file and line. A
       negative answer must come from reading every workflow that runs cargo, not
       from one grep for the word `semantic` — a job could enable it via
       `--all-features` or a feature set defined elsewhere, so check for those
       spellings too.
-- [ ] **2. The three tests are observed running, and their real outcome recorded.**
+      Answered 2026-09-09: the single workflow `.github/workflows/release.yml` has no
+      `cargo` invocation beyond a `command -v cargo` check (line 126). The Makefile's
+      `cargo test -p tldr-core --lib` and `cargo test -p tldr-cli --lib` are the only test
+      commands found in `.github`, `Makefile`, `scripts`; no `--features` or
+      `--all-features` spelling in any of them. So NO CI or Makefile path executes any
+      integration target, this one included; the fix changes what a human sees running
+      it by hand, nothing else.
+- [x] **2. The three tests are observed running, and their real outcome recorded.**
       Not "the file now compiles" — an actual `test result:` line showing
       `3 passed` (or the true failure), quoted verbatim, under whatever
       invocation box 1 establishes as the right one. If any fails, card it
       separately; do not close this box by re-disabling the file.
-- [ ] **3. A zero-test run is no longer reported as success on the default path.**
-      Whatever the box-1 outcome, `cargo test -p tldr-cli` must not leave a target
-      silently reporting `ok. 0 passed` with nothing anywhere noting it.
-      Demonstrated by a check that FAILS when a target is made empty again — a
-      check that merely passes against the current tree does NOT satisfy this box.
-- [ ] **4. No sibling left behind.** Re-run the crate-level survey
+      Recorded: `cargo test -p tldr-cli --features semantic --test semantic_lang_flag_test
+      -- --test-threads=1` → `test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured;
+      0 filtered out; finished in 47.95s`, cargo exit 0. One feature build; a second
+      execution of the same artifacts on 2026-09-09 gave the same counts in 11.31s.
+- [x] **3. The three tests are visible in the default run as `ignored`, not compiled out.**
+      `cargo test -p tldr-cli --test semantic_lang_flag_test -- --test-threads=1` →
+      `test result: ok. 0 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out`, with
+      the three names listed as `ignored`. The original text of this box asked for a check
+      that FAILS when a target is made empty again; that guard is NOT delivered here and
+      is tracked as TRDD-V7Q2KM8H.
+- [x] **4. No sibling left behind.** Re-run the crate-level survey
       (`grep -rln '^#!\[cfg(feature' crates/*/tests/`) across ALL crates, not just
       `tldr-cli` — this card verified only `tldr-cli`. List every hit and state
-      for each whether it is the same defect.
+      for each whether it is the same defect, and `required-features` in every Cargo.toml.
+      Result 2026-09-09: no other crate-level `#![cfg(feature` under `crates/*/tests/`;
+      no `required-features` in any Cargo.toml. Item-level `#[cfg(feature = "semantic")]`
+      lines exist, pre-existing at HEAD, in `pdg_bounds_and_stdout_hygiene_v1.rs`,
+      `language_command_matrix.rs`, `hygiene_and_crash_fixes_v1.rs`, `exhaustive_matrix.rs`.
+      In `language_command_matrix.rs` they gate the callers of `check_semantic` /
+      `check_similar` / `check_embed`, which rustc reports as never used: the same mechanism
+      one level down (tests invisible, target not vacuous). The other three: gate lines
+      present, not read. Tracked in TRDD-V7Q2KM8H, not fixed here.
+
+## Approval log
+
+- 2026-09-09T11:32:06+0200 — COMPLETE by session tldr-code-7a; todo → complete under the user's delegation of 2026-09-08 ("you are in charge, so decide by yourself"). ai_review = this session's pre-write review fork (its findings applied: box 3 rewritten to what was delivered with the guard split out, box 1 states that no CI or Makefile path runs any integration target, "one build, two executions", unread sibling files marked as unread). testing = the two runs quoted in boxes 2 and 3. human_review not recorded as a column (precedent TRDD-PX8JOJY4). Code and this close are one commit.
