@@ -3,7 +3,7 @@ trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
 column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-09T12:44:49+0200
+updated: 2026-09-09T13:47:32+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
@@ -50,7 +50,7 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75, 0
   Not a recorded decision in this card's sense until it is in this card.
 - **NEXT ACTION, boxes 5 and 8 together, in this order (PROPOSAL, round 2, NOT implemented):**
   1. DONE 2026-09-09 in `25b583f`: TRDD-GYNBICF9 closed, `make lint` green. `cargo fmt --check`
-     stays red on 188 files, a separate gate, TRDD-U5KJ5A8R.
+     stays red (195 files at `f6a4ce1`, coordinator's run), a separate gate, TRDD-U5KJ5A8R.
   2. Facade in `tldr_core::fs`: `read_to_string(path) -> io::Result<String>`, a passthrough for
      sites that propagate, and `read_source(path, warnings: &mut Vec<String>) -> Option<String>`,
      wrapping `read_to_string_tolerant`: on `Err`, `NonUtf8` or `WideEncoded` it pushes
@@ -59,7 +59,11 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75, 0
      keep `read_to_string_tolerant`. A third function, `read_optional(path) -> Option<String>`,
      for sites silent by design: its NAME is the greppable decision, with a one-line reason
      comment at each call. An `#[allow]` cannot sit on an expression (`match` scrutinee, `if let`
-     condition), so an attribute is not the record.
+     condition), so an attribute is not the record. `read_optional` is a RECORD, not a guard:
+     nothing mechanical stops a should-warn site being routed through it; the phase fork reading
+     each reason comment is the check. It also discards `ErrorKind`, so a site that treats
+     NotFound as normal and any other error as real keeps the passthrough with an explicit
+     `match`, and is a named exception in the grep of step 4.
   3. Guard: one `disallowed-methods` entry for `std::fs::read_to_string` in the existing
      `clippy.toml`, its `reason` naming the two facade functions and this card; the facade
      carries the single `#[allow]`. Clippy resolves the method path, so `Read::read_to_string`
@@ -68,15 +72,19 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75, 0
      until the entry lands). The entry lands LAST, in the commit that migrates the final site:
      under `-D warnings` it reds every unmigrated site at once, so adding it early would leave
      `make lint` red for the whole migration, the state step 1 just ended. `cargo clippy
-     --workspace` lints lib and bin targets, so `src/bin/callgraph_resolution_stats.rs:150` is
-     in scope. Callers of `read_to_string_tolerant` (`secure.rs:461`, `:517`, `vuln.rs:194`,
+     --workspace` lints lib and bin targets by cargo's default target set, so
+     `src/bin/callgraph_resolution_stats.rs:150` should be in scope (unmeasured, same caveat). Callers of `read_to_string_tolerant` (`secure.rs:461`, `:517`, `vuln.rs:194`,
      `builder_v2.rs:111`) are never red; their decisions are taken by reading and recorded in
      box 5's line, not by the lint.
   4. Every red site visited in phases of at most 5 files, one rubric: warn → `read_source`;
-     propagate → `crate::fs::read_to_string`; deliberately silent → `crate::fs::read_optional`
-     plus a one-line reason comment. The `read_optional` calls ARE box 5's recorded decisions,
-     greppable; the `.ok()?` sites on `std::fs::read_to_string` are red like any other and get
-     decided in the same pass. No table in this card.
+     propagate → `crate::fs::read_to_string(..)?`, the `?` mandatory, because
+     `if let Ok(s) = crate::fs::read_to_string(p)` passes the lint and is a swallow dressed as
+     propagation; deliberately silent → `crate::fs::read_optional` plus a one-line reason
+     comment. The `read_optional` calls ARE box 5's recorded decisions, greppable; the `.ok()?`
+     sites on `std::fs::read_to_string` are red like any other and get decided in the same pass.
+     Each phase's acceptance carries the one grep that catches the disguise:
+     `grep -rn 'fs::read_to_string(' crates/*/src | grep -v '?'` returns the facade itself and
+     the named `ErrorKind` exceptions of step 2, nothing else. No table in this card.
   5. One regression test per report type that gains warnings, on the BKALIK1B fixtures.
   Cost, stated: at most 76 propagating sites (97 minus the 21 `.ok()?`) change one path each
   for no behavioural gain; that is
@@ -89,10 +97,13 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75, 0
   survey script's lexer, and would outlive the red lint gate it was built to route around.
   Round 3 (2026-09-09): the entry moved to LAST; `#[allow]` replaced by `read_optional` because
   an attribute is illegal in expression position; `src/bin` and the tolerant-helper callers
-  stated; the "97 propagating" corrected for the 21 `.ok()?`.
-  Phased-execution rule: phase 1 = step 1 (done) plus the facade of step 2 in `fs/mod.rs`, then
-  a report to the user and their go before any migration phase; the entry (step 3) closes the
-  last phase.
+  stated; the "97 propagating" corrected for the 21 `.ok()?`. Its review added: the `?` is
+  mandatory on the passthrough and a grep checks it; `read_optional` is a record, not a guard;
+  the facade is code and waits for the go like every phase.
+  Phased-execution rule: phase 1 = step 1, done. The facade of step 2 is the first code of the
+  next phase and waits for the user's go, like every migration phase; after the user's interrupt
+  of 2026-09-09 the next action is the report, then a stop. The entry (step 3) closes the last
+  phase.
 
 ### 2026-09-07 — daemon + MCP done. Only units 2-4 remain.
 

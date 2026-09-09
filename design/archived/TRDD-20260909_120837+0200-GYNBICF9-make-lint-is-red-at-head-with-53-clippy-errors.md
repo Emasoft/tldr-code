@@ -3,7 +3,7 @@ trdd-id: GYNBICF9
 title: make lint is red at HEAD with 53 clippy errors so the lint gate gates nothing
 column: complete
 created: 2026-09-09T12:08:37+0200
-updated: 2026-09-09T12:44:49+0200
+updated: 2026-09-09T13:47:32+0200
 implementation-commits: [25b583f]
 current-owner: main-session
 task-type: infra
@@ -64,3 +64,9 @@ labels: [lint, gates]
   application, so no subset could be verified on its own; the user is told here and in the
   session report rather than asked, since the change is mechanical and fully reverted by one
   `git revert`.
+- 2026-09-09T13:47:32+0200 — VERIFIED by the coordinator, own runs at `f6a4ce1`, after the
+  post-close fork asked: box 3's count re-run, 9 `allow(clippy` in 8 files; the plus side of all
+  19 sort rewrites read, the 16 descending ones carry `std::cmp::Reverse`, the 3 ascending ones
+  (`entries_by_time`, `all_findings`, the `severity_rank` chain) do not; fmt drift 195 files,
+  33 of them among this commit's 56 (the worker reported 31). Box 3's "worker's report" is
+  superseded by this line.
