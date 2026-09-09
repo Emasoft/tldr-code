@@ -22,7 +22,7 @@ pub fn detect_abc_protocol(graph: &mut InheritanceGraph) {
     // For TypeScript: abstract class and interface
     // For Rust: trait definitions
 
-    for (_name, node) in graph.nodes.iter_mut() {
+    for node in graph.nodes.values_mut() {
         // Check if bases contain ABC
         if node.bases.iter().any(|b| b == "ABC" || b == "ABCMeta") {
             node.is_abstract = Some(true);

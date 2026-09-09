@@ -317,7 +317,7 @@ pub fn analyze_cohesion_with_options(
     }
 
     // Sort by LCOM4 descending (worst cohesion first)
-    all_classes.sort_by(|a, b| b.lcom4.cmp(&a.lcom4));
+    all_classes.sort_by_key(|b| std::cmp::Reverse(b.lcom4));
 
     // Calculate summary statistics
     let total_classes = all_classes.len();

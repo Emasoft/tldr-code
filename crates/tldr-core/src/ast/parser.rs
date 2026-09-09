@@ -323,22 +323,20 @@ impl ParserPool {
         // `.min.js`, `.bundle.css`, …) get a stricter 5 MB cap;
         // normal source files keep the historical 10 MB cap.
         // See `crate::fs::oversize` for the full policy.
-        match crate::fs::oversize::check_size(path) {
-            crate::fs::oversize::SizeCheck::Oversize {
-                size_bytes,
-                max_bytes,
-                ..
-            } => {
-                return Err(TldrError::FileTooLarge {
-                    path: path.to_path_buf(),
-                    size_mb: (size_bytes as usize).div_ceil(1024 * 1024),
-                    max_mb: (max_bytes as usize).div_ceil(1024 * 1024),
-                });
-            }
-            // WithinLimit / Unknown: fall through to the existing
-            // read path. `Unknown` (stat failed) lets the existing
-            // I/O error handling produce the right error variant.
-            _ => {}
+        // WithinLimit / Unknown: fall through to the existing read path.
+        // `Unknown` (stat failed) lets the existing I/O error handling
+        // produce the right error variant.
+        if let crate::fs::oversize::SizeCheck::Oversize {
+            size_bytes,
+            max_bytes,
+            ..
+        } = crate::fs::oversize::check_size(path)
+        {
+            return Err(TldrError::FileTooLarge {
+                path: path.to_path_buf(),
+                size_mb: (size_bytes as usize).div_ceil(1024 * 1024),
+                max_mb: (max_bytes as usize).div_ceil(1024 * 1024),
+            });
         }
 
         // Read file content with UTF-8 lossy fallback - M2 mitigation

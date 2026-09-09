@@ -385,7 +385,7 @@ impl QueryCache {
             .collect();
 
         // Sort by last accessed time (oldest first)
-        entries_by_time.sort_by(|a, b| a.1.cmp(&b.1));
+        entries_by_time.sort_by_key(|a| a.1);
 
         // Evict oldest entries until we're under BOTH limits
         for (key, _, _) in entries_by_time {

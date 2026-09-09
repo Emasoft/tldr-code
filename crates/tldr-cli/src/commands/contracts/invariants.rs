@@ -459,12 +459,12 @@ fn extract_observations_recursive(
                 }
             }
         }
-        "call" => {
+        "call"
             // Also look at standalone calls in test functions
-            if !current_test_function.is_empty() {
-                if let Some(obs) = extract_observation_from_call(node, source, function_filter) {
-                    observations.push(obs);
-                }
+            if !current_test_function.is_empty() =>
+        {
+            if let Some(obs) = extract_observation_from_call(node, source, function_filter) {
+                observations.push(obs);
             }
         }
         _ => {}

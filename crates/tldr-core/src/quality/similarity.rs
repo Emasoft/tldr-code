@@ -268,7 +268,7 @@ pub fn find_similar_with_options(
     // Limit to max_functions
     if functions.len() > options.max_functions {
         // Sort by complexity descending to keep most interesting functions
-        functions.sort_by(|a, b| b.complexity.cmp(&a.complexity));
+        functions.sort_by_key(|b| std::cmp::Reverse(b.complexity));
         functions.truncate(options.max_functions);
     }
 

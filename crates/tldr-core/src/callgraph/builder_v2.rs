@@ -727,8 +727,8 @@ pub fn build_project_call_graph_v2(
 
     // Populate indices from IR
     for (file_path, file_ir) in &sorted_files {
-        let file_path: &PathBuf = *file_path;
-        let file_ir: &super::cross_file_types::FileIR = *file_ir;
+        let file_path: &PathBuf = file_path;
+        let file_ir: &super::cross_file_types::FileIR = file_ir;
         let module = path_to_module(file_path, &config.language);
 
         for func in &file_ir.funcs {
@@ -822,8 +822,8 @@ pub fn build_project_call_graph_v2(
     // as the populate-indices loop above, for the same reason — first
     // writer wins on the class_index, and HashMap iteration is random.
     for (file_path, file_ir) in &sorted_files {
-        let file_path: &PathBuf = *file_path;
-        let file_ir: &super::cross_file_types::FileIR = *file_ir;
+        let file_path: &PathBuf = file_path;
+        let file_ir: &super::cross_file_types::FileIR = file_ir;
         for func in &file_ir.funcs {
             if !func.is_method {
                 continue;

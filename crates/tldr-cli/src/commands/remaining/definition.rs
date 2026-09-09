@@ -786,7 +786,7 @@ fn scan_python_scope(
     // into nested function/class/lambda scopes.
     let body = node
         .child_by_field_name("body")
-        .or_else(|| Some(node));
+        .or(Some(node));
     if let Some(body) = body {
         let mut cursor = body.walk();
         for child in body.children(&mut cursor) {

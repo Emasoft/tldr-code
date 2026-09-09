@@ -391,18 +391,16 @@ fn find_best_vartype(
         }
 
         match &vt.scope {
-            Some(scope) if scope == caller_name => {
+            Some(scope) if scope == caller_name
                 // Scoped match: prefer latest line
-                if best_scoped.is_none_or(|prev| vt.line > prev.line) {
+                && best_scoped.is_none_or(|prev| vt.line > prev.line) => {
                     best_scoped = Some(vt);
                 }
-            }
-            None => {
+            None
                 // Module-level match: prefer latest line
-                if best_module.is_none_or(|prev| vt.line > prev.line) {
+                if best_module.is_none_or(|prev| vt.line > prev.line) => {
                     best_module = Some(vt);
                 }
-            }
             _ => {
                 // Different scope, skip
             }

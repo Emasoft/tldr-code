@@ -456,10 +456,10 @@ fn jvm_has_test_annotation(node: &Node, source: &[u8]) -> bool {
             if subtree_contains_annotation_named(&child, source, "Test") {
                 return true;
             }
-        } else if child.kind() == "annotation" || child.kind() == "marker_annotation" {
-            if annotation_has_name(&child, source, "Test") {
-                return true;
-            }
+        } else if (child.kind() == "annotation" || child.kind() == "marker_annotation")
+            && annotation_has_name(&child, source, "Test")
+        {
+            return true;
         }
     }
     false

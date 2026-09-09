@@ -669,8 +669,7 @@ fn has_import(source: &str, import_line: &str) -> bool {
             // `import a, os, sys` / `import os as o` — check each
             // comma-separated name, ignoring any `as <alias>`.
             if rest.split(',').any(|part| {
-                part.trim()
-                    .split_whitespace()
+                part.split_whitespace()
                     .next()
                     .map(|name| name == module)
                     .unwrap_or(false)

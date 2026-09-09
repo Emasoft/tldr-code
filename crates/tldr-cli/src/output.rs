@@ -296,9 +296,9 @@ fn format_tree_node(tree: &tldr_core::FileTree, output: &mut String, indent: usi
 ///   * each file's functions WITH `(line)` and full signature when known
 ///     (via `definitions[]` if present, falling back to bare names),
 ///   * each class WITH its inline method list pulled from `method_infos`,
-/// while still skipping fields the JSON consumers rely on (imports,
-/// definitions array). Result: roughly 2-3× richer than before, still
-/// text-stream friendly.
+///     while still skipping fields the JSON consumers rely on (imports,
+///     definitions array). Result: roughly 2-3× richer than before, still
+///     text-stream friendly.
 pub fn format_structure_text(structure: &tldr_core::CodeStructure) -> String {
     use std::collections::HashMap;
 
@@ -1200,7 +1200,7 @@ pub fn format_smells_text(report: &tldr_core::SmellsReport) -> String {
         .iter()
         .map(|(k, v)| (k.clone(), *v))
         .collect();
-    type_counts.sort_by(|a, b| b.1.cmp(&a.1));
+    type_counts.sort_by_key(|b| std::cmp::Reverse(b.1));
     let breakdown: Vec<String> = type_counts
         .iter()
         .map(|(name, count)| format!("{}: {}", name, count))

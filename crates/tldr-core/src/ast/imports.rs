@@ -841,8 +841,8 @@ fn extract_ruby_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                         });
                     }
                 }
-                "require_relative" => {
-                    if !arg_value.is_empty() {
+                "require_relative"
+                    if !arg_value.is_empty() => {
                         // require_relative './path' - always relative
                         imports.push(ImportInfo {
                             module: arg_value,
@@ -851,7 +851,6 @@ fn extract_ruby_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                             alias: None,
                         });
                     }
-                }
                 _ => {}
             }
         }
@@ -1408,11 +1407,10 @@ fn extract_lua_require(node: &Node, source: &str) -> Option<ImportInfo> {
                 }
             }
             // Direct string argument without parens: require"socket.dict" or require "mime"
-            "string" => {
-                if is_require {
+            "string"
+                if is_require => {
                     module_name = get_string_content(&child, source);
                 }
-            }
             _ => {}
         }
     }
@@ -1724,7 +1722,7 @@ fn parse_cjs_require(node: &Node, source: &str) -> Option<ImportInfo> {
     let module = args
         .children(&mut arg_cursor)
         .find(|c| matches!(c.kind(), "string" | "template_string"))
-        .map(|c| {
+        .and_then(|c| {
             // Reject template strings with substitutions — those resolve
             // dynamically and we can't emit a stable module name for them.
             if c.kind() == "template_string" {
@@ -1737,8 +1735,7 @@ fn parse_cjs_require(node: &Node, source: &str) -> Option<ImportInfo> {
                 }
             }
             Some(get_string_content(&c, source))
-        })
-        .flatten()?;
+        })?;
 
     if module.is_empty() {
         return None;

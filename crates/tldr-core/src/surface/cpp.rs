@@ -397,10 +397,9 @@ fn parse_class_or_struct_name(line: &str) -> Option<(String, bool)> {
 
     let (keyword, is_struct) = if let Some(index) = line.find("class ") {
         (index, false)
-    } else if let Some(index) = line.find("struct ") {
-        (index, true)
     } else {
-        return None;
+        let index = line.find("struct ")?;
+        (index, true)
     };
 
     let after_keyword = &line[keyword + if is_struct { 7 } else { 6 }..];

@@ -55,7 +55,7 @@ impl ContextArgs {
     /// (med-cleanup-bundle-v1 / M1)
     fn effective_project(&self) -> PathBuf {
         match &self.project {
-            Some(p) if self.path == PathBuf::from(".") => p.clone(),
+            Some(p) if self.path == Path::new(".") => p.clone(),
             _ => self.path.clone(),
         }
     }
@@ -102,7 +102,7 @@ impl ContextArgs {
         // the file's immediate parent directory. This keeps the
         // shorthand useful from any cwd.
         if derived_file.is_some()
-            && self.path == PathBuf::from(".")
+            && self.path == Path::new(".")
             && self.project.is_none()
         {
             if let Some(file) = effective_file.as_ref() {
@@ -191,13 +191,8 @@ fn split_file_func_shorthand(entry: &str) -> Option<(PathBuf, String)> {
     loop {
         if idx == 0 || idx + 1 >= entry.len() {
             // Search further-left colons (idx==0 means leading ':').
-            match entry[..idx].rfind(':') {
-                Some(prev) => {
-                    idx = prev;
-                    continue;
-                }
-                None => return None,
-            }
+            idx = entry[..idx].rfind(':')?;
+            continue;
         }
         let file_part = &entry[..idx];
         let func_part = &entry[idx + 1..];
@@ -209,10 +204,7 @@ fn split_file_func_shorthand(entry: &str) -> Option<(PathBuf, String)> {
         if candidate.is_file() && !func_part.is_empty() && !func_part.starts_with(':') {
             return Some((candidate, func_part.to_string()));
         }
-        match entry[..idx].rfind(':') {
-            Some(prev) => idx = prev,
-            None => return None,
-        }
+        idx = entry[..idx].rfind(':')?;
     }
 }
 

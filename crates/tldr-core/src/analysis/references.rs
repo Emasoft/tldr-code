@@ -2646,8 +2646,7 @@ pub fn is_test_file_path(path: &Path) -> bool {
         ".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs", ".cts", ".mts",
     ];
     for ext in &js_exts {
-        if filename.ends_with(ext) {
-            let stem = &filename[..filename.len() - ext.len()];
+        if let Some(stem) = filename.strip_suffix(ext) {
             if stem.ends_with(".test")
                 || stem.ends_with(".spec")
                 || stem.ends_with(".e2e")

@@ -1078,12 +1078,9 @@ fn extract_first_format_string_literal(line: &str) -> Option<String> {
             // preserve it literally — we do NOT need to interpret escapes
             // because the keyword search is uppercase-substring with word
             // boundaries; `\n` and `\t` count as non-word bytes either way.
-            if let Some(next) = iter.next() {
-                out.push(c);
-                out.push(next);
-            } else {
-                return None;
-            }
+            let next = iter.next()?;
+            out.push(c);
+            out.push(next);
         } else if c == '"' {
             return Some(out);
         } else {

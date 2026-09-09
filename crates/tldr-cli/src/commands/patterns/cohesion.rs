@@ -968,7 +968,7 @@ pub fn format_cohesion_text(report: &CohesionReport) -> String {
         .iter()
         .filter(|c| c.verdict == CohesionVerdict::SplitCandidate)
         .collect();
-    candidates.sort_by(|a, b| b.lcom4.cmp(&a.lcom4));
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.lcom4));
 
     if candidates.is_empty() {
         output.push_str("  No split candidates found.\n\n");

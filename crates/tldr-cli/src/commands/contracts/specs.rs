@@ -1234,7 +1234,6 @@ fn strip_string_quotes(s: &str) -> String {
 // Utility Functions
 // =============================================================================
 
-/// Merge specs from a file into the aggregate.
 // =============================================================================
 // Generic Multi-Language Spec Extraction (P12.AGG12-2)
 // =============================================================================
@@ -1363,11 +1362,12 @@ fn walk_for_assertion_calls(
     // `if condition { t.Errorf/Fatal/Fail(...) }` idiom rather than a
     // dedicated `assertEquals`-shaped helper. Detect that shape and
     // promote the FUT call inside the condition to a property spec.
-    if matches!(language, Language::Go) && node.kind() == "if_statement" {
-        if try_extract_go_if_t_assertion(&node, source, test_func_name, specs) {
-            // Still recurse: nested if/loop bodies may contain more
-            // assertions or further FUT calls we need to harvest.
-        }
+    if matches!(language, Language::Go)
+        && node.kind() == "if_statement"
+        && try_extract_go_if_t_assertion(&node, source, test_func_name, specs)
+    {
+        // Still recurse: nested if/loop bodies may contain more
+        // assertions or further FUT calls we need to harvest.
     }
 
     // language-specific-bugs-v1 (P14.AGG14-2): Java MockMvc fluent
@@ -1700,10 +1700,7 @@ fn find_mockmvc_perform_call<'a>(call: Node<'a>, source: &[u8]) -> Option<Node<'
         let object = current
             .child_by_field_name("object")
             .or_else(|| current.child_by_field_name("expression"));
-        let object = match object {
-            Some(o) => o,
-            None => return None,
-        };
+        let object = object?;
         if matches!(
             object.kind(),
             "method_invocation" | "invocation_expression"
@@ -2553,6 +2550,7 @@ fn guess_exception_type(call: &Node, source: &[u8]) -> String {
     "Exception".to_string()
 }
 
+/// Merge specs from a file into the aggregate.
 fn merge_specs(all_specs: &mut HashMap<String, FunctionSpecs>, new_specs: Vec<FunctionSpecs>) {
     for new_fs in new_specs {
         let entry = all_specs

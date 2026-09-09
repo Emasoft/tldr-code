@@ -803,7 +803,7 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
                 total_lines: info.total_lines,
             })
             .collect();
-        vec.sort_by(|a, b| b.total_lines.cmp(&a.total_lines));
+        vec.sort_by_key(|b| std::cmp::Reverse(b.total_lines));
         Some(vec)
     } else {
         None

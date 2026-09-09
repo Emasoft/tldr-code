@@ -1227,7 +1227,7 @@ pub fn get_author_stats(
         .collect();
 
     // Step 5: Sort by commits descending
-    result.sort_by(|a, b| b.commits.cmp(&a.commits));
+    result.sort_by_key(|b| std::cmp::Reverse(b.commits));
 
     Ok(result)
 }

@@ -592,7 +592,7 @@ fn extract_allocation(source: &str) -> String {
     if let Some(new_pos) = source.find("new ") {
         let after_new = &source[new_pos + 4..];
         if let Some(paren_pos) = after_new.find('(') {
-            return format!("new {}", &after_new[..paren_pos].trim());
+            return format!("new {}", after_new[..paren_pos].trim());
         }
     }
 

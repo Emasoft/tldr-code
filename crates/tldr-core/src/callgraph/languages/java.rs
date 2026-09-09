@@ -205,10 +205,10 @@ impl JavaHandler {
                         .map(|n| get_node_text(&n, source).to_string());
 
                     let object_name: Option<String> =
-                        child.child_by_field_name("object").and_then(|obj| {
+                        child.child_by_field_name("object").map(|obj| {
                             match obj.kind() {
-                                "this" => Some("this".to_string()),
-                                "super" => Some("super".to_string()),
+                                "this" => "this".to_string(),
+                                "super" => "super".to_string(),
                                 "method_invocation" => {
                                     // Chained call, e.g. `obj.method1().method2()`: represent
                                     // the receiver as the inner call so the chain is still
@@ -217,9 +217,9 @@ impl JavaHandler {
                                         .child_by_field_name("name")
                                         .map(|n| get_node_text(&n, source).to_string())
                                         .unwrap_or_else(|| get_node_text(&obj, source).to_string());
-                                    Some(format!("{}()", inner_name))
+                                    format!("{}()", inner_name)
                                 }
-                                _ => Some(get_node_text(&obj, source).to_string()),
+                                _ => get_node_text(&obj, source).to_string(),
                             }
                         });
 

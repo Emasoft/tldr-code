@@ -9,7 +9,7 @@ pub mod state;
 pub use server::DaemonConfig;
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -162,7 +162,7 @@ async fn handle_status(socket_path: &PathBuf) -> anyhow::Result<()> {
 /// Best-effort lookup of the PID holding `socket_path` via `lsof -t`.
 /// Unix only; returns `None` if `lsof` is unavailable or finds nothing.
 #[cfg(unix)]
-fn socket_owner_pid(socket_path: &PathBuf) -> Option<u32> {
+fn socket_owner_pid(socket_path: &Path) -> Option<u32> {
     let output = std::process::Command::new("lsof")
         .args(["-t", &socket_path.to_string_lossy()])
         .output()

@@ -282,11 +282,10 @@ impl TypeScriptHandler {
                                     alias = Some(get_node_text(&child, source).to_string());
                                 }
                             }
-                            "call_expression" => {
-                                if imp.is_none() {
+                            "call_expression"
+                                if imp.is_none() => {
                                     imp = self.parse_require_call(&child, source);
                                 }
-                            }
                             _ => {}
                         }
                     }
@@ -309,11 +308,10 @@ impl TypeScriptHandler {
                                     alias = Some(get_node_text(&child, source).to_string());
                                 }
                             }
-                            "call_expression" => {
-                                if imp.is_none() {
+                            "call_expression"
+                                if imp.is_none() => {
                                     imp = self.parse_require_call(&child, source);
                                 }
-                            }
                             _ => {}
                         }
                     }

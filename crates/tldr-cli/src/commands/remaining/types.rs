@@ -305,9 +305,9 @@ impl SecureFinding {
 /// FINAL `SecureReport.findings` array via category group-by. The sum of
 /// all category counters in this struct (taint + leak + bounds + behavioral
 /// + unsafe_blocks + raw_pointer_ops + unwrap_calls + todo_markers +
-/// missing_contracts + mutable_params) MUST equal `findings.len()`.
-/// `taint_critical` is a sub-count of `taint_count` (severity refinement,
-/// not its own category) and is excluded from that invariant.
+///   missing_contracts + mutable_params) MUST equal `findings.len()`.
+///   `taint_critical` is a sub-count of `taint_count` (severity refinement,
+///   not its own category) and is excluded from that invariant.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SecureSummary {
     /// Number of taint-related findings

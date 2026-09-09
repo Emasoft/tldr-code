@@ -1183,12 +1183,10 @@ fn extract_param_types(
 /// Lightweight helper for AGG13-6 PHP variable-name extraction.
 fn first_named_kind<'tree>(node: &Node<'tree>, target_kind: &str) -> Option<Node<'tree>> {
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == target_kind {
-            return Some(child);
-        }
-    }
-    None
+    let found = node
+        .children(&mut cursor)
+        .find(|&child| child.kind() == target_kind);
+    found
 }
 
 /// AGG13-6: walk a function body and collect every method invocation

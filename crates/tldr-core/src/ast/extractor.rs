@@ -675,15 +675,14 @@ fn extract_java_functions(
                     }
                 }
             }
-            "constructor_declaration" => {
+            "constructor_declaration"
                 // Constructors are always inside a class, so they are methods
-                if methods_only {
+                if methods_only => {
                     if let Some(name_node) = child.child_by_field_name("name") {
                         let name = get_node_text(&name_node, source);
                         functions.push(name);
                     }
                 }
-            }
             _ => {}
         }
         extract_java_functions(&child, source, functions, methods_only);
@@ -1592,12 +1591,11 @@ fn extract_swift_methods(node: &Node, source: &str, methods: &mut Vec<String>) {
                     }
                 }
             }
-            "init_declaration" => {
+            "init_declaration"
                 // Swift init() constructors inside classes
-                if is_inside_class(&child) {
+                if is_inside_class(&child) => {
                     methods.push("init".to_string());
                 }
-            }
             _ => {}
         }
         extract_swift_methods(&child, source, methods);

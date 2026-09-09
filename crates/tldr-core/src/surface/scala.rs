@@ -248,8 +248,7 @@ fn is_scala_hidden_at_line(source: &str, line_number: usize) -> bool {
         .lines()
         .nth(line_number.saturating_sub(1))
         .map(|line| {
-            line.trim_start()
-                .split_whitespace()
+            line.split_whitespace()
                 .take_while(|token| !DECL_KEYWORDS.contains(token))
                 .any(|token| {
                     token == "private"

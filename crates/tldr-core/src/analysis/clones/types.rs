@@ -1212,16 +1212,15 @@ fn extract_tokens_recursive(
                 return;
             }
         }
-        "typescript" | "javascript" => {
+        "typescript" | "javascript"
             // S8-P2-T2: TypeScript template literals - recurse into template_substitution
-            if kind == "template_substitution" {
+            if kind == "template_substitution" => {
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
                     extract_tokens_recursive(&child, source, language, tokens);
                 }
                 return;
             }
-        }
         _ => {}
     }
 

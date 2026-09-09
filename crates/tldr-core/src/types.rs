@@ -1897,7 +1897,8 @@ fn probe_package_json_workspaces(root: &Path) -> Option<Vec<PathBuf>> {
         arr.iter()
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect()
-    } else if let Some(obj) = ws.as_object() {
+    } else {
+        let obj = ws.as_object()?;
         obj.get("packages")
             .and_then(|p| p.as_array())
             .map(|arr| {
@@ -1906,8 +1907,6 @@ fn probe_package_json_workspaces(root: &Path) -> Option<Vec<PathBuf>> {
                     .collect()
             })
             .unwrap_or_default()
-    } else {
-        return None;
     };
 
     if patterns.is_empty() {

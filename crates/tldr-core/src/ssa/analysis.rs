@@ -1707,9 +1707,9 @@ fn extract_def_from_node(
                 }
             }
         }
-        Language::Elixir => {
+        Language::Elixir
             // In Elixir, `x = expr` is a binary_operator with `=` operator
-            if kind == "binary_operator" {
+            if kind == "binary_operator" => {
                 if let Some(op) = node.child_by_field_name("operator") {
                     if node_text(&op, source) == "=" {
                         if let Some(left) = node.child_by_field_name("left") {
@@ -1721,7 +1721,6 @@ fn extract_def_from_node(
                     }
                 }
             }
-        }
         _ => {}
     }
 

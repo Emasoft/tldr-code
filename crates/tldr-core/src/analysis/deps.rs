@@ -767,7 +767,7 @@ fn detect_cycles(deps: &BTreeMap<PathBuf, Vec<PathBuf>>, max_length: usize) -> V
 /// process. Rewritten as an explicit-stack iterative DFS with identical
 /// back-edge/cycle-extraction semantics, bounded only by heap memory.
 fn dfs_find_cycles(
-    start: &PathBuf,
+    start: &Path,
     deps: &BTreeMap<PathBuf, Vec<PathBuf>>,
     visited: &mut HashSet<PathBuf>,
     rec_stack: &mut Vec<PathBuf>,
@@ -776,10 +776,10 @@ fn dfs_find_cycles(
     max_length: usize,
 ) {
     // Each explicit-stack frame is (node, index of the next neighbor to visit).
-    let mut frames: Vec<(PathBuf, usize)> = vec![(start.clone(), 0)];
-    visited.insert(start.clone());
-    rec_stack.push(start.clone());
-    rec_set.insert(start.clone());
+    let mut frames: Vec<(PathBuf, usize)> = vec![(start.to_path_buf(), 0)];
+    visited.insert(start.to_path_buf());
+    rec_stack.push(start.to_path_buf());
+    rec_set.insert(start.to_path_buf());
 
     while let Some(&(ref node, idx)) = frames.last() {
         let node = node.clone();

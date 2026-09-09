@@ -316,33 +316,30 @@ impl RustLangHandler {
 
                     for i in 0..node.child_count() {
                         if let Some(child) = node.child(i) {
-                            match child.kind() {
-                                "declaration_list" => {
-                                    // Index methods
-                                    for j in 0..child.named_child_count() {
-                                        if let Some(item) = child.named_child(j) {
-                                            if item.kind() == "function_item" {
-                                                if let Some(name_node) =
-                                                    item.child_by_field_name("name")
-                                                {
-                                                    let method_name =
-                                                        get_node_text(&name_node, source)
-                                                            .to_string();
-                                                    functions.insert(method_name.clone());
+                            if child.kind() == "declaration_list" {
+                                // Index methods
+                                for j in 0..child.named_child_count() {
+                                    if let Some(item) = child.named_child(j) {
+                                        if item.kind() == "function_item" {
+                                            if let Some(name_node) =
+                                                item.child_by_field_name("name")
+                                            {
+                                                let method_name =
+                                                    get_node_text(&name_node, source)
+                                                        .to_string();
+                                                functions.insert(method_name.clone());
 
-                                                    // Also add as Type::method
-                                                    if let Some(ref tn) = type_name {
-                                                        functions.insert(format!(
-                                                            "{}::{}",
-                                                            tn, method_name
-                                                        ));
-                                                    }
+                                                // Also add as Type::method
+                                                if let Some(ref tn) = type_name {
+                                                    functions.insert(format!(
+                                                        "{}::{}",
+                                                        tn, method_name
+                                                    ));
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                _ => {}
                             }
                         }
                     }

@@ -147,7 +147,7 @@ fn format_loc_text(report: &LocReport) -> String {
 
         let mut entries: Vec<&tldr_core::metrics::loc::LanguageLocEntry> =
             report.by_language.values().collect();
-        entries.sort_by(|a, b| b.total_lines.cmp(&a.total_lines));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.total_lines));
 
         let max_lang = entries
             .iter()

@@ -2174,7 +2174,7 @@ pub fn detect_refused_bequest_from_callgraph(
                     fir.calls
                         .get(&qualified)
                         .into_iter()
-                        .chain(fir.calls.get(&method.name).into_iter())
+                        .chain(fir.calls.get(&method.name))
                         .flatten()
                         .map(|c| c.target.clone())
                 })

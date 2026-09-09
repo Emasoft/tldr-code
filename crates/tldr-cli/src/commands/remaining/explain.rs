@@ -2172,7 +2172,7 @@ fn collect_functions_with_bounds(file: &std::path::Path) -> Vec<(String, u32, u3
     // multiple bounds contain the same line — by ascending line_start
     // descending end, but in practice find() returns first match so we
     // sort by descending line_start (innermost wins).
-    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.sort_by_key(|b| std::cmp::Reverse(b.1));
     out
 }
 

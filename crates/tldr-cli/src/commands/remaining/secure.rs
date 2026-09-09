@@ -270,7 +270,7 @@ pub fn run(args: SecureArgs, format: OutputFormat) -> anyhow::Result<()> {
     }
 
     // Sort findings by severity (critical first)
-    all_findings.sort_by(|a, b| severity_order(&a.severity).cmp(&severity_order(&b.severity)));
+    all_findings.sort_by_key(|a| severity_order(&a.severity));
 
     // WRAPPER-CROSS-CONSISTENCY-V1 (BUG-15, BUG-16): compute the summary
     // counters from the FINAL `findings` array via category group-by,
@@ -439,23 +439,16 @@ fn partition_utf8_clean(candidates: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>, u
         // O(1) and returns SizeCheck::Unknown for missing files
         // (which then falls through to the existing read path and is
         // handled there).
-        match check_size(file) {
-            SizeCheck::Oversize {
-                size_bytes,
-                max_bytes,
-                is_autogen,
-            } => {
-                skipped += 1;
-                warnings.push(format_oversize_warning(
-                    file,
-                    size_bytes,
-                    max_bytes,
-                    is_autogen,
-                ));
-                continue;
-            }
-            // WithinLimit | Unknown: proceed to the UTF-8 read below.
-            _ => {}
+        // WithinLimit | Unknown: proceed to the UTF-8 read below.
+        if let SizeCheck::Oversize {
+            size_bytes,
+            max_bytes,
+            is_autogen,
+        } = check_size(file)
+        {
+            skipped += 1;
+            warnings.push(format_oversize_warning(file, size_bytes, max_bytes, is_autogen));
+            continue;
         }
 
         match read_to_string_tolerant(file) {

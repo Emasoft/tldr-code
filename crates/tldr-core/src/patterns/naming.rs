@@ -206,17 +206,16 @@ fn is_compatible(actual: NamingCase, expected: NamingCase) -> bool {
     if actual == expected {
         return true;
     }
-    match (actual, expected) {
+    matches!(
+        (actual, expected),
         (
             NamingCase::LowerAlpha,
             NamingCase::SnakeCase | NamingCase::CamelCase | NamingCase::LowerAlpha,
-        ) => true,
-        (
+        ) | (
             NamingCase::UpperAlpha,
             NamingCase::PascalCase | NamingCase::UpperSnakeCase | NamingCase::UpperAlpha,
-        ) => true,
-        _ => false,
-    }
+        )
+    )
 }
 
 /// Find violations (names not matching the expected convention)

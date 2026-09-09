@@ -246,7 +246,7 @@ pub fn analyze_complexity(
         all_functions_nested.into_iter().flatten().collect();
 
     // Sort by cyclomatic complexity descending
-    all_functions.sort_by(|a, b| b.cyclomatic.cmp(&a.cyclomatic));
+    all_functions.sort_by_key(|b| std::cmp::Reverse(b.cyclomatic));
 
     // Assign ranks
     for (rank, func) in all_functions.iter_mut().enumerate() {

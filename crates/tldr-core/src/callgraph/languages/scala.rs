@@ -653,11 +653,10 @@ impl CallGraphLanguageSupport for ScalaHandler {
                                 }
                                 // In Scala, the function body can be a direct expression
                                 "call_expression" | "field_expression" | "infix_expression"
-                                | "literal" => {
-                                    if body.is_none() && method_name.is_some() {
+                                | "literal"
+                                    if body.is_none() && method_name.is_some() => {
                                         body = Some(child);
                                     }
-                                }
                                 _ => {}
                             }
                         }

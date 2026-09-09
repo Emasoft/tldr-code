@@ -249,11 +249,10 @@ impl CallSite {
 
         // Receiver is required for Method calls
         match self.call_type {
-            CallType::Method => {
-                if self.receiver.is_none() {
+            CallType::Method
+                if self.receiver.is_none() => {
                     return false;
                 }
-            }
             _ => {
                 // For other call types, receiver should typically be None
                 // but we don't enforce this as strictly

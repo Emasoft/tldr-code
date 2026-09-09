@@ -73,7 +73,7 @@ pub fn extract_fragments_from_file(
 
     // Collect function/method node boundaries from tree-sitter
     let mut func_nodes: Vec<FuncNodeInfo> = Vec::new();
-    collect_function_nodes(&root, source_bytes, language, &mut func_nodes, 0);
+    collect_function_nodes(&root, source_bytes, language, &mut func_nodes);
 
     // Deduplicate by (start_line, end_line)
     let mut seen: HashSet<(usize, usize)> = HashSet::new();
@@ -157,7 +157,6 @@ fn collect_function_nodes(
     source: &[u8],
     language: &str,
     result: &mut Vec<FuncNodeInfo>,
-    depth: usize,
 ) {
     let kind = node.kind();
 
@@ -238,7 +237,7 @@ fn collect_function_nodes(
     // Recurse into children
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_function_nodes(&child, source, language, result, depth + 1);
+        collect_function_nodes(&child, source, language, result);
     }
 }
 

@@ -261,7 +261,7 @@ pub fn analyze_cognitive(path: &Path, options: &CognitiveOptions) -> TldrResult<
     }
 
     // Sort by cognitive complexity descending
-    functions.sort_by(|a, b| b.cognitive.cmp(&a.cognitive));
+    functions.sort_by_key(|b| std::cmp::Reverse(b.cognitive));
 
     // Apply top limit
     if options.top > 0 && functions.len() > options.top {
@@ -317,7 +317,7 @@ pub fn analyze_cognitive_source(
     }
 
     // Sort by cognitive complexity descending
-    functions.sort_by(|a, b| b.cognitive.cmp(&a.cognitive));
+    functions.sort_by_key(|b| std::cmp::Reverse(b.cognitive));
 
     // Apply top limit
     if options.top > 0 && functions.len() > options.top {
@@ -1187,11 +1187,10 @@ impl<'a> CognitiveCalculator<'a> {
             "if_modifier" | "unless_modifier" => self.cyclomatic += 1,
             "while_modifier" | "until_modifier" => self.cyclomatic += 1,
             "when" if matches!(self.language, Language::Ruby) => self.cyclomatic += 1, // case-arm cognate
-            "boolean_operator" | "binary_expression" => {
-                if self.get_logical_operator(node).is_some() {
+            "boolean_operator" | "binary_expression"
+                if self.get_logical_operator(node).is_some() => {
                     self.cyclomatic += 1;
                 }
-            }
             _ => {}
         }
     }
@@ -1409,7 +1408,7 @@ pub fn merge_cognitive_reports(
     let warnings: Vec<String> = reports.into_iter().flat_map(|r| r.warnings).collect();
 
     // 3. Sort by cognitive score descending
-    functions.sort_by(|a, b| b.cognitive.cmp(&a.cognitive));
+    functions.sort_by_key(|b| std::cmp::Reverse(b.cognitive));
 
     // 4. Apply top-N limit
     if options.top > 0 && functions.len() > options.top {

@@ -31,7 +31,7 @@ pub fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
 
     // Sort edits by line number descending so we apply from bottom to top
     let mut sorted_edits: Vec<&TextEdit> = edits.iter().collect();
-    sorted_edits.sort_by(|a, b| b.line.cmp(&a.line));
+    sorted_edits.sort_by_key(|b| std::cmp::Reverse(b.line));
 
     for edit in sorted_edits {
         // Line numbers are 1-indexed

@@ -437,19 +437,6 @@ impl Default for DebtOptions {
 // Public Functions - STUBS (to be implemented)
 // =============================================================================
 
-/// Count non-empty, non-comment lines of code
-///
-/// # Arguments
-/// * `source` - Source code content
-/// * `language` - Programming language for comment detection
-///
-/// # Returns
-/// Count of logical lines of code
-///
-/// # Algorithm
-/// - Skip empty lines and comment-only lines
-/// - For Python: handle triple-quoted docstrings (both """ and ''')
-/// - Lines with code + inline comments still count as code
 /// Map a debt-minute value to a severity bucket name.
 ///
 /// Buckets are aligned to the [`DebtRule::minutes`] table so that every rule
@@ -2724,11 +2711,11 @@ pub fn analyze_debt(options: DebtOptions) -> TldrResult<DebtReport> {
     }
 
     // Sort issues by debt_minutes descending
-    all_issues.sort_by(|a, b| b.debt_minutes.cmp(&a.debt_minutes));
+    all_issues.sort_by_key(|b| std::cmp::Reverse(b.debt_minutes));
 
     // Top files by debt (sorted by total_minutes descending, limited to top_k)
     let mut sorted_files: Vec<_> = file_debts.values().cloned().collect();
-    sorted_files.sort_by(|a, b| b.total_minutes.cmp(&a.total_minutes));
+    sorted_files.sort_by_key(|b| std::cmp::Reverse(b.total_minutes));
     let top_files: Vec<_> = sorted_files.into_iter().take(options.top_k).collect();
 
     Ok(DebtReport {

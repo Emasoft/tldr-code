@@ -288,13 +288,12 @@ fn effective_kotlin_class_name(class: &ClassInfo, source: &str) -> String {
                     return (*name).to_string();
                 }
             }
-            "enum" => {
-                if tokens.get(idx + 1) == Some(&"class") {
+            "enum"
+                if tokens.get(idx + 1) == Some(&"class") => {
                     if let Some(name) = tokens.get(idx + 2) {
                         return (*name).to_string();
                     }
                 }
-            }
             _ => {}
         }
     }

@@ -333,14 +333,13 @@ fn find_test_dirs(project_path: &Path) -> Vec<PathBuf> {
                 let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                     continue;
                 };
-                if name.ends_with("Tests")
+                if (name.ends_with("Tests")
                     || name.ends_with(".Tests")
                     || name.ends_with("Test")
-                    || name.ends_with(".Test")
+                    || name.ends_with(".Test"))
+                    && !candidates.iter().any(|p| p == &path)
                 {
-                    if !candidates.iter().any(|p| p == &path) {
-                        candidates.push(path);
-                    }
+                    candidates.push(path);
                 }
             }
         }

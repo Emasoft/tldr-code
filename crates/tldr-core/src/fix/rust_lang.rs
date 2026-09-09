@@ -337,7 +337,7 @@ fn analyze_e0277(error: &ParsedError, source: &str) -> Option<Diagnosis> {
         if let Some(line_no) = error.line {
             let lines: Vec<&str> = source.lines().collect();
             // Search nearby lines for .collect() without .copied()/.cloned()
-            let search_start = line_no.saturating_sub(3).max(0);
+            let search_start = line_no.saturating_sub(3);
             let search_end = (line_no + 3).min(lines.len());
 
             for (i, line) in lines[search_start..search_end].iter().enumerate() {

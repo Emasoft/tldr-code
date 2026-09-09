@@ -173,7 +173,7 @@ pub fn dedup_and_prioritize(findings: Vec<BugbotFinding>, max: usize) -> Vec<Bug
             result.push(group.remove(0));
         } else {
             // Sort group by severity descending
-            group.sort_by(|a, b| severity_rank(&b.severity).cmp(&severity_rank(&a.severity)));
+            group.sort_by_key(|b| std::cmp::Reverse(severity_rank(&b.severity)));
 
             let mut best = group.remove(0);
 

@@ -137,7 +137,7 @@ pub fn run_secure(path: &str, lang: Option<&str>, quick: bool) -> TldrResult<Sec
     // Sort findings by severity (critical first)
     report
         .findings
-        .sort_by(|a, b| severity_rank(&a.severity).cmp(&severity_rank(&b.severity)));
+        .sort_by_key(|a| severity_rank(&a.severity));
 
     // Build summary
     report.summary = build_summary(&report);

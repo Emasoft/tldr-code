@@ -530,20 +530,18 @@ fn extract_assigned_value(line: &str) -> Option<String> {
     // Find the assignment operator
     let after_op = if let Some(idx) = line.find('=') {
         &line[idx + 1..]
-    } else if let Some(idx) = line.find(':') {
-        &line[idx + 1..]
     } else {
-        return None;
+        let idx = line.find(':')?;
+        &line[idx + 1..]
     };
 
     // Find the first quoted string after the operator
     let trimmed = after_op.trim();
     let (quote, rest) = if let Some(stripped) = trimmed.strip_prefix('"') {
         ('"', stripped)
-    } else if let Some(stripped) = trimmed.strip_prefix('\'') {
-        ('\'', stripped)
     } else {
-        return None;
+        let stripped = trimmed.strip_prefix('\'')?;
+        ('\'', stripped)
     };
 
     // Find the closing quote

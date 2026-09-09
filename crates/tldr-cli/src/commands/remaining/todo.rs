@@ -493,7 +493,7 @@ fn run_dead_analysis(path: &Path, language: Language) -> RemainingResult<(Vec<To
                 PRIORITY_DEAD_CODE,
                 format!("Unused function: {}", func.name),
             )
-            .with_location(func.file.display().to_string(), func.line as u32)
+            .with_location(func.file.display().to_string(), func.line)
             .with_severity("medium")
         })
         .collect();
