@@ -3,7 +3,7 @@ trdd-id: V7Q2KM8H
 title: Feature-gated tests stay invisible in six test files and nothing fails a zero-test target
 column: backburner
 created: 2026-09-09T11:32:06+0200
-updated: 2026-09-09T11:43:29+0200
+updated: 2026-09-09T11:48:57+0200
 current-owner: main-session
 task-type: bugfix
 scope: project
@@ -25,28 +25,36 @@ here, plus the two targets its box 4 wrongly declared absent.
 - **Two more targets carry the parent's exact defect.** `crates/tldr-core/tests/semantic_tests.rs:1`
   and `crates/tldr-core/tests/semantic_test.rs:1` are `#![cfg(feature = "semantic")]`, found
   2026-09-09 by `grep -rn '^#!\[cfg' crates/*/tests/` after the parent was archived (its box 4
-  says "no other crate-level gate"; the correction is in its Approval log). Under default
-  features both compile to zero tests and report `ok`. Neither file read. Expectation, not
+  says "no other crate-level gate"; the correction is in its Approval log). By the parent's
+  mechanism both compile to zero tests and report `ok` under default features; unmeasured, no
+  `test result:` line taken. Neither file read. Expectation, not
   read: `tldr-core` tests `use` semantic-only items, so the parent's `ignore` pattern would
   not compile there; candidates are `required-features` on a `[[test]]` entry, or a gated
   `mod` plus one always-present ignored test naming the feature.
 - **Item-level gates, pre-existing at HEAD, in four `tldr-cli` test files:**
   `pdg_bounds_and_stdout_hygiene_v1.rs` (lines 75, 110), `language_command_matrix.rs` (49, 1728,
   1748), `hygiene_and_crash_fixes_v1.rs` (107, 143, 172, 218, 248), `exhaustive_matrix.rs`
-  (60 hits: 38, 43, 56, 1368, 1386, 1411, then 54 at lines 4060-4382, one every six lines).
+  (60 hits: 38, 43, 56, 1368, 1386, 1411, then 54 between lines 4060 and 4382).
   In `language_command_matrix.rs` the gate covers a `gen_lang_tests_serial!` invocation, so
   `check_semantic`, `check_similar` and `check_embed` are reported as never used under default
   features; that warning is the only proof, no default-run `test result:` line was taken. The
-  other three files: gate lines found, NOT read. No other crate has item-level gates.
+  other three files: gate lines found, NOT read. Under `crates/*/tests/`, with this pattern,
+  no other crate has item-level gates; `src/` (what `make test` runs) and `cfg_attr` forms
+  were not surveyed.
 - **No consumer runs them anyway.** `.github/workflows/release.yml` is cargo-dist generated:
   `dist build` only, no `make`, no `cargo test`. The Makefile (75 lines, every `cargo` line
-  read) tests only `-p tldr-core --lib` and `-p tldr-cli --lib`. No justfile, no
-  `.cargo/config`. Nothing found runs any integration target; no test at all runs in CI.
+  read) tests only `-p tldr-core --lib` and `-p tldr-cli --lib`. No justfile or `.cargo/config`
+  within three levels of the root. Nothing found runs any integration target; no test at all
+  runs in CI (release.yml is the only workflow): a defect bigger than this card, uncarded.
 - **The parent's three tests pass without the feature.** `cargo test -p tldr-cli --test
   semantic_lang_flag_test -- --test-threads=1 --include-ignored` on default features,
-  2026-09-09: `test result: ok. 3 passed; 0 failed; 0 ignored`, 2.70s, cargo exit 0. They
-  assert only "does not panic", which a clean feature-missing error satisfies, so the `ignore`
-  gate on them may be unnecessary: un-gating is a three-line deletion, to decide on pull.
+  2026-09-09: `test result: ok. 3 passed; 0 failed; 0 ignored`, 2.70s, cargo exit 0. Their
+  names say "does not panic" (assertion lines not read), which a clean feature-missing error
+  satisfies, so the `ignore` gate on them may be unnecessary. Un-gating is a three-line
+  deletion plus a rewrite of the parent's doc block, and it trades the `ignored` signal ("run
+  me with `--features semantic`", where the tests take 11-48 s) for three default-run greens
+  that exercise only the feature-missing path while the names promise the semantic one.
+  Decide on pull.
 - **No guard fails a zero-test target.** The next crate-level `#![cfg(feature = …)]` anyone adds
   will again print `test result: ok. 0 passed` and nobody will see it.
 
