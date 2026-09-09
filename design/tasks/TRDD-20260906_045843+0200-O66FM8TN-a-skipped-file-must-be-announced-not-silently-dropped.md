@@ -3,7 +3,7 @@ trdd-id: O66FM8TN
 title: A file the analysis skips must be announced, not silently dropped from the result
 column: dev
 created: 2026-09-06T04:58:43+0200
-updated: 2026-09-08T12:35:06+0200
+updated: 2026-09-09T12:08:37+0200
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: user
@@ -14,7 +14,60 @@ implementation-commits: [b64d541, e83d2b4, 9dabab1, 6d43608, b888b2d, 804dd75, 0
 
 # A file the analysis skips must be announced, not silently dropped from the result
 
-## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-07 19:59
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-09 12:08
+
+### 2026-09-09 — box 5's denominator re-derived on HEAD; box 8's mechanism PROPOSED, not built
+
+- **Two boxes remain, not three.** The `File::open`/`read_to_end` box closed 2026-09-08
+  (TRDD-R7QK2M4E). The "three unticked boxes" NEXT ACTION further down is stale.
+- **Box 5 denominator, re-derived 2026-09-09 on HEAD `3ecb2af` by script** (worker-written
+  `scripts_dev/read_site_survey.py`, gitignored, not read line by line; report
+  `reports/colony/20260909_121627+0200-silent-sites-rederived.md`), applying the 2026-09-06
+  six-step method literally: raw 221 → 154 production sites → **SILENT 56 · WARNED 1 ·
+  PROPAGATED 97 · PANIC 0**. The 56 is a coincidence, not a confirmation: 52 old sites carried,
+  4 left the bucket (`contracts/specs.rs` is WARNED since the `eprintln!` of `36c4838`;
+  `ast/function_finder.rs:985` with `.ok()?`, `surface/lua.rs:91` and `surface/luau.rs:122` are
+  PROPAGATED by the method's priority order), 4 are NEW (`remaining/secure.rs:461`,
+  `fix/check.rs:169`, `callgraph/builder_v2.rs:111`, `bugbot/check.rs:183`; the report counts
+  3 because the last inherited `check.rs:222`'s verdict through an identical first line, so the
+  match key `(path, first line)` is not unique).
+- **Two limits of that count, stated so they are not inherited as facts.** (1) The method
+  buckets the SITE's statement, not the program: `builder_v2.rs:111` is bucketed SILENT although
+  piece 1's own `warnings.push` for that read sits at `:154`, a later statement. "SILENT" here
+  means "no message inside the statement"; every verdict must still read the enclosing function.
+  (2) WARNED fell from 4 to 1 between the surveys with one code change in that direction; the
+  script's WARNED trigger is narrower than the 2026-09-06 pass, or pushes fall outside its
+  60-line window. Unresolved. It does not change the SILENT list, which is what box 5 counts.
+- **The `.ok()?` family: 21 sites, silent by this card's definition, PROPAGATED by the method's
+  letter.** `read_to_string(..).ok()?` discards the error and returns `None`; the caller sees
+  "absent", never "unreadable". The 2026-09-06 survey bucketed the one it noticed
+  (`function_finder.rs:985`) SILENT by hand. They are their own decision list, kept apart from
+  the 56 so neither number is quietly reconciled into the other.
+- **Verdicts on the 56 exist as evidence only:** unit-3's `reports/colony/silent-sites-decisions.md`,
+  36 warn · 19 deliberately-silent · 1 propagate, of which the coordinator verified ONE.
+  Not a recorded decision in this card's sense until it is in this card.
+- **NEXT ACTION (box 5): verify the 56 verdicts, decide the 4 NEW and the 21 `.ok()?`, in batches
+  of 5-8 files, each by reading the enclosing function; record the outcome as a table in this
+  card.** Reports are evidence; decisions become TRDDs.
+- **PROPOSAL for box 8's mechanism, reviewed 2026-09-09, NOT implemented:**
+  1. `tldr_core::fs::read_source(path: &Path, warnings: &mut Vec<String>) -> Option<String>`,
+     wrapping `read_to_string_tolerant`: on `Err`, `NonUtf8` or `WideEncoded` it pushes
+     `skipped_file_warning(path, reason)` itself and returns `None`. The push lives inside the
+     helper, so a caller cannot take the source and drop the message.
+  2. The guard: a `#[cfg(test)]` test in `tldr-core`, run by the Makefile's `--lib` target
+     (green today; `make lint` is red, TRDD-GYNBICF9, so a clippy `disallowed-methods` entry
+     would enforce nothing), that walks `crates/*/src/**/*.rs` at test time and asserts every
+     bare `read_to_string(` / `read_to_string_tolerant(` call outside `fs/mod.rs` is in an
+     ALLOWLIST of `file:function` entries, each with a one-line reason. The allowlist IS the
+     deliberately-silent decision record for box 5, in code and greppable; a new bare call reds
+     the test until it is routed through `read_source` or allowlisted with a reason.
+  3. The warn sites migrate to `read_source` in phases of at most 5 files, each threading
+     `&mut Vec<String>` from the nearest report type that already has `warnings` (17 do); a
+     report type without one gets the field. One regression test per report type reached, on
+     the BKALIK1B fixtures.
+  Strongest reason not to: a test that greps its own source is unusual and brittle to
+  formatting. The alternative, clippy, enforces nothing until GYNBICF9 lands, and this box needs
+  a mechanism that fails TODAY.
 
 ### 2026-09-07 — daemon + MCP done. Only units 2-4 remain.
 
@@ -396,7 +449,9 @@ mislabelling the file as binary here. **Not established either way; assess in co
       or a `tldr_specs` MCP tool is ever added.**
 - [ ] Every one of the 56 SILENT sites has a recorded decision: warn, propagate, or
       deliberately-silent-with-a-reason.
-      — **The denominator 56 is UNVERIFIED; re-derive it before ticking.** At least two
+      — **Denominator re-derived 2026-09-09 on HEAD `3ecb2af`: 56 SILENT, plus 21 `.ok()?`
+      sites kept as their own list; see STATE.** The warning that forced it, kept as history:
+      the denominator 56 was UNVERIFIED. At least two
       surveyed `dead.rs` sites are BELIEVED already fixed in piece 1 — believed, not
       re-verified this session — so the survey may count as defects sites that no longer are.
       Derive a fresh count from source; do not reconcile a new number against 56.
