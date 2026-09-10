@@ -237,12 +237,19 @@ impl TodoArgs {
                     all_items.extend(items);
                 }
                 Err(e) => {
-                    // Log error but continue with other analyses
-                    writer.progress(&format!(
-                        "Warning: {} analysis failed: {}",
-                        analysis.category(),
-                        e
-                    ));
+                    // Log error but continue with other analyses.
+                    //
+                    // TRDD-RX6JWVVZ: `writer.progress` is silent under
+                    // `-f json`/`compact`/`sarif` (see `OutputWriter::progress`),
+                    // so without this push a wholly failed sub-analysis was
+                    // indistinguishable in JSON from one that ran and found
+                    // nothing. Pushing into `warnings` (already emitted
+                    // unconditionally, unlike `sub_results`) surfaces it in
+                    // every format, and `format_todo_text` below reads the
+                    // same field for text mode.
+                    let message = analysis_failure_warning(*analysis, &e);
+                    warnings.push(message.clone());
+                    writer.progress(&format!("Warning: {message}"));
                 }
             }
         }
@@ -304,6 +311,59 @@ impl TodoArgs {
         }
 
         Ok(())
+    }
+}
+
+/// Format the message recorded for a sub-analysis that returned `Err`.
+///
+/// TRDD-RX6JWVVZ: extracted so the exact wording pushed into `TodoReport.warnings`
+/// (machine-readable, every format) and the wording sent to `writer.progress`
+/// (human-readable, text mode only) can never drift apart — before this both were
+/// built by separate `format!` calls at the call site.
+fn analysis_failure_warning(analysis: SubAnalysis, err: &RemainingError) -> String {
+    format!("{} analysis failed: {}", analysis.category(), err)
+}
+
+#[cfg(test)]
+mod analysis_failure_warning_tests {
+    use super::*;
+
+    /// Confirms the Err-arm message names the failed analysis and carries the
+    /// real error text, using a genuine `RemainingError` (the crate's own error
+    /// type) — never a mock.
+    ///
+    /// TRDD-RX6JWVVZ: this is the closest a test gets to a "real failing
+    /// analysis" reproducer. See the card's STATE block: every one of the 5
+    /// sub-analyses (`run_dead_analysis`/`run_complexity_analysis`/
+    /// `run_cohesion_analysis`/`run_equivalence_analysis`/`run_similar_analysis`)
+    /// was read end-to-end and each swallows its own per-file errors before
+    /// returning — none can return `Err` from `run_sub_analysis` for any real
+    /// filesystem input today, so the `Err` arm this function feeds is
+    /// currently unreachable through the CLI. This test instead pins the exact
+    /// code that arm runs, fed a real `RemainingError`, so the day one of those
+    /// analyses stops swallowing its own errors, the message is already
+    /// correct and already covered.
+    #[test]
+    fn names_the_failed_analysis_and_keeps_the_real_error_text() {
+        let err = RemainingError::analysis_error("disk read failed");
+        let msg = analysis_failure_warning(SubAnalysis::Complexity, &err);
+        assert_eq!(
+            msg,
+            "complexity analysis failed: analysis error: disk read failed"
+        );
+    }
+
+    /// Red-proof control: a DIFFERENT analysis must produce a DIFFERENT
+    /// category name, so a hardcoded string literal in `analysis_failure_warning`
+    /// could not pass both this and the test above.
+    #[test]
+    fn category_name_tracks_which_analysis_failed() {
+        let err = RemainingError::analysis_error("boom");
+        let dead_msg = analysis_failure_warning(SubAnalysis::Dead, &err);
+        let cohesion_msg = analysis_failure_warning(SubAnalysis::Cohesion, &err);
+        assert_ne!(dead_msg, cohesion_msg);
+        assert!(dead_msg.starts_with("dead"));
+        assert!(cohesion_msg.starts_with("cohesion"));
     }
 }
 
@@ -699,6 +759,25 @@ pub fn format_todo_text(report: &TodoReport, truncated: bool, total_items: usize
         report.summary.equivalence_groups
     ));
     lines.push(String::new());
+
+    // TRDD-OGK2ROKJ: `dead`/`calls` name skipped files in their stdout
+    // report (`dead.rs:566-575`, `calls.rs:352-359`); `todo` only did it on
+    // stderr (`:475` below), so a report redirected to a file or a pager
+    // said nothing about being partial. `report.warnings` already names
+    // each file (TRDD-K3XQ7M2V's lift), so the count is its length — no
+    // separate skipped-file counter exists on `TodoReport`. Following the
+    // siblings' wording; "items" is the todo-specific analogue of their
+    // "results"/"edges".
+    if !report.warnings.is_empty() {
+        lines.push(format!(
+            "Files skipped: {} (items exclude them)",
+            report.warnings.len()
+        ));
+        for warning in &report.warnings {
+            lines.push(format!("  {}", warning));
+        }
+        lines.push(String::new());
+    }
 
     if report.items.is_empty() {
         lines.push("No improvement items found.".to_string());
