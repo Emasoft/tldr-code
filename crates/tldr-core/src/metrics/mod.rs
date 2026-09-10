@@ -61,9 +61,10 @@ pub use types::{
 };
 
 // Re-export file utilities
+// TRDD-B3XN8VP1: `is_binary_file` (bool, silent) was deleted from
+// file_utils — use `crate::encoding::is_binary_file` (Result) instead.
 pub use file_utils::{
-    check_file_size, contains_path_traversal, has_binary_extension, is_binary_file,
-    is_path_within_project, is_symlink, resolve_symlink_safely, should_exclude, should_skip_path,
-    skip_directories, walk_source_files, WalkOptions, DEFAULT_MAX_FILE_SIZE,
-    DEFAULT_MAX_FILE_SIZE_MB,
+    check_file_size, contains_path_traversal, has_binary_extension, is_path_within_project,
+    is_symlink, resolve_symlink_safely, should_exclude, should_skip_path, skip_directories,
+    walk_source_files, WalkOptions, DEFAULT_MAX_FILE_SIZE, DEFAULT_MAX_FILE_SIZE_MB,
 };

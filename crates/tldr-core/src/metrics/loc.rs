@@ -31,9 +31,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::encoding::is_binary_file;
 use crate::metrics::file_utils::{
-    check_file_size, has_binary_extension, is_binary_file, should_exclude,
-    should_skip_path_with_lang,
+    check_file_size, has_binary_extension, should_exclude, should_skip_path_with_lang,
     DEFAULT_MAX_FILE_SIZE_MB,
 };
 use crate::metrics::types::LocInfo;
@@ -559,7 +559,11 @@ pub fn analyze_file(
     check_file_size(path, max_file_size_mb)?;
 
     // Check for binary
-    if has_binary_extension(path) || is_binary_file(path) {
+    // TRDD-B3XN8VP1: the deleted bool helper swallowed open/read errors as
+    // "not binary"; this function's contract already lists I/O errors as
+    // its errors, so an unreadable file propagates instead of being
+    // classified.
+    if has_binary_extension(path) || is_binary_file(path)? {
         return Err(TldrError::UnsupportedLanguage(format!(
             "Binary file: {}",
             path.display()

@@ -35,9 +35,10 @@ use tldr_core::metrics::loc::{analyze_file, LocSummary};
 use tldr_core::metrics::{analyze_loc, count_lines, LocOptions};
 
 // File utils tests
+use tldr_core::encoding::is_binary_file;
 use tldr_core::metrics::{
-    check_file_size, contains_path_traversal, has_binary_extension, is_binary_file,
-    is_path_within_project, is_symlink, resolve_symlink_safely, should_skip_path, skip_directories,
+    check_file_size, contains_path_traversal, has_binary_extension, is_path_within_project,
+    is_symlink, resolve_symlink_safely, should_skip_path, skip_directories,
     DEFAULT_MAX_FILE_SIZE_MB,
 };
 
@@ -1298,7 +1299,7 @@ fn test_is_binary_file_by_content() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(&[0x00, 0x01, 0x02, 0x00]).unwrap();
 
-    assert!(is_binary_file(file.path()));
+    assert!(is_binary_file(file.path()).unwrap());
 }
 
 #[test]
@@ -1306,7 +1307,7 @@ fn test_is_binary_file_text_content() {
     let mut file = NamedTempFile::new().unwrap();
     write!(file, "def foo():\n    pass\n").unwrap();
 
-    assert!(!is_binary_file(file.path()));
+    assert!(!is_binary_file(file.path()).unwrap());
 }
 
 #[test]

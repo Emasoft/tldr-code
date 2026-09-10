@@ -13,7 +13,6 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::types::Language;
@@ -278,51 +277,11 @@ pub fn get_file_size(path: &Path) -> Result<usize, TldrError> {
 // Binary File Detection
 // =============================================================================
 
-/// Check if a file is binary by examining its content.
-///
-/// This function reads the first 8KB of the file and checks for null bytes.
-/// Also checks file extension against known binary extensions.
-///
-/// # Arguments
-///
-/// * `path` - Path to the file
-///
-/// # Returns
-///
-/// * `true` - File is binary
-/// * `false` - File appears to be text
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use tldr_core::metrics::file_utils::is_binary_file;
-///
-/// if is_binary_file(Path::new("image.png")) {
-///     println!("Skipping binary file");
-/// }
-/// ```
-pub fn is_binary_file(path: &Path) -> bool {
-    // First check extension
-    if let Some(ext) = path.extension() {
-        if let Some(ext_str) = ext.to_str() {
-            if BINARY_EXTENSIONS.contains(&ext_str.to_lowercase().as_str()) {
-                return true;
-            }
-        }
-    }
-
-    // Then check content (first 8KB for null bytes)
-    match fs::File::open(path) {
-        Ok(mut file) => {
-            let mut buffer = [0u8; 8192];
-            match file.read(&mut buffer) {
-                Ok(bytes_read) => buffer[..bytes_read].contains(&0),
-                Err(_) => false, // Treat read errors as non-binary
-            }
-        }
-        Err(_) => false, // Treat open errors as non-binary
-    }
-}
+// TRDD-B3XN8VP1: the bool-returning `is_binary_file` that used to live here
+// was deleted — it duplicated `crate::encoding::is_binary_file` (which
+// propagates I/O errors instead of silently swallowing them as `false`).
+// Content-based binary detection now lives solely in `encoding.rs`; this
+// module keeps only the extension-based pre-check below.
 
 /// Check if a file has a binary extension (without reading content).
 pub fn has_binary_extension(path: &Path) -> bool {
@@ -609,25 +568,11 @@ mod tests {
         assert_eq!(size, 11);
     }
 
-    // -------------------------------------------------------------------------
-    // Binary File Tests
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn test_is_binary_file_by_content() {
-        let mut file = NamedTempFile::new().unwrap();
-        file.write_all(&[0x00, 0x01, 0x02, 0x00]).unwrap();
-
-        assert!(is_binary_file(file.path()));
-    }
-
-    #[test]
-    fn test_is_binary_file_text_content() {
-        let mut file = NamedTempFile::new().unwrap();
-        write!(file, "def foo():\n    pass\n").unwrap();
-
-        assert!(!is_binary_file(file.path()));
-    }
+    // TRDD-B3XN8VP1: the two content-based tests that lived here were
+    // deleted with the bool `is_binary_file` they exercised. The same cases
+    // already exist against `crate::encoding::is_binary_file` in
+    // tests/metrics_tests.rs (`test_is_binary_file_by_content`,
+    // `test_is_binary_file_text_content`) and tests/encoding_base_tests.rs.
 
     #[test]
     fn test_has_binary_extension() {
