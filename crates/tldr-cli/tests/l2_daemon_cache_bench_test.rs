@@ -214,14 +214,29 @@ impl TimingStats {
         }
     }
 
+    /// 99th percentile latency via the nearest-rank method: `rank = ceil(0.99 * n)`,
+    /// 1-based, converted to a 0-based index.
+    ///
+    /// Panics on an empty sample set instead of returning `0.0` — a silent
+    /// `0.0` would satisfy every `p99 < threshold` assertion in this file
+    /// even when the benchmark loop collected nothing (TRDD-A9CD09BA box 2).
+    ///
+    /// For n < 100, `ceil(0.99n) == n` always (`0.01n < 1`), so the nearest
+    /// rank IS the maximum — that is a property of percentiles, not a bug in
+    /// this function: fewer than 100 samples cannot distinguish a 99th
+    /// percentile from the max. Only at n >= 100 does the rank fall strictly
+    /// below n (TRDD-A9CD09BA box 3 boundary: n=100 -> idx 98, not the last
+    /// index 99; n=101 -> idx 99, not the last index 100).
     fn p99_us(&self) -> f64 {
-        if self.samples.is_empty() {
-            return 0.0;
-        }
+        assert!(
+            !self.samples.is_empty(),
+            "p99_us() called with zero samples — nothing was measured"
+        );
         let mut sorted = self.samples.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let idx = ((sorted.len() as f64) * 0.99) as usize;
-        sorted[idx.min(sorted.len() - 1)]
+        let n = sorted.len();
+        let rank = ((n as f64) * 0.99).ceil() as usize;
+        sorted[rank.saturating_sub(1)]
     }
 
     fn max_us(&self) -> f64 {
@@ -231,6 +246,55 @@ impl TimingStats {
     fn count(&self) -> usize {
         self.samples.len()
     }
+}
+
+// TRDD-A9CD09BA box 2 + box 3: p99_us() must panic on empty samples, and must
+// compute a real nearest-rank percentile (not the max) once n >= 100.
+#[test]
+#[should_panic(expected = "zero samples")]
+fn p99_us_panics_on_empty_samples() {
+    let stats = TimingStats::new();
+    stats.p99_us();
+}
+
+#[test]
+fn p99_us_at_n_100_is_not_the_planted_outlier() {
+    let mut stats = TimingStats::new();
+    for _ in 0..99 {
+        stats.record(1.0);
+    }
+    stats.record(1_000_000.0); // planted outlier == the maximum
+    assert_eq!(stats.count(), 100);
+    assert_ne!(
+        stats.p99_us(),
+        1_000_000.0,
+        "n=100 p99 must not collapse to the max — that is exactly what the \
+         truncating `((n as f64) * 0.99) as usize` implementation did"
+    );
+}
+
+#[test]
+fn p99_us_at_n_101_is_not_the_planted_outlier() {
+    let mut stats = TimingStats::new();
+    for _ in 0..100 {
+        stats.record(1.0);
+    }
+    stats.record(1_000_000.0);
+    assert_eq!(stats.count(), 101);
+    assert_ne!(stats.p99_us(), 1_000_000.0, "n=101 p99 must not be the max");
+}
+
+#[test]
+fn p99_us_pins_nearest_rank_exact_value() {
+    // The two tests above only prove "!= max" — sorted[n-2] or even the median
+    // would also satisfy that. Pin the exact nearest-rank value so a future
+    // change to a different-but-still-non-max index can't sneak past.
+    let mut stats = TimingStats::new();
+    for v in 1..=100 {
+        stats.record(v as f64);
+    }
+    // n=100, rank = ceil(0.99*100) = 99, idx = 98 -> sorted[98] == 99.0.
+    assert_eq!(stats.p99_us(), 99.0);
 }
 
 impl std::fmt::Display for TimingStats {
@@ -746,7 +810,11 @@ fn bench_concurrent_access_latency() {
     // Spawn 4 reader threads and 1 writer thread concurrently
     let num_readers = 4;
     let reads_per_thread = 250;
-    let writes_per_thread = 50;
+    // >= 100 so p99_us()'s nearest-rank index (ceil(0.99n)-1) falls strictly
+    // below n-1 and discards the tail instead of returning the max — see
+    // TRDD-Y3J6F7ZV box 2 (n=50 made p99 == max, unfixable at the statistic
+    // level: ceil(0.99n) == n for every n < 100).
+    let writes_per_thread = 200;
 
     let mut handles = Vec::new();
 
