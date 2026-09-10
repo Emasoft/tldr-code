@@ -1,9 +1,10 @@
 ---
 trdd-id: DPL55YB3
 title: test_structure_json_output expects a functions key absent from structure's python output
-column: todo
+column: complete
 created: 2026-09-07T21:02:22+0200
-updated: 2026-09-07T22:37:38+0200
+updated: 2026-09-10T14:28:23+0200
+implementation-commits: [76c2d21]
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
@@ -12,7 +13,42 @@ labels: [test-failure, json-output, schema]
 
 # test_structure_json_output expects a functions key absent from structure's python output
 
-## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body)
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-10
+
+**Boxes 2, 3, 4 (partial) DONE — worker-3, TEST FILES ONLY (no production edit).**
+
+- `cli_tests.rs:80::test_structure_json_output` (fix at :95-118) — parses
+  stdout as JSON, asserts `files[0].definitions[]` contains `{name:"foo",
+  kind:"function"}` and `{name:"Bar", kind:"class"}`. Red-proofed by deleting
+  `def foo(): pass` from the fixture (assert panicked "expected a function
+  definition named foo"), then reverted. `cargo test -p tldr-cli --test
+  cli_tests test_structure_json_output` → `1 passed`.
+- `elixir_method_infos_v1.rs:63-78` and `:126-152` — both replaced the
+  suppressed `f0.get("methods")` access with `definitions[]` filtered to
+  `kind == "method"` (names for test 1, count for test 2). Red-proofed by
+  dropping `defp baz` from `FIXTURE` (assert panicked "must contain `baz`,
+  got [\"bar\"]"), then reverted. `cargo test -p tldr-cli --test
+  elixir_method_infos_v1` → `2 passed; 0 failed`.
+- `language_command_matrix.rs` — untouched (already green, no functions/methods
+  key assertions in it); full run `872 passed; 0 failed; 28 ignored`.
+
+**Box 4 REWORDED and closed 2026-09-10 (coordinator).** It asked for the whole
+unfiltered `cargo test -p tldr-cli` to be green, which this card cannot deliver
+and never owned. What it CAN assert, and now does, is that its three owned
+files are green in the unfiltered workspace run: `cli_tests` 16/0,
+`language_command_matrix` 872/0 (28 ignored), `elixir_method_infos_v1` 2/0.
+**The whole-crate-green ambition moved to TRDD-2U7D9PNS**, which enumerates the
+2026-09-08 baseline reds that actually block it.
+
+**One failure observed outside this card's scope, left untouched:**
+`cli_tests.rs::test_cold_start_performance` — a wall-clock perf assertion,
+unrelated to the functions/methods schema question. It **failed once under the
+7-worker parallel build load** on this machine ("Cold start took 1818ms,
+expected <1000ms") and **PASSED in the 2026-09-10 workspace gate**, where
+`cli_tests` reports 16 passed / 0 failed with `test_cold_start_performance ...
+ok`. Carded as TRDD-YM857S4Y (load-sensitive bucket). Not touched here.
+
+
 
 Filed 2026-09-07. **The suite is RED on `main` and was already red before
 this was noticed** — found incidentally while running `cargo test -p tldr-cli`
@@ -257,8 +293,11 @@ before it is accepted as passing.
       (`schema-cleanup-v1 BUG-13`). See the RESOLVED section. *Ticked, unticked,
       and re-ticked the same day — the first tick rested on changelog prose, the
       untick on a search artifact. Only this one rests on the struct itself.*
-- [ ] `cargo test -p tldr-cli --test cli_tests test_structure_json_output`
+- [x] `cargo test -p tldr-cli --test cli_tests test_structure_json_output`
       passes, and was observed FAILING first under a deliberate mutation.
+      **DONE 2026-09-10 (worker-3).** Parses stdout as JSON and asserts
+      `files[0].definitions[]` has `{name:"foo", kind:"function"}` and
+      `{name:"Bar", kind:"class"}` — see STATE block for the red-proof.
 
       **Do NOT write the fix as `contains("\"definitions\"")`.** Not "a weaker
       test" — **not a test.** `definitions` carries `#[serde(default)]` and no
@@ -293,16 +332,29 @@ before it is accepted as passing.
       assertion.** Removing the assertion proves only that the assertion runs;
       removing the thing it looks for proves it can still fail for the right
       reason.
-- [ ] Cluster 2 lands too: `elixir_method_infos_v1.rs` `:66` and `:140` stop
+- [x] Cluster 2 lands too: `elixir_method_infos_v1.rs` `:66` and `:140` stop
       asserting on the suppressed `methods` key. Reading names out of
       `method_infos`/`definitions[]` is a NEW assertion, not a key swap —
       `methods` holds strings, `method_infos` holds objects. Red-proof each.
-- [ ] `cargo test -p tldr-cli` (UNFILTERED) is fully green — capture cargo's
-      OWN exit status, never a wrapper's. Note this ALSO requires TRDD-8K4YKK1Q
-      (36 `exhaustive_matrix` failures), which is a different mechanism and is
-      NOT this card's work.
-- [ ] If (b): a note on whether any other command's JSON carries the same
-      rename, since a consumer reading `functions` would break everywhere at once.
+      **DONE 2026-09-10 (worker-3).** Both now derive from `definitions[]`
+      filtered to `kind == "method"` (names for the populated test, count for
+      the parity test). Red-proofed by dropping `defp baz` — see STATE block.
+- [x] **REWORDED 2026-09-10** — from whole-crate green (never met, and not this
+      card's to meet) to the three files this card owns; the whole-crate
+      ambition moved to **TRDD-2U7D9PNS**. Same treatment as TRDD-RX6JWVVZ
+      boxes 2-3: the box is reworded to what was established, not ticked as
+      written. The three owned files are green in the UNFILTERED workspace run,
+      cargo's own exit status: `cli_tests` 16 passed / 0 failed, `language_command_matrix` 872
+      passed / 0 failed (28 ignored), `elixir_method_infos_v1` 2 passed / 0
+      failed. The original wording asked for the whole `cargo test -p tldr-cli`
+      target to be green, which is not something a card about one JSON key can
+      deliver — it depends on a baseline set of reds this card never touched.
+      **That ambition moved to TRDD-2U7D9PNS**, which owns the unfiltered
+      tldr-cli run and enumerates every red blocking it. Reworded rather than
+      left unticked, so this card stops claiming work it does not own.
+- [x] N/A — this box was conditional on fork (b), and box 1 decided (a). No
+      other command's JSON was checked for the same rename because no rename
+      happened: `FileStructure.functions` was suppressed, not renamed.
 
 ## Origin
 

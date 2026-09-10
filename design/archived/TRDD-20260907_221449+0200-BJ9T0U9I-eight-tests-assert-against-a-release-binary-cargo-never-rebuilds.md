@@ -1,10 +1,11 @@
 ---
 trdd-id: BJ9T0U9I
 title: Eight tests assert against a release binary the test runner never rebuilds
-column: todo
+column: complete
 created: 2026-09-07T22:14:49+0200
-updated: 2026-09-07T22:30:42+0200
-current-owner: session-claude
+updated: 2026-09-10T14:28:23+0200
+implementation-commits: [e8061bf]
+current-owner: worker-5
 task-type: infra
 min-approval-requirement: none
 labels: [test-infrastructure, silent-failure, stale-artifact]
@@ -14,7 +15,75 @@ labels: [test-infrastructure, silent-failure, stale-artifact]
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body)
 
-Filed 2026-09-07. **Not started.**
+worker-5, 2026-09-10. All 4 acceptance boxes done, evidence below.
+
+**Root cause (box 1):** copy-paste boilerplate. `api_check_and_patterns_accuracy_v1.rs`
+was the first of the family and its `run_tldr` helper's panic message named
+`--features semantic` because a SIBLING test in the same milestone genuinely used
+`tldr semantic`. Every later file in the eight (`verification_and_metrics_completeness_v1`,
+`pdg_bounds_and_stdout_hygiene_v1`, `hygiene_and_crash_fixes_v1`, `docs_and_elixir_dfg_v1`)
+copy-pasted the same helper + panic string verbatim, even when the file never calls
+`tldr semantic` at all (confirmed by grep: only `pdg_bounds_and_stdout_hygiene_v1` and
+`hygiene_and_crash_fixes_v1` actually gate tests behind `#[cfg(feature = "semantic")]`).
+`context_relative_and_ts_colon_v1.rs` had ALREADY been fixed (pre-existing, before this
+card) to use `assert_cmd::cargo::cargo_bin!("tldr")` — left untouched.
+
+**Fix applied (box 2):**
+- 5 tldr-cli files (`verification_and_metrics_completeness_v1`,
+  `pdg_bounds_and_stdout_hygiene_v1`, `hygiene_and_crash_fixes_v1`,
+  `docs_and_elixir_dfg_v1`, `api_check_and_patterns_accuracy_v1`): `tldr_bin()` now
+  returns `env!("CARGO_BIN_EXE_tldr")`. Cargo builds this as a test dependency for the
+  SAME test binary/profile being run — cannot be stale, no rebuild step to forget. Also
+  dropped the manual Windows `.exe` suffix logic (cargo resolves it) and the now-dead
+  `bin.exists()` assert. For the two `#[cfg(feature = "semantic")]`-gated files, cargo's
+  normal feature unification means `cargo test --features semantic` builds a matching bin
+  automatically — no separate feature declaration needed.
+- 2 bench files (`bench_remaining_multilang`, `bench_quality_multilang`): `CARGO_BIN_EXE_tldr`
+  is not available inside tldr-core — it is a lib crate with no `tldr` bin target, and
+  `cargo test -p tldr-core` never builds tldr-cli's binary. A first pass gated both files
+  behind a required `TLDR_BIN` env var; **that was REJECTED on review**, because the two
+  files hold 199 non-ignored, non-feature-gated tests, so a plain `cargo test --workspace`
+  would have panicked in all 199 whenever the var was unset. Landed instead: both files were
+  `git mv`-ed into the crate that owns the binary —
+  `crates/tldr-cli/tests/bench_remaining_multilang.rs` and
+  `crates/tldr-cli/tests/bench_quality_multilang.rs` — and `tldr_binary()` is now
+  `PathBuf::from(assert_cmd::cargo::cargo_bin!("tldr"))` in both. `fixtures_dir()` in
+  `bench_quality_multilang` is redirected to `../tldr-core/tests/fixtures/extractor` (the
+  fixtures stayed in tldr-core; `CARGO_MANIFEST_DIR` is now `crates/tldr-cli`), with a
+  why-comment. Both files' `//! cargo test …` doc lines name the `-p tldr-cli` target.
+  `TLDR_BIN` has zero occurrences anywhere in `crates/`.
+
+**Verification (boxes 2/3):** `grep -rn 'target/release'` over both test dirs now hits
+only comments/doc-strings, no live path construction. All 6 tldr-cli test files green
+(`cargo test -p tldr-cli --test <each>`). Both moved bench files green under their new
+owner: `cargo test -p tldr-cli --test bench_quality_multilang` 132 passed / 0 failed (310.28 s)
+and `--test bench_remaining_multilang` 67 passed / 0 failed (0.71 s), exit 0
+(`verify-bench-move.txt`, counts read off that file directly).
+`cargo test --workspace` now runs those 199 benches instead of skipping them, and
+`-p tldr-core --test bench_remaining_multilang` / `--test bench_quality_multilang` no longer
+exist as targets. Mutation proof done on `api_check_and_patterns_accuracy_v1`: flipped
+`ApiLanguage::JavaScript => &["JS"]` to a bogus prefix in
+`crates/tldr-cli/src/commands/remaining/api_check.rs`, ran `cargo test` with **no** manual
+`cargo build --release` step, and `test_api_check_skips_js_rules_on_cpp_files` failed
+(`expected at least one JS rule to fire on .js file (got [])`) — proving `CARGO_BIN_EXE_tldr`
+auto-rebuilds and a mutation is caught. Reverted immediately; `git diff` on the mutated file
+is clean.
+
+`pdg_bounds_and_stdout_hygiene_v1.rs` was diffed separately and confirmed by
+the coordinator to be **helper-only**: the sole change is `tldr_bin()` returning
+`env!("CARGO_BIN_EXE_tldr")` and the removal of the now-dead assert on the
+release path's existence. No test body, no assertion, and no expected value in
+that file was touched by this card — worth stating because that target also
+carries PDG node/edge-count assertions owned by another card, and a reader
+seeing both cards touch one file should not have to guess which changed what.
+
+**Box 4:** read `.github/workflows/release.yml` (the ONLY workflow file in the repo) —
+it is a `cargo-dist` autogenerated release/artifact-build workflow. It contains no
+`cargo test` invocation anywhere. **CI does not run these tests at all**, so the hole was
+never CI-visible; the severity was entirely local-dev (matches the card's "if so, hole is
+local-only" branch, now confirmed rather than guessed).
+
+Filed 2026-09-07.
 
 Found while measuring TRDD-K3XQ7M2V's acceptance, first recorded there as a
 scope footnote on one acceptance box. **That framing was too small and this card
@@ -100,13 +169,28 @@ before rewriting all eight.
 
 ## Acceptance
 
-- [ ] The reason these eight use a release binary is established and recorded
+- [x] The reason these eight use a release binary is established and recorded
       here — feature-gated behaviour, runtime, or historical accident.
-- [ ] A mechanism is in place that makes a stale binary impossible, or —
+      **Historical accident**: copy-paste of the first file's helper + panic
+      string; only 2 of 8 files actually gate anything behind the semantic
+      feature. See STATE block.
+- [x] A mechanism is in place that makes a stale binary impossible, or —
       if that is genuinely not possible — the tests FAIL LOUDLY on a stale
       binary rather than passing. Silent-and-green is the defect.
-- [ ] Verified by mutation: change a string the binary prints, run the suite
+      All 8 files now resolve the binary through cargo, so a stale binary is
+      impossible by construction and no env var has to be remembered: the 5
+      rewritten tldr-cli `*_v1.rs` files use `env!("CARGO_BIN_EXE_tldr")`,
+      `context_relative_and_ts_colon_v1.rs` was already on
+      `assert_cmd::cargo::cargo_bin!("tldr")`, and the 2 bench files were moved
+      into `crates/tldr-cli/tests/` and put on `cargo_bin!("tldr")` as well.
+      The interim `TLDR_BIN` gate was rejected before landing (it would have
+      panicked 199 tests under `cargo test --workspace`); `TLDR_BIN` has zero
+      occurrences in the tree.
+- [x] Verified by mutation: change a string the binary prints, run the suite
       WITHOUT a manual release build, and observe the relevant test FAIL.
       A test that still passes after that mutation has not been fixed.
-- [ ] Whether CI builds the release binary first is read from the workflow
+      Done on `api_check_and_patterns_accuracy_v1` — see STATE block.
+- [x] Whether CI builds the release binary first is read from the workflow
       and recorded here, so the severity claim rests on the file, not a guess.
+      `.github/workflows/release.yml` (only workflow) has no `cargo test` at
+      all — CI never ran these tests, hole was local-dev only.

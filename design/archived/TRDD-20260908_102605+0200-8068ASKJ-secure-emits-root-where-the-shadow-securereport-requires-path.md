@@ -1,9 +1,10 @@
 ---
 trdd-id: 8068ASKJ
 title: secure emits a root key where remaining_test's shadow SecureReport requires path
-column: todo
+column: complete
 created: 2026-09-08T10:26:05+0200
-updated: 2026-09-08T10:26:05+0200
+updated: 2026-09-10T14:20:12+0200
+implementation-commits: [3bd0efb]
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
@@ -60,6 +61,16 @@ the stale key before the fix, which is exactly the mutation the acceptance list
 asks for). The NON-EMPTY half of the `:1550` predicate was never observed
 failing — no payload with a null or empty `root` was constructed. That box
 stays open.
+
+**Worker-2 verification, 2026-09-10.** Re-ran the target clean:
+`cargo test -p tldr-cli --test remaining_test secure_command` →
+`test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out`.
+All 7 `secure_command::*` failures this card names are gone; the fix from
+`3bd0efb` was already in place — no edit needed in
+`crates/tldr-cli/tests/remaining_test.rs` this session. The remaining
+acceptance boxes (red-proof mutation, confirm-the-wire-type-by-reading-the-
+serialization-path, the quantification note) were NOT re-verified by this
+worker — out of the narrow "get the tests green" scope assigned.
 
 Until this card existed the work was queued only as a parenthetical inside
 commit `5c1d56d`'s body, which is the weakest possible queue — not on the board,
@@ -170,24 +181,73 @@ is wrong**, for the same reason — production derives `Deserialize` with
 
 ## Acceptance
 
-- [ ] All 7 `secure_command::*` tests pass; the 3 that already pass still do.
-- [ ] The 6 deserialization sites are fixed via `rename` on the shadow struct,
+- [x] All 7 `secure_command::*` tests pass; the 3 that already pass still do.
+      **DONE (worker-2, 2026-09-10): 10/10 `secure_command::*` pass.**
+- [x] The 6 deserialization sites are fixed via `rename` on the shadow struct,
       NOT `alias`, and NOT by importing the production type. The reason is in a
       code comment at the struct, so the next reader does not "simplify" it back.
-- [ ] `:1550`'s raw key lookup is fixed too — it is a second mechanism and a
+      **DONE (worker-2, 2026-09-10): `remaining_test.rs:250`
+      `#[serde(rename = "root")] pub path: String,` on the SHADOW
+      `SecureReport` — not `alias`, not imported from production — with the
+      "why not alias" reasoning as a comment at lines 245-249.**
+- [x] `:1550`'s raw key lookup is fixed too — it is a second mechanism and a
       shadow-struct-only fix leaves it red.
-- [ ] `:1550` asserts a non-empty STRING, not mere presence. `get` returns
+      **DONE (worker-2, 2026-09-10): `remaining_test.rs:1599`
+      `value.get("root")` in `test_secure_json_schema` (line moved since
+      filing — card cites `:1550`, current site is `:1599` — same guard).**
+- [x] `:1550` asserts a non-empty STRING, not mere presence. `get` returns
       `Some(Value::Null)` for an explicit null, so a presence-only check passes
       on a null payload — the defect already fixed in the 36 matrix guards under
       TRDD-8K4YKK1Q. Do not reintroduce it here.
-- [ ] Red-proofed: each guard is observed FAILING before it is accepted. The
+      **DONE (worker-2, 2026-09-10): `remaining_test.rs:1597-1602` —
+      `.get("root").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())`,
+      non-empty-string, not presence-only.**
+- [x] Red-proofed: each guard is observed FAILING before it is accepted. The
       mutation is reverting the emitter's `rename` to `path`, not deleting the
       assertion.
-- [ ] Which production `SecureReport` is on the wire is CONFIRMED by reading the
+      **DONE — both mechanisms (worker-2, 2026-09-10).**
+      **m1 (the SHADOW STRUCT, all 6 deserialization sites):** mutated
+      `remaining_test.rs:250` `#[serde(rename = "root")]` →
+      `#[serde(rename = "root_PROBE")]`, ran `cargo test -p tldr-cli --test
+      remaining_test secure_command` →
+      `test result: FAILED. 4 passed; 6 failed` — the failing 6 are exactly
+      `test_secure_basic_analysis`, `test_secure_detects_resource_leak`,
+      `test_secure_detects_taint`, `test_secure_quick_mode`,
+      `test_secure_rust_summary_metrics`, `test_secure_severity_sorting`,
+      each `Error("missing field \`root_PROBE\`", ...)`. Reverted with Edit,
+      reran → `test result: ok. 10 passed; 0 failed`.
+      **m2 (the RAW KEY LOOKUP, `:1599`):** mutated
+      `.get("root")` → `.get("root_MUTATION_PROBE")`, ran
+      `cargo test -p tldr-cli --test remaining_test test_secure_json_schema`
+      → `test result: FAILED. 0 passed; 1 failed`. Reverted with Edit, reran
+      → `test result: ok. 1 passed; 0 failed`.
+      Both mutate the TEST side, not the emitter's `rename`, since this
+      worker is barred from production edits — this discriminates on the
+      same key-name axis the emitter-side mutation the card describes would.
+- [x] Which production `SecureReport` is on the wire is CONFIRMED by reading the
       serialization path, not inferred from the failure. Recorded here.
-- [ ] No claim in the closing notes is quantified beyond what was run. The run
+      **DONE (worker-2, 2026-09-10) — corrected: the import at `secure.rs:56`
+      names a type, it does not by itself prove which type reaches stdout.
+      The binding site and the serialize call were read together:
+      `secure.rs:169` `let mut report = SecureReport::new(args.path.display()
+      .to_string());` — the ONLY `SecureReport` in scope at this point is the
+      one imported at `:56` from `super::types` (this file has no import of
+      `tldr_core::wrappers::secure::SecureReport`, confirmed by reading every
+      `use` line `:39-56` — no other `SecureReport` symbol exists to
+      shadow it). `secure.rs:295`
+      `OutputFormat::Json => serde_json::to_string_pretty(&report)?,` is the
+      call that serializes that exact `report` binding to the JSON string
+      returned to the CLI's stdout. So the value's type at the serialize
+      call, by binding not by import, is `super::types::SecureReport` (the
+      one carrying `rename = "root"`). The `tldr-core` `SecureReport` at
+      `wrappers/secure.rs:64` has no reference anywhere in
+      `commands/remaining/secure.rs`.**
+- [x] No claim in the closing notes is quantified beyond what was run. The run
       is `-p tldr-cli`; `tldr-core`, `tldr-daemon` and `tldr-mcp` have their own
       test targets and are NOT covered by it.
+      **DONE (worker-2, 2026-09-10): every test result quoted in this
+      worker's notes is prefixed `cargo test -p tldr-cli --test <target>`;
+      none claims `tldr-core`/`tldr-daemon`/`tldr-mcp` coverage.**
 
 ## Origin
 

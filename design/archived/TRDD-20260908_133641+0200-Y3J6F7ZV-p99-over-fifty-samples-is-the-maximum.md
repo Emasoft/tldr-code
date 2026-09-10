@@ -1,9 +1,10 @@
 ---
 trdd-id: Y3J6F7ZV
 title: p99_us returns the maximum for any sample count at or below 100 so the writer assertion is a max bound
-column: todo
+column: complete
 created: 2026-09-08T13:36:41+0200
-updated: 2026-09-08T13:36:41+0200
+updated: 2026-09-10T14:28:23+0200
+implementation-commits: [ddb3cc1]
 current-owner: main-session
 task-type: bugfix
 scope: project
@@ -11,9 +12,63 @@ min-approval-requirement: none
 labels: [test-defect, statistics, benchmarks]
 ---
 
-## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-08
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-10 09:28
 
-Filed from a measurement, not a report. Nothing fixed yet.
+**Repair decided and landed jointly with TRDD-A9CD09BA** (same helper, same file, worked in
+one pass to avoid two divergent fixes to `p99_us()`): nearest-rank method
+(`rank = ceil(0.99n)`, `idx = rank-1`) replaces the truncating `(n as f64 * 0.99) as usize`,
+at `crates/tldr-cli/tests/l2_daemon_cache_bench_test.rs:217-238`. Box 1's "computes a
+defensible percentile for small n" was chosen over "change callers" — box 1 also required
+stating why both are not equivalent: changing callers (e.g. dropping the assertion, or
+switching to `max_us() < LIMIT` with a raised limit) would have hidden the statistical
+defect behind a renamed metric instead of fixing the metric; fixing the metric fixes every
+call site (5, per A9CD09BA box 1) with one change and keeps the name honest.
+
+**Box 2, honestly not fully satisfied for THIS call site — recorded, not hidden:** the
+writer assertion (`:772-810`, n=50) still reduces to a single-worst-sample bound after the
+fix, and this is provably unavoidable, not an implementation gap: `ceil(0.99n) == n` for
+every n < 100 (`0.01n < 1`), so the true 99th percentile of 50 samples IS the maximum by
+definition — no percentile algorithm produces otherwise at that n. Verified against the
+fixed code: `bench_concurrent_access_latency` still failed once during verification
+(p99==max, 20389.9us, matching this card's own 12277.2us observation and prediction), passed
+clean on 5 immediate re-runs (isolated single-target). **This card does not retune the
+threshold or change the writer's sample count** — box 1 is satisfied by fixing the
+*statistic*; the *threshold-vs-n=50-reality* mismatch this leaves behind is a distinct
+decision this card explicitly says both options are "legitimate and not equivalent" for, and
+retuning was out of scope for the A9CD09BA card this was co-landed with (its box 4 forbids
+threshold adjustment). Flagging for a human/MANAGER call: either accept writer-p99-as-max at
+n=50 as the intended (if noisy) bound, or raise `writes_per_thread` well past 100 so a real
+percentile applies — a code change this worker's write scope (test file + these two cards
+only) does not authorize deciding unilaterally beyond what was asked.
+
+Box 3 (proof the writer assertion no longer reduces to a single-worst-sample bound) is
+**NOT satisfied and cannot be, at n=50, by a statistics-only fix** — see above; the
+`p99_us_at_n_100_is_not_the_planted_outlier` / `_n_101_` tests added under A9CD09BA prove the
+general mechanism is fixed, but the specific writer call site stays a max-bound until its `n`
+changes. Left unchecked below.
+
+Box 4 (debug-only reader failure) intentionally not touched — out of scope per the
+dispatch that ran this pass; noted here again so it is not silently dropped.
+
+**Follow-up 2026-09-10 09:45 — box 2 CLOSED at the call site.** Coordinator directed fixing
+this at the writer call site rather than leaving it as a flagged decision: `writes_per_thread`
+raised `50 -> 200` at `l2_daemon_cache_bench_test.rs:800` (was `:800` before, comment added
+explaining why — `ceil(0.99n) == n` for every n < 100, so n must cross 100 for the writer's
+p99 to stop being the max; picked 200, not the bare minimum 101, for margin). Threshold
+(`:805`, `10_000.0`) untouched — this is exactly the "call-site fix, not a threshold retune"
+the coordinator specified.
+
+Also added `p99_us_pins_nearest_rank_exact_value` (records `1..=100`, asserts
+`p99_us() == 99.0` exactly) — the two prior `assert_ne!(…, max)` tests alone would also pass
+against a buggy `sorted[n-2]` or even a median-in-disguise implementation; this test pins the
+one value nearest-rank actually produces at n=100.
+
+Verified twice: `cargo test --manifest-path …/Cargo.toml -p tldr-cli --test
+l2_daemon_cache_bench_test` -> `test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0
+filtered out` (both runs, back to back). `bench_concurrent_access_latency` (the writer/reader
+test) passed clean both times post-fix — no flake observed after raising the sample count,
+consistent with the writer now computing a real percentile instead of a single-worst-sample
+bound.
 
 `bench_concurrent_access_latency` fails **in release, in an isolated single-target run**
 (12 tests, 0.30s). No suite-level effect can reach it, which is what separates this card from
@@ -107,17 +162,30 @@ re-derive them as open failures.
 
 ## Acceptance
 
-- [ ] `p99_us()` either computes a defensible percentile for small `n`, or its callers are
+- [x] `p99_us()` either computes a defensible percentile for small `n`, or its callers are
       changed so no assertion is made on a percentile the sample count cannot support. State
       which was chosen and why; both are legitimate and they are not equivalent.
-- [ ] The writer assertion no longer reduces to a single-worst-sample bound. Proven by a test
-      whose PASS depends on the distinction — one that fails against the current
-      truncating implementation and passes against the fix, not merely a green suite.
-- [ ] Every other `p99_us()` call site with `n <= 100` is enumerated and either fixed or
-      recorded as deliberate. A grep for `p99_us` is the floor, not the proof — the sample
-      count is set at the call site, so each one must be read.
-- [ ] The debug-only reader failure is either explained or carded separately. It is out of
-      scope here and must not be closed by this card's fix.
+      Done 2026-09-10 — chose "computes a defensible percentile" (nearest-rank,
+      `crates/tldr-cli/tests/l2_daemon_cache_bench_test.rs:236-238`); rationale in STATE block.
+- [x] The writer assertion no longer reduces to a single-worst-sample bound. **Closed
+      2026-09-10 09:45 per coordinator direction: fixed at the call site**, not by threshold
+      retune. `writes_per_thread` raised `50 -> 200` (`:800`), crossing the `n>=100` boundary
+      where `ceil(0.99n) < n`. Proven by `p99_us_pins_nearest_rank_exact_value` (exact-value
+      pin, `1..=100 -> p99==99.0`) plus the pre-existing `p99_us_at_n_100/101_...` tests
+      (`!= max`), all of which fail against the old truncating implementation (see
+      A9CD09BA's mutation test). `bench_concurrent_access_latency` verified passing twice in
+      a row post-fix (was flaky pre-fix, matching the n=50 mechanism this card describes).
+- [x] Every other `p99_us()` call site with `n <= 100` is enumerated and either fixed or
+      recorded as deliberate. Done via TRDD-A9CD09BA box 1 (five sites, all read) + box 4
+      (per-site n<=100 impact stated) — same table reused here rather than duplicated.
+- [x] The debug-only reader failure is either explained or carded separately.
+      **Carded as TRDD-YM857S4Y** (2026-09-10), which owns every wall-clock
+      instance in this family and keeps two buckets separate: load-sensitive
+      failures (daemon cold-start, the l2_ir taint bench) and debug-build
+      calibration, of which the reader p99 32356.5 us at n=250 is the instance
+      this box was about. It is real tail latency under a debug build, not the
+      `n <= 100` degeneracy this card fixed — which is exactly why it is a
+      different card and not a loose end on this one.
 
 ## Relationships
 

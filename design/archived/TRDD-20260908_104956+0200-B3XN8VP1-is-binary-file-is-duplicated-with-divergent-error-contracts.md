@@ -2,8 +2,9 @@
 trdd-id: B3XN8VP1
 title: is_binary_file is duplicated with divergent error contracts and both are live
 created: 2026-09-08T10:49:56+0200
-updated: 2026-09-08T10:49:56+0200
-column: todo
+updated: 2026-09-10T14:37:13+0200
+column: complete
+implementation-commits: [a5bff82]
 current-owner: session-claude
 task-type: refactor
 min-approval-requirement: none
@@ -12,14 +13,57 @@ labels: [duplication, error-handling, silent-failure]
 
 # is_binary_file is duplicated with divergent error contracts and both are live
 
-## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body)
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-10
+
+**DONE (worker-7).** Deleted the bool `is_binary_file` from
+`metrics/file_utils.rs` (was L281-325, plus its 2 tests, plus a now-unused
+`use std::io::Read`). Kept `crate::encoding::is_binary_file` (`Result`). Sole
+production caller `metrics/loc.rs:566` now imports the `Result` variant and
+**propagates** the read error instead of swallowing it:
+`if has_binary_extension(path) || is_binary_file(path)? {`. An earlier pass of
+this card landed `.unwrap_or(false)`; that was replaced with `?` because
+`analyze_file` already returns `Result<_, TldrError>` and documents I/O errors,
+so there is nothing to swallow — the `?` only moves the unreadable-file error
+from the later `read_to_string` to the binary probe (`is_binary_file` reads the first 8 KB, so the error surfaces there), same error class. Also fixed:
+`metrics/mod.rs` re-export list
+(removed the dead `file_utils::is_binary_file` re-export),
+`tests/metrics_tests.rs` (import switched + `.unwrap()` on the 2 call sites —
+call-expression-only edit, per grant). `tests/encoding_base_tests.rs` needed
+no change.
+
+Verify: `grep -rn 'fn is_binary_file' crates/tldr-core/src` → 1 hit. `cargo
+test -p tldr-core --lib` 4828 passed. `--test encoding_base_tests` 48 passed.
+`--test metrics_tests` 105 passed. `cargo clippy -p tldr-core --lib -- -D
+warnings` clean. `cargo build --workspace` clean (after other workers'
+in-flight edits settled). Full evidence:
+`reports/kanban-wave1/20260910_093026+0200-worker7-B3XN8VP1.md`.
+
+Re-verified after the `?` edit, in the 2026-09-10 workspace gate:
+`--test metrics_tests` 105 passed / 0 failed; `-p tldr-core --lib` 4828 passed
+/ 0 failed; `make lint` (`cargo clippy --workspace -- -D warnings`) exit 0.
+
+**The new `Err` path is NOT covered by a run — stated plainly rather than left
+implied.** `crates/tldr-core/tests/metrics_tests.rs` was searched for a test
+that feeds `analyze_file` or `is_binary_file` an existing-but-unreadable path:
+**none exists.** The two nearest tests both miss it, and both were read to be
+sure rather than counted from a grep. `test_analyze_file_not_found` (`:1129`)
+passes `/nonexistent/file.py`, which returns at the `!path.exists()` guard
+(`loc.rs:553-556`) and never reaches the `?` at all.
+`test_analyze_file_binary` (`:1139`) passes a real temp file, so
+`is_binary_file` returns `Ok(true)` — it exercises the `?`'s **Ok** arm.
+So the `?` arm is covered **by type, not by a run**: the compiler guarantees
+the error is propagated as a `TldrError`, and nothing observes what a caller
+sees when it is. Making a genuinely unreadable file portably (permissions do
+not bite as root, and not at all on some filesystems) is the reason no such
+fixture exists here; if the behaviour ever needs pinning, that is the obstacle
+to solve first, not an oversight to scold.
 
 Split out of **TRDD-O66FM8TN** on 2026-09-08. Found *while* surveying that
 card's read sites, which is provenance, not membership: nothing about this
 duplication has to do with announcing skipped files.
 
-**Not started.** Two functions, same name, opposite error contracts, both
-reachable:
+Two functions, same name, opposite error contracts, both
+reachable (pre-fix state, kept for history):
 
 | | signature | on error |
 |---|---|---|
@@ -101,15 +145,28 @@ card does not inherit that assertion, it only records where the limit is.
 
 ## Acceptance
 
-- [ ] Both bodies read. Whether they agree on NON-ERROR behaviour (byte budget,
-      extension list) is recorded here with the evidence, before any fix.
-- [ ] One implementation remains. If the swallow is genuinely wanted at
-      `loc.rs`, it is spelled at the call site, not hidden in a helper.
-- [ ] Whether BUG-003's 8KB limit applies to the surviving implementation is
-      recorded as READ, not inferred from the literal `8192`.
-- [ ] Red-proofed if behaviour changes: a file that the two variants classify
-      differently is the discriminating fixture. If no such file exists, say so
-      — that is the evidence that "delete one" was behaviour-preserving.
+- [x] Both bodies read. They did NOT fully agree: the bool variant also had an
+      extension pre-check (`BINARY_EXTENSIONS`) the `Result` variant lacked;
+      byte budget matched (`8192`, single read, no loop). See report §1 — the
+      divergence was harmless because the one real caller (`loc.rs:566`)
+      already ran `has_binary_extension` separately in the same `||`.
+- [x] One implementation remains: `crate::encoding::is_binary_file` (Result).
+      `loc.rs:566` does not swallow at all — it propagates:
+      `if has_binary_extension(path) || is_binary_file(path)? {`. The swallow
+      the card originally asked to make visible turned out to be unnecessary:
+      the caller `analyze_file` returns `Result<_, TldrError>`, so the error
+      has a home. The bool wrapper and its 2 tests are gone from
+      `metrics/file_utils.rs`, the re-export is gone from `metrics/mod.rs`,
+      and `tests/metrics_tests.rs` imports
+      `tldr_core::encoding::is_binary_file` and `.unwrap()`s.
+- [x] BUG-003's 8KB limit READ against the survivor: `encoding.rs:356-365`
+      does a single `reader.read(&mut [0u8; 8192])`, no loop — same horizon
+      as the deleted bool variant. Confirmed by direct read, not inferred
+      from the literal. See report §3.
+- [x] No behaviour change at any live call site (report §1) — no
+      discriminating fixture exists/needed. Test coverage unchanged in
+      aggregate: the 2 deleted file_utils.rs tests were exact duplicates of
+      pre-existing `encoding_base_tests.rs` assertions.
 
 ## Origin
 

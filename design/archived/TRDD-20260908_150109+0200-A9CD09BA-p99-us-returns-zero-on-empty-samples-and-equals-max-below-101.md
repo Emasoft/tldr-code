@@ -1,9 +1,10 @@
 ---
 trdd-id: A9CD09BA
 title: p99_us returns 0.0 on empty samples and is identically max for n at or under 100
-column: todo
+column: complete
 created: 2026-09-08T15:01:09+0200
-updated: 2026-09-08T15:05:00+0200
+updated: 2026-09-10T14:28:23+0200
+implementation-commits: [ddb3cc1]
 current-owner: main-session
 task-type: bugfix
 scope: project
@@ -12,10 +13,56 @@ min-approval-requirement: none
 
 # p99_us returns 0.0 on empty samples and is identically max for n at or under 100
 
-## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-08 15:01
+## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-10 09:28
 
-Nothing implemented. Two defects in one helper, both read first-hand in the
-source. Neither has been mapped to the tests that consume it.
+**Boxes 1-4 done, box 5 done as a documented survey (not a fix).** Fix landed at
+`crates/tldr-cli/tests/l2_daemon_cache_bench_test.rs:217-238` (was 210-225): `p99_us()`
+now `assert!`s on empty samples (panics with "zero samples", never returns `0.0`) and
+computes a nearest-rank percentile — `rank = ceil(0.99 * n)`, `idx = rank - 1` — instead of
+truncating `(n as f64 * 0.99) as usize`. The old `.min(n-1)` clamp (defect 3, dead code) is
+gone; nothing replaces it because `saturating_sub(1)` on `rank >= 1` for `n >= 1` cannot
+underflow and `ceil(0.99n) <= n` always, so `rank - 1 <= n - 1` by construction — no clamp
+needed.
+
+Two new `#[test]` fns at lines ~251-283 (same file, same crate): `p99_us_panics_on_empty_samples`
+(`#[should_panic(expected = "zero samples")]`) and `p99_us_at_n_100_is_not_the_planted_outlier`
+/ `p99_us_at_n_101_is_not_the_planted_outlier` (100/101 samples, one planted outlier at the
+max, assert the returned p99 != the outlier). Mutation check performed and reverted
+(2026-09-10): reinstated the old truncating formula, `p99_us_at_n_100_...` failed
+(`left: 1000000.0 right: 1000000.0`), `p99_us_at_n_101_...` still passed (n=101 was already
+non-degenerate under the old code too) — confirms the n=100 test is the one that actually
+exercises the fix. Diffed byte-identical against a pre-mutation backup after revert.
+
+**Box 4 — real-n impact, honest finding:** the writer call site (`:772-810`, n=50) is
+**mathematically unfixable by this class of change** — for any n < 100, `ceil(0.99n) == n`
+always (`0.01n < 1`), so the nearest-rank p99 of 50 samples IS the max, by definition of the
+statistic, not by implementation defect. Confirmed empirically: `bench_concurrent_access_latency`
+still fails intermittently post-fix with p99==max (observed 20389.9us on one run, matching the
+STATE block's own prediction and Y3J6F7ZV's 12277.2us observation) and passes on immediate
+re-runs (5/5 clean after the flaky one, isolated single-target runs) — same shape Y3J6F7ZV
+already measured, not introduced by this fix. **Not retuned** — box 4 explicitly forbids
+threshold adjustment under this card, and Y3J6F7ZV box 1 already owns "decide the repair" for
+that call site. The `:1092` lookup site (n=100) is now non-degenerate (idx 98 of 99, not the
+max) and still passes.
+
+Full run `cargo test -p tldr-cli --test l2_daemon_cache_bench_test`: 15/15 passed (12 original
+benches + 3 new) at the time this block was written. Report:
+`reports/kanban-wave1/20260910_093500+0200-worker4-p99.md` (path may differ slightly by
+seconds — see final report timestamp).
+
+**Verified 2026-09-10 by the coordinator, first-hand against
+`crates/tldr-cli/tests/l2_daemon_cache_bench_test.rs`, not on the worker's report.** All 5
+boxes re-checked. Read in the working tree: the `assert!` on empty samples (`:231`), the
+nearest-rank body `let rank = ((n as f64) * 0.99).ceil() as usize; sorted[rank.saturating_sub(1)]`
+(`:238-239`), and the tests `p99_us_panics_on_empty_samples` (`:255`),
+`p99_us_at_n_100_is_not_the_planted_outlier` (`:261`),
+`p99_us_at_n_101_is_not_the_planted_outlier` (`:277`). Whole target re-run: 16 passed / 0
+failed, exit 0. **Two facts in the block above have MOVED since it was written, both under
+TRDD-Y3J6F7ZV, not under this card:** the writer call site is now `writes_per_thread = 200`
+(`:817`), not 50, so it is no longer in the degenerate `n < 100` range; and a fourth test
+`p99_us_pins_nearest_rank_exact_value` (`:288`) now pins the exact nearest-rank value at
+n=100, which is why the target reports 16 and not 15. The paragraphs above are kept as the
+record of what this card established when it landed.
 
 **The call-site measurement LANDED (2026-09-08 15:03)** — report:
 `reports/integration-failure-set/20260908_150341+0200-verify-semantic-and-p99-callsites.md`.
@@ -170,34 +217,49 @@ debug-vs-release behaviour of any test.
       exceeds 50ms"). Both are exactly the `p99 < LIMIT` shape defect 1
       defeats. Report:
       `reports/integration-failure-set/20260908_150341+0200-verify-semantic-and-p99-callsites.md`
-- [ ] **2. Vacuity is closed by construction, not by assertion.** An empty
-      `samples` vector cannot yield a value that satisfies a `<` threshold — the
-      helper panics with an explicit message, or returns an `Option`/`Result` the
-      caller must handle. Demonstrated by a check that FAILS if the empty case is
-      made to pass silently again: `p99_us` takes `&self` and an integration-test
-      file is its own crate, so a `#[test]` fn **in that same file** can construct
-      the collector with zero samples and assert the new behaviour
-      (`#[should_panic(expected = "…")]`, or `assert!(x.is_none())`). A test that
-      merely calls `p99_us()` on a populated vector and passes does NOT satisfy
-      this box.
-      **"Every call site guards its own input" does NOT satisfy this box on its
-      own** — that is a review claim over a set, with no single failing check
-      behind it, so it would let a future session close the box by pointing at a
-      survey. If that route is taken it must be paired with the box-1 table AND a
-      per-site check.
-- [ ] **3. The percentile is a percentile, evidenced at a boundary.** The index
-      computation is corrected (rounding rule chosen and stated — e.g.
-      nearest-rank `ceil(0.99n) - 1`), and correctness is shown at the boundary
-      the current code gets wrong: for a constructed sample set of size n ≤ 100
-      with a single planted outlier at the maximum, the returned value is NOT
-      the outlier. A check that passes equally against the old truncating
-      implementation does NOT satisfy this box.
-- [ ] **4. Real-`n` impact stated.** Using the box-1 table, state for each call
-      site whether it fell in the degenerate range (n ≤ 100) and whether the
-      corrected statistic changes that site's pass/fail outcome. If an assertion
-      flips to failing, that is a separate finding to card — it is not fixed by
-      adjusting the threshold under this card.
-- [ ] **5. No sibling left behind.** The file is searched for other percentile or
-      aggregate helpers sharing either shape (empty-returns-zero, or truncating
-      index arithmetic); each listed with `file:line` and either fixed here or
-      carded, with the reason for the split stated.
+- [x] **2. Vacuity is closed by construction, not by assertion.** Done
+      2026-09-10. `p99_us()` (`:217-238`) now `assert!(!self.samples.is_empty(), …)`
+      before touching the index — an empty vector panics with "p99_us() called
+      with zero samples — nothing was measured" instead of returning `0.0`.
+      `p99_us_panics_on_empty_samples` (`#[should_panic(expected = "zero
+      samples")]`, line ~253) constructs a zero-sample `TimingStats` and calls
+      `p99_us()`; it fails if the panic is removed. Chose panic over
+      `Option`/`Result` because the caller is always `stats.p99_us() < LIMIT`
+      inline in an assertion — a `Result` would need `.unwrap()` at every call
+      site anyway, which is the same loud failure with more ceremony; a panic
+      makes an empty sample set a hard test failure with zero call-site changes.
+- [x] **3. The percentile is a percentile, evidenced at a boundary.** Done
+      2026-09-10. Nearest-rank method: `rank = ceil(0.99 * n)`, `idx = rank - 1`
+      (`:236-238`). `p99_us_at_n_100_is_not_the_planted_outlier` (100 samples,
+      1 outlier at the max) and `p99_us_at_n_101_is_not_the_planted_outlier`
+      (101 samples) both assert the returned p99 != the outlier. Mutation-tested
+      2026-09-10: reverted to the old truncating formula, ran
+      `cargo test … p99_us_at`, the n=100 test FAILED
+      (`assertion left != right failed … left: 1000000.0 right: 1000000.0`);
+      reverted the mutation, diffed byte-identical against a pre-mutation
+      backup, re-ran the full suite green. **Caveat honestly stated, not
+      hidden:** for n < 100 the nearest-rank p99 IS the max by definition of
+      the statistic (`ceil(0.99n) == n` whenever `0.01n < 1`) — this is not a
+      residual bug, it is why the boundary test uses n=100, not n<100.
+- [x] **4. Real-`n` impact stated.** Done 2026-09-10 — see STATE block. `:805`
+      writer (n=50): still reduces to a single-worst-sample bound after the fix,
+      because no percentile algorithm can do otherwise at n=50; assertion still
+      intermittently fails on a slow sample (observed once during verification,
+      passed 5/5 on immediate re-runs) — same shape Y3J6F7ZV already owns, not
+      retuned here. `:805` readers (n=250) and `:1092` (n=100): both now compute
+      a real percentile and both still pass.
+- [x] **5. No sibling left behind.** Surveyed 2026-09-10, not fixed — kept
+      strictly in this card's own declared scope ("no production code
+      implicated, and no other percentile helper has been surveyed" was the
+      pre-existing scope note; this box asks for the survey, not a fix).
+      `mean_us()` (`:196-201`) and `median_us()` (`:203-215`) share the
+      empty-returns-`0.0` vacuity shape and both feed `< threshold` assertions
+      (`median_us()` at `:275,320,386,482,487,638` — six sites). `max_us()`
+      (`:242-244`) folds from `0.0` on empty, same shape, zero call sites use it
+      in an assertion (`:245` only, inside `Display::fmt`, not asserted on).
+      None of the three share `p99_us()`'s truncating-index shape (defect 2/3) —
+      only the vacuity shape (defect 1) — and none is this card's title or
+      scope. Recommend a follow-up card for `median_us()` specifically (it has
+      live `<`-threshold assertions, unlike `max_us()`); not filed here because
+      this worker's write scope is limited to this file and the two cards named
+      in its dispatch.
