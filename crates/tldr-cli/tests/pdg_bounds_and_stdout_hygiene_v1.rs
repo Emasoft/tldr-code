@@ -34,20 +34,19 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 fn tldr_bin() -> PathBuf {
-    let mut candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    candidate.pop(); // crates/tldr-cli -> crates
-    candidate.pop(); // crates -> repo root
-    candidate.push("target/release/tldr");
-    candidate
+    // why: env!("CARGO_BIN_EXE_tldr") is the path cargo builds for THIS
+    // test's own profile, as a test dependency -- it cannot go stale the
+    // way a hand-resolved `target/release/tldr` guess could, because
+    // there is no rebuild step to forget (TRDD-BJ9T0U9I). The
+    // `#[cfg(feature = "semantic")]` tests below only compile when this
+    // crate is built with that feature, so running `cargo test --features
+    // semantic` gives a binary that matches the tests exercising it --
+    // no separate feature declaration needed for the bin itself.
+    PathBuf::from(env!("CARGO_BIN_EXE_tldr"))
 }
 
 fn run_tldr(args: &[&str]) -> (String, String, bool) {
     let bin = tldr_bin();
-    assert!(
-        bin.exists(),
-        "expected release tldr binary at {} (run `cargo build --release --features semantic`)",
-        bin.display()
-    );
     let output = Command::new(&bin)
         .args(args)
         .output()

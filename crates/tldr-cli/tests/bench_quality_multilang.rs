@@ -15,7 +15,7 @@
 //! # Running Tests
 //!
 //! ```bash
-//! cargo test -p tldr-core --test bench_quality_multilang
+//! cargo test -p tldr-cli --test bench_quality_multilang
 //! ```
 
 use std::fs;
@@ -38,8 +38,11 @@ use tldr_core::types::Language;
 // =============================================================================
 
 /// Path to the extractor fixture directory
+///
+/// why: the fixtures stayed in tldr-core when this file moved to tldr-cli
+/// (TRDD-BJ9T0U9I); `CARGO_MANIFEST_DIR` is now `crates/tldr-cli`.
 fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/extractor")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tldr-core/tests/fixtures/extractor")
 }
 
 /// Get a fixture file path by language extension
@@ -2132,30 +2135,16 @@ mod explain_tests {
     use super::*;
     use std::process::Command;
 
-    /// Find the tldr binary for testing
+    /// Find the tldr binary for testing.
+    ///
+    /// why (TRDD-BJ9T0U9I): this file lives in tldr-cli, the crate that
+    /// builds the `tldr` binary, so cargo hands the test the binary it just
+    /// built for this very profile — it cannot be stale the way a
+    /// hand-resolved `target/release/tldr` guess (or a fallback chain onto
+    /// PATH) could. The file moved here from tldr-core, which has no bin
+    /// target and therefore no `CARGO_BIN_EXE_tldr`.
     fn tldr_binary() -> PathBuf {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        // Try debug binary first, then release
-        let debug = manifest_dir
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("target/debug/tldr");
-        let release = manifest_dir
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("target/release/tldr");
-        if release.exists() {
-            release
-        } else if debug.exists() {
-            debug
-        } else {
-            // Fall back to PATH
-            PathBuf::from("tldr")
-        }
+        PathBuf::from(assert_cmd::cargo::cargo_bin!("tldr"))
     }
 
     /// Run explain command and return parsed JSON output

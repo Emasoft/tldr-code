@@ -21,7 +21,7 @@
 //! # Running Tests
 //!
 //! ```bash
-//! cargo test -p tldr-core --test bench_remaining_multilang
+//! cargo test -p tldr-cli --test bench_remaining_multilang
 //! ```
 
 use std::collections::HashMap;
@@ -117,19 +117,16 @@ fn create_temp_file(dir: &TempDir, name: &str, content: &str) -> PathBuf {
     path
 }
 
-/// Find the tldr binary for CLI-based tests
+/// Find the tldr binary for CLI-based tests.
+///
+/// why (TRDD-BJ9T0U9I): this file lives in tldr-cli, the crate that builds
+/// the `tldr` binary, so cargo hands the test the binary it just built for
+/// this very profile — it cannot be stale the way a hand-resolved
+/// `target/release/tldr` guess (or a fallback chain onto PATH) could. The
+/// file moved here from tldr-core, which has no bin target and therefore
+/// no `CARGO_BIN_EXE_tldr`.
 fn tldr_binary() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest_dir.parent().unwrap().parent().unwrap();
-    let release = root.join("target/release/tldr");
-    let debug = root.join("target/debug/tldr");
-    if release.exists() {
-        release
-    } else if debug.exists() {
-        debug
-    } else {
-        PathBuf::from("tldr")
-    }
+    PathBuf::from(assert_cmd::cargo::cargo_bin!("tldr"))
 }
 
 /// Run a tldr CLI command and return (exit_code, stdout, stderr)

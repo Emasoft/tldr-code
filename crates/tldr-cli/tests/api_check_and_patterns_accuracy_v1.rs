@@ -27,32 +27,19 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 fn tldr_bin() -> PathBuf {
-    // Mirror the convention used by the other integration tests in this
-    // crate: require the workspace `target/release/tldr` artefact built
-    // by `cargo build --release`. why: there is no `cargo run` fallback --
-    // `run_tldr` below asserts the binary exists and panics if it doesn't,
-    // so this comment must not claim a fallback that would mislead anyone
-    // debugging a failed assert into looking for code that isn't there.
-    let mut candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    candidate.pop(); // crates/tldr-cli -> crates
-    candidate.pop(); // crates -> repo root
-    candidate.push("target/release/tldr");
-    // why: Windows builds "tldr.exe", not "tldr" -- without this the
-    // `bin.exists()` check below always fails on Windows and the whole
-    // suite aborts via assert! before any test body runs.
-    if cfg!(windows) {
-        candidate.set_extension("exe");
-    }
-    candidate
+    // why: env!("CARGO_BIN_EXE_tldr") is the path cargo builds for THIS
+    // test's own profile, as a test dependency -- it cannot go stale the
+    // way a hand-resolved `target/release/tldr` guess could, because
+    // there is no rebuild step to forget (TRDD-BJ9T0U9I). No test in
+    // this file needs `--features semantic`; the old panic message
+    // naming it was copy-pasted from a file that does. Cargo already
+    // resolves the ".exe" suffix on Windows for this env var, so the
+    // old manual `set_extension("exe")` is no longer needed either.
+    PathBuf::from(env!("CARGO_BIN_EXE_tldr"))
 }
 
 fn run_tldr(args: &[&str]) -> (String, String, bool) {
     let bin = tldr_bin();
-    assert!(
-        bin.exists(),
-        "expected release tldr binary at {} (run `cargo build --release --features semantic`)",
-        bin.display()
-    );
     let output = Command::new(&bin)
         .args(args)
         .output()
