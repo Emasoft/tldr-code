@@ -795,6 +795,188 @@ def foo():
         // THEN: Results should be identical
         assert_eq!(slice1, slice2, "Slice results should be deterministic");
     }
+
+    #[test]
+    fn slice_excludes_unrelated_statement_in_straight_line_code() {
+        // GIVEN: a branch-free function where one statement feeds nothing.
+        // `c` <- `b` <- `a`; `d = 99` on line 5 is dead as far as `return c`
+        // is concerned.
+        let source = "\ndef wide(a):\n    b = a + 1\n    c = b + 2\n    d = 99\n    return c\n";
+
+        // WHEN: we slice backward from `return c`
+        let slice = get_slice(
+            source,
+            "wide",
+            6,
+            SliceDirection::Backward,
+            None,
+            Language::Python,
+        )
+        .unwrap();
+
+        // THEN: line 5 is absent, and the dependency chain is present.
+        //
+        // why this is asserted as an exact set (TRDD-3TCJKGWM): the whole
+        // defect was that a backward slice over branch-free code returned
+        // [2,3,4,5,6] — the entire body — because one PDG node covered the
+        // whole basic block. A `!contains(&5)` assertion alone would pass
+        // again the moment the graph went coarse in some other way, so the
+        // set is pinned: `c` (4) <- `b` (3) <- `a`, defined on the header
+        // line 2, plus the criterion line 6.
+        let mut lines: Vec<u32> = slice.into_iter().collect();
+        lines.sort_unstable();
+        assert_eq!(
+            lines,
+            vec![2, 3, 4, 6],
+            "backward slice from `return c` must exclude the unrelated `d = 99` on line 5"
+        );
+    }
+
+    /// Sort a slice into a pinned, comparable line vector.
+    fn sorted(slice: std::collections::HashSet<u32>) -> Vec<u32> {
+        let mut lines: Vec<u32> = slice.into_iter().collect();
+        lines.sort_unstable();
+        lines
+    }
+
+    #[test]
+    fn slice_keeps_multiline_signature_together() {
+        // GIVEN: a multi-line `def` where each parameter is defined on its own
+        // row, and a body that uses one of them.
+        let source = "\nclass Foo:\n    def __init__(\n        self,\n        a,\n        b,\n        c=None,\n    ):\n        self.a = a\n        self.b = b\n        self.c = c\n        for i in range(5):\n            self.a += i\n        return None\n";
+
+        // WHEN: we slice backward from `self.a = a`
+        let lines = sorted(
+            get_slice(
+                source,
+                "__init__",
+                9,
+                SliceDirection::Backward,
+                None,
+                Language::Python,
+            )
+            .unwrap(),
+        );
+
+        // THEN: the WHOLE signature comes along, and the unrelated loop does not.
+        //
+        // why the whole signature (TRDD-3TCJKGWM): a one-node-per-LINE PDG put
+        // the def of `a` on line 5 and nothing else, so this slice returned
+        // {5, 9} — it dropped rows 3,4,6,7,8 of the very statement that
+        // defines `a`. A signature is one program point; splitting it is
+        // unsound, not merely coarse.
+        assert_eq!(lines, vec![3, 4, 5, 6, 7, 8, 9]);
+        // The precision half, pinned line by line: everything from the `for`
+        // header (12) to the end of the function (14) is downstream of the
+        // criterion, so a graph that went coarse again — one node over the
+        // whole entry block, as HEAD's block-granular builder had — would
+        // drag these in. `10`/`11` are the sibling assignments, equally out.
+        for unrelated in [10, 11, 12, 13, 14] {
+            assert!(
+                !lines.contains(&unrelated),
+                "line {unrelated} does not feed `self.a = a`"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_slice_stops_at_the_statements_a_parameter_reaches() {
+        // GIVEN: the same multi-line-signature fixture.
+        let source = "\nclass Foo:\n    def __init__(\n        self,\n        a,\n        b,\n        c=None,\n    ):\n        self.a = a\n        self.b = b\n        self.c = c\n        for i in range(5):\n            self.a += i\n        return None\n";
+
+        // WHEN: we slice FORWARD from the signature
+        let lines = sorted(
+            get_slice(
+                source,
+                "__init__",
+                3,
+                SliceDirection::Forward,
+                None,
+                Language::Python,
+            )
+            .unwrap(),
+        );
+
+        // THEN: `return None` (the last body line) reads nothing the signature
+        // defines, so it must not appear. This is the precision side: a single
+        // node covering the whole entry block would sweep it in.
+        assert!(
+            !lines.contains(&14),
+            "`return None` depends on no parameter (got {lines:?})"
+        );
+    }
+
+    #[test]
+    fn slice_is_sound_across_multiline_call() {
+        // GIVEN: an assignment whose call arguments sit on their own rows.
+        let source = "\ndef f(a, b):\n    x = compute(\n        a,\n        b,\n    )\n    y = 7\n    return x\n";
+
+        // WHEN: we slice backward from `return x`
+        let lines = sorted(
+            get_slice(
+                source,
+                "f",
+                8,
+                SliceDirection::Backward,
+                None,
+                Language::Python,
+            )
+            .unwrap(),
+        );
+
+        // THEN: the whole `x = compute(a, b)` statement AND the signature that
+        // defines `a`/`b` are present; the unrelated `y = 7` is not.
+        //
+        // why (TRDD-3TCJKGWM): the per-line PDG returned {3, 8} — the uses of
+        // `a` and `b` landed on rows 4 and 5, which were nodes disconnected
+        // from the row holding the def of `x`, so the backward walk never
+        // reached line 2 at all.
+        assert_eq!(lines, vec![2, 3, 4, 5, 6, 8]);
+        assert!(!lines.contains(&7), "`y = 7` feeds nothing here");
+    }
+
+    #[test]
+    fn slice_keeps_multiline_signature_together_rust() {
+        // GIVEN: a Rust fn whose `)` shares a row with the return type — the
+        // case where "everything above the body" would clip the signature.
+        let source = "\nfn f(\n    a: u32,\n    b: u32,\n) -> u32 {\n    let x = a + b;\n    let y = 7;\n    return x;\n}\n";
+
+        let lines = sorted(
+            get_slice(
+                source,
+                "f",
+                8,
+                SliceDirection::Backward,
+                None,
+                Language::Rust,
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(lines, vec![2, 3, 4, 5, 6, 8]);
+        assert!(!lines.contains(&7), "`let y = 7` feeds nothing here");
+    }
+
+    #[test]
+    fn slice_keeps_multiline_signature_together_typescript() {
+        // GIVEN: the same shape in TypeScript.
+        let source = "\nfunction f(\n  a: number,\n  b: number,\n): number {\n  const x = a + b;\n  const y = 7;\n  return x;\n}\n";
+
+        let lines = sorted(
+            get_slice(
+                source,
+                "f",
+                8,
+                SliceDirection::Backward,
+                None,
+                Language::TypeScript,
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(lines, vec![2, 3, 4, 5, 6, 8]);
+        assert!(!lines.contains(&7), "`const y = 7` feeds nothing here");
+    }
 }
 
 // =============================================================================

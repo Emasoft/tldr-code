@@ -55,6 +55,33 @@ pub fn get_cfg_context(
     function_name: &str,
     language: Language,
 ) -> TldrResult<CfgInfo> {
+    Ok(get_cfg_context_with_statements(source_or_path, function_name, language)?.0)
+}
+
+/// Statement line spans recorded while building a CFG: `(block_id, start_line, end_line)`.
+///
+/// A *statement* here is one program point: a leaf statement occupies its whole
+/// source span (a call spread over four lines is ONE entry), a compound
+/// statement contributes only its header line, and the function signature
+/// contributes one entry covering the whole parameter list.
+pub(crate) type StatementSpans = Vec<(usize, u32, u32)>;
+
+/// Same as [`get_cfg_context`] but also returns the statement spans of the
+/// top-level CFG.
+///
+/// why a side channel and not a field on `CfgBlock` (TRDD-3TCJKGWM): the PDG
+/// builder is the only consumer, and the spans must never reach the `cfg`
+/// JSON. Putting them on `CfgBlock` would add a `#[serde(skip)]` field to a
+/// public serialized type and force `statements: Vec::new()` into 77 struct
+/// literals across 14 files — all of them scaffolding that would never set it.
+/// Returning them alongside keeps the wire format byte-identical *by
+/// construction* rather than by a serde attribute nobody can see from the
+/// JSON.
+pub(crate) fn get_cfg_context_with_statements(
+    source_or_path: &str,
+    function_name: &str,
+    language: Language,
+) -> TldrResult<(CfgInfo, StatementSpans)> {
     // Determine if input is a file path or source code
     let (tree, source) = if Path::new(source_or_path).exists() {
         // Read file content
@@ -69,7 +96,7 @@ pub fn get_cfg_context(
     };
 
     // Extract CFG from the parsed tree
-    extract_cfg_from_tree(&tree, &source, function_name, language)
+    extract_cfg_from_tree_with_statements(&tree, &source, function_name, language)
 }
 
 /// Extract CFG from a parsed tree
@@ -84,6 +111,16 @@ pub(crate) fn extract_cfg_from_tree(
     function_name: &str,
     language: Language,
 ) -> TldrResult<CfgInfo> {
+    Ok(extract_cfg_from_tree_with_statements(tree, source, function_name, language)?.0)
+}
+
+/// Same as [`extract_cfg_from_tree`] but also returns the statement spans.
+pub(crate) fn extract_cfg_from_tree_with_statements(
+    tree: &Tree,
+    source: &str,
+    function_name: &str,
+    language: Language,
+) -> TldrResult<(CfgInfo, StatementSpans)> {
     let root = tree.root_node();
 
     // Find the function node
@@ -93,15 +130,18 @@ pub(crate) fn extract_cfg_from_tree(
         Some(node) => build_cfg_for_function(node, function_name, source, language, 0),
         None => {
             // Return empty CFG when function not found (per spec)
-            Ok(CfgInfo {
-                function: function_name.to_string(),
-                blocks: Vec::new(),
-                edges: Vec::new(),
-                entry_block: 0,
-                exit_blocks: Vec::new(),
-                cyclomatic_complexity: 0,
-                nested_functions: HashMap::new(),
-            })
+            Ok((
+                CfgInfo {
+                    function: function_name.to_string(),
+                    blocks: Vec::new(),
+                    edges: Vec::new(),
+                    entry_block: 0,
+                    exit_blocks: Vec::new(),
+                    cyclomatic_complexity: 0,
+                    nested_functions: HashMap::new(),
+                },
+                Vec::new(),
+            ))
         }
     }
 }
@@ -155,18 +195,21 @@ fn build_cfg_for_function(
     source: &str,
     language: Language,
     depth: usize,
-) -> TldrResult<CfgInfo> {
+) -> TldrResult<(CfgInfo, StatementSpans)> {
     // M24: Depth limit to prevent infinite loops
     if depth > MAX_NESTING_DEPTH {
-        return Ok(CfgInfo {
-            function: function_name.to_string(),
-            blocks: Vec::new(),
-            edges: Vec::new(),
-            entry_block: 0,
-            exit_blocks: Vec::new(),
-            cyclomatic_complexity: 0,
-            nested_functions: HashMap::new(),
-        });
+        return Ok((
+            CfgInfo {
+                function: function_name.to_string(),
+                blocks: Vec::new(),
+                edges: Vec::new(),
+                entry_block: 0,
+                exit_blocks: Vec::new(),
+                cyclomatic_complexity: 0,
+                nested_functions: HashMap::new(),
+            },
+            Vec::new(),
+        ));
     }
 
     // (path-and-schema-cleanup-v3 P3.BUG-N1) Pre-seed the entry block with
@@ -178,6 +221,7 @@ fn build_cfg_for_function(
     let def_line = func_node.start_position().row as u32 + 1;
     let mut builder = CfgBuilder::new(function_name.to_string(), source, language);
     builder.seed_entry_block_start(def_line);
+    builder.record_signature_span(func_node);
 
     // Get the function body
     let body_node = get_function_body(func_node, language);
@@ -201,6 +245,10 @@ struct CfgBuilder<'a> {
     /// Function-exit blocks (e.g. return, end-of-function). Reaching one of
     /// these terminates the function's control flow.
     exit_blocks: Vec<usize>,
+    /// Statement line spans, `(block_id, start_line, end_line)` — see
+    /// [`StatementSpans`]. Consumed by the PDG builder so that one PDG node is
+    /// one statement rather than one source line.
+    statements: StatementSpans,
     /// Loop-exit blocks created by `process_break_statement`. Reaching one
     /// of these terminates the *loop body's* control flow but NOT the
     /// function. They are tracked separately from `exit_blocks` so that
@@ -229,7 +277,107 @@ impl<'a> CfgBuilder<'a> {
             nested_functions: HashMap::new(),
             current_block_id: 0,
             exit_blocks: Vec::new(),
+            statements: Vec::new(),
             loop_exit_blocks: Vec::new(),
+        }
+    }
+
+    /// Record one statement span against the block being filled.
+    fn record_statement_span(&mut self, start_line: u32, end_line: u32) {
+        self.statements
+            .push((self.current_block_id, start_line, end_line.max(start_line)));
+    }
+
+    /// Record the function signature as ONE statement span on the entry block.
+    ///
+    /// why one span and not one node per row (TRDD-3TCJKGWM): for
+    /// `def __init__(\n self,\n a,\n ...\n):` every parameter is *defined* on
+    /// its own row. Treating those rows as one program point is what keeps a
+    /// backward slice from `self.a = a` reaching the whole signature instead
+    /// of only the row `a,` happens to sit on.
+    ///
+    /// The span runs from the function's own start row to the last row of any
+    /// child EXCEPT the body. That is grammar-agnostic on purpose: it covers
+    /// the parameter list under any of its ~six names, and a Rust return type
+    /// or `where` clause too, without this file knowing one field name. No
+    /// body child (an abstract/extern declaration) means no span, which leaves
+    /// the PDG's per-line fallback in charge — the pre-existing behaviour.
+    fn record_signature_span(&mut self, func_node: Node) {
+        // A decorated definition must NOT pull its decorator rows into the
+        // signature node: those are separate program points.
+        let node = if func_node.kind() == "decorated_definition" {
+            func_node
+                .child_by_field_name("definition")
+                .unwrap_or(func_node)
+        } else {
+            func_node
+        };
+
+        let Some(body) = get_function_body(node, self.language) else {
+            return;
+        };
+
+        let start = node.start_position().row as u32 + 1;
+        let mut end = start;
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else { continue };
+            // Skip the body — and any wrapper that CONTAINS it (Kotlin's
+            // `function_body`), which an identity check would miss and then
+            // swallow the whole function into the signature span.
+            if child.start_byte() <= body.start_byte() && child.end_byte() >= body.end_byte() {
+                continue;
+            }
+            end = end.max(child.end_position().row as u32 + 1);
+        }
+        self.statements.push((0, start, end.max(start)));
+    }
+
+    /// Collect statement spans under a node the CFG builder gave no block of
+    /// its own (everything reaching the catch-all arm of `process_statement`).
+    ///
+    /// A COMPOUND node (`with`, `class`, a decorated definition, a TypeScript
+    /// `switch`) contributes its HEADER as one program point and then
+    /// recurses, so a multi-line call sitting in a `with` body is still ONE
+    /// node rather than one node per row. A LEAF node contributes its whole
+    /// source span. Span collection only — the CFG shape is untouched.
+    fn record_spans_for_statement(&mut self, node: Node, depth: usize) {
+        if depth > MAX_NESTING_DEPTH {
+            return;
+        }
+
+        let start = node.start_position().row as u32 + 1;
+        let end = node.end_position().row as u32 + 1;
+
+        // Statement containers are not statements: descend without recording.
+        if matches!(
+            node.kind(),
+            "block"
+                | "statement_block"
+                | "suite"
+                | "switch_body"
+                | "class_body"
+                | "declaration_list"
+                | "field_declaration_list"
+                | "do_block"
+        ) {
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i) {
+                    self.record_spans_for_statement(child, depth + 1);
+                }
+            }
+            return;
+        }
+
+        match node
+            .child_by_field_name("body")
+            .or_else(|| node.child_by_field_name("definition"))
+        {
+            Some(body) => {
+                let body_start = body.start_position().row as u32 + 1;
+                self.record_statement_span(start, start.max(body_start.saturating_sub(1)));
+                self.record_spans_for_statement(body, depth + 1);
+            }
+            None => self.record_statement_span(start, end),
         }
     }
 
@@ -388,6 +536,7 @@ impl<'a> CfgBuilder<'a> {
             // Other statements - just update current block
             _ => {
                 self.update_current_block_lines(start_line, end_line);
+                self.record_spans_for_statement(node, 0);
                 // Check for function calls in the statement
                 self.extract_calls_from_node(node);
             }
@@ -978,6 +1127,11 @@ impl<'a> CfgBuilder<'a> {
     ) -> TldrResult<()> {
         // Create return block
         let return_block = self.new_block(BlockType::Return, start_line, end_line);
+        // A `return` is a leaf statement, so it is ONE program point even when
+        // its expression is spread over several rows
+        // (`return foo(\n a,\n b)`). Recorded against the return block, not
+        // `current_block_id`, which still points at the predecessor here.
+        self.statements.push((return_block, start_line, end_line));
 
         self.add_edge(
             self.current_block_id,
@@ -1007,6 +1161,8 @@ impl<'a> CfgBuilder<'a> {
         end_line: u32,
     ) -> TldrResult<()> {
         let break_block = self.new_block(BlockType::Body, start_line, end_line);
+        // Leaf statement — one program point (see `process_return_statement`).
+        self.statements.push((break_block, start_line, end_line));
 
         self.add_edge(self.current_block_id, break_block, EdgeType::Break, None);
 
@@ -1027,6 +1183,8 @@ impl<'a> CfgBuilder<'a> {
         end_line: u32,
     ) -> TldrResult<()> {
         let continue_block = self.new_block(BlockType::Body, start_line, end_line);
+        // Leaf statement — one program point (see `process_return_statement`).
+        self.statements.push((continue_block, start_line, end_line));
 
         self.add_edge(
             self.current_block_id,
@@ -1050,7 +1208,9 @@ impl<'a> CfgBuilder<'a> {
     /// Process nested function definition
     fn process_nested_function(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         if let Some(name) = get_function_name(node, self.language, self.source) {
-            let nested_cfg =
+            // The nested function's statement spans are dropped: block ids are
+            // per-CFG, and the PDG builder only ever walks the top-level one.
+            let (nested_cfg, _) =
                 build_cfg_for_function(node, &name, self.source, self.language, depth + 1)?;
             self.nested_functions.insert(name, nested_cfg);
         }
@@ -1060,6 +1220,9 @@ impl<'a> CfgBuilder<'a> {
     /// Process expression statement
     fn process_expression(&mut self, node: Node, start_line: u32, end_line: u32) -> TldrResult<()> {
         self.update_current_block_lines(start_line, end_line);
+        // A leaf statement is ONE program point even when it is spread over
+        // several rows (`x = compute(\n a,\n b,\n)`).
+        self.record_statement_span(start_line, end_line);
         self.extract_calls_from_node(node);
         Ok(())
     }
@@ -1138,7 +1301,7 @@ impl<'a> CfgBuilder<'a> {
     }
 
     /// Finalize the CFG and compute metrics
-    fn finalize(mut self) -> TldrResult<CfgInfo> {
+    fn finalize(mut self) -> TldrResult<(CfgInfo, StatementSpans)> {
         // Ensure we have at least an entry and exit
         if self.blocks.is_empty() {
             self.blocks.push(CfgBlock {
@@ -1200,15 +1363,18 @@ impl<'a> CfgBuilder<'a> {
             .count() as u32;
         let cyclomatic = edge_formula.max(decision_points + 1);
 
-        Ok(CfgInfo {
-            function: self.function_name,
-            blocks: self.blocks,
-            edges: self.edges,
-            entry_block: 0,
-            exit_blocks: self.exit_blocks,
-            cyclomatic_complexity: cyclomatic,
-            nested_functions: self.nested_functions,
-        })
+        Ok((
+            CfgInfo {
+                function: self.function_name,
+                blocks: self.blocks,
+                edges: self.edges,
+                entry_block: 0,
+                exit_blocks: self.exit_blocks,
+                cyclomatic_complexity: cyclomatic,
+                nested_functions: self.nested_functions,
+            },
+            self.statements,
+        ))
     }
 }
 

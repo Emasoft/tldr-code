@@ -13,3 +13,4 @@
 pub mod extractor;
 
 pub use extractor::get_cfg_context;
+pub(crate) use extractor::get_cfg_context_with_statements;
