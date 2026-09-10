@@ -3,7 +3,7 @@ trdd-id: YJALU4Y2
 title: Three wall-clock benchmarks fail the default cargo test run on a loaded machine
 column: todo
 created: 2026-09-07T18:46:25+0200
-updated: 2026-09-07T19:21:35+0200
+updated: 2026-09-10T14:28:23+0200
 current-owner: unassigned
 implementation-commits: [127bced]
 task-type: bugfix
@@ -16,6 +16,10 @@ labels: [tests, flaky, benchmarks, mcp]
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body) — 2026-09-07 18:59
 
 ### The immediate red is FIXED (127bced). The design question is not.
+
+- **2026-09-10: the tldr-cli wall-clock instances (cold-start, l2_ir taint, debug reader p99)
+  are tracked on TRDD-YM857S4Y, not here.** This card is tldr-mcp's four benches; same family,
+  different crate and different instances. Cite YM857S4Y rather than widening this card's scope.
 
 - **Option 4 applied.** All four benches carry
   `#[cfg_attr(debug_assertions, ignore = "...")]`. `cargo test -p tldr-mcp` exits 0 in debug

@@ -1,9 +1,10 @@
 ---
 trdd-id: 8K4YKK1Q
 title: explain and taint emit a function key where exhaustive_matrix requires function_name
-column: todo
+column: human_review
 created: 2026-09-07T22:37:38+0200
-updated: 2026-09-08T10:28:19+0200
+updated: 2026-09-10T14:20:12+0200
+implementation-commits: [5c1d56d, 32c3dbc, 8c740dd]
 current-owner: session-claude
 task-type: bugfix
 min-approval-requirement: none
@@ -14,11 +15,39 @@ labels: [test-failure, json-output, schema, stale-test]
 
 ## ⏵ STATE — READ THIS FIRST ON RESUME (authoritative; supersedes the body)
 
+**→ IN `human_review` 2026-09-10. THE ONE QUESTION FOR THE USER:** *Accept the
+waiver of the pre-chain measurement (it needs a worktree build at `d8737e7`,
+which was refused on disk grounds), or order it?*
+
+Everything else on this card is done — boxes 1, 2 and 4 are ticked on evidence,
+`implementation-commits: [5c1d56d, 32c3dbc, 8c740dd]` (all three carry this
+card's id in their subject and touch only files this card owns:
+`taint_test.rs`, `exhaustive_matrix.rs`, `remaining_test.rs`). Box 3 is the
+sole open item and it is **waived by an AGENT, not by the user** — worker-2
+declined it as outside its no-git-write scope and the orchestrator separately
+refused the old-checkout build on disk grounds. That is a defensible call, but
+it is not the user's call, which is why this card asks rather than closes: the
+waiver drops the only evidence that would have distinguished "pre-existing" from
+"introduced by this chain", and the measurement is unrecoverable once the tree
+moves on. The pre-chain measurement was **waived, not re-measured** — no
+substitute run is being offered in its place.
+
 Filed 2026-09-07 from an unfiltered `cargo test -p tldr-cli --no-fail-fast` run.
 
 **RESOLVED to (a) the same day, from production source. The tests are stale.**
 Filed with cause UNDECIDED; that was the right posture for ~20 minutes and it is
 now settled — see "RESOLVED". The fix itself is not started.
+
+**Worker-2 verification, 2026-09-10.** The test-side literal realignment
+(`function_name` → `function`) was already landed by an earlier session
+(`5c1d56d` and follow-ups) — no edit was needed in
+`crates/tldr-cli/tests/exhaustive_matrix.rs` (`grep -c function_name` now
+returns 2, both in a comment). Re-ran the target clean:
+`cargo test -p tldr-cli --test exhaustive_matrix` →
+`test result: ok. 677 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out`.
+Acceptance boxes 2-4 (panic-site independence, pre-chain measurement,
+red-proof mutation) were NOT investigated by this worker — out of the
+narrow "align test literals" scope assigned; left unchecked.
 
 **And the card's original framing was wrong in a way worth keeping.** It argued
 cluster 3 was a *different mechanism* from TRDD-DPL55YB3's. It is the same
@@ -40,7 +69,7 @@ into a false implication.** BUG-14 removed 10 `"function_name"` literals:
 
 | file | removals | kind |
 |---|---|---|
-| `crates/tldr-core/tests/bench_quality_multilang.rs` | 8 | test literals |
+| `crates/tldr-core/tests/bench_quality_multilang.rs` (moved to `crates/tldr-cli/tests/bench_quality_multilang.rs` in TRDD-BJ9T0U9I) | 8 | test literals |
 | `crates/tldr-cli/src/commands/remaining/types.rs` | 1 | test literal, in an inline `#[cfg(test)]` block |
 | `crates/tldr-cli/src/commands/remaining/types.rs` | 1 | production `serialize_field` line |
 
@@ -63,7 +92,9 @@ one correct statement in two places and no further prose.
 **This has a consequence for the sibling claim.** BUG-14's sweep DID reach a
 `tldr-core` test file. The residue claim was measured over `-p tldr-cli` only,
 so whether `tldr-core` carries its own stale assertions is UNMEASURED, not
-known-clean. `bench_quality_multilang.rs` is the obvious place to look first.
+known-clean. `bench_quality_multilang.rs` is the obvious place to look first
+(moved to `crates/tldr-cli/tests/` in TRDD-BJ9T0U9I; the `tldr-core` path above
+is kept because it is where the measurement was actually taken, not a typo).
 
 **Two figures written into an earlier draft of this section were themselves
 wrong, and are recorded here rather than quietly replaced.** They were "7 test
@@ -343,15 +374,36 @@ regression. Either way, not drift.
       from source and history — not from which side is the smaller diff.
       **DONE: `ExplainReport` at `remaining/types.rs:730`; deliberate rename,
       `cross-command-consistency-v1` BUG-14, landed `66fa8bc`. See RESOLVED.**
-- [ ] Whether the two panic sites (`:1137`, `:1185`) are one shared assertion
+- [x] Whether the two panic sites (`:1137`, `:1185`) are one shared assertion
       helper or two independent ones is read, since that decides whether this is
       one fix or two.
+      **DONE (worker-2, 2026-09-10): two independent free functions, each with
+      its own inline `panic!`, not a shared helper —
+      `check_explain` (`exhaustive_matrix.rs:1120-1156`, panic at line ~1151)
+      and `check_taint` (`exhaustive_matrix.rs:1182-1212`, panic at line
+      ~1207). Current line numbers shifted from the card's `:1137`/`:1185`
+      (those now land on the comment above each `if`), same two functions.**
 - [ ] Pre-existing or not is MEASURED, not argued: the target is run at a
       pre-chain checkout (`d8737e7` or earlier) in a worktree with
       `git status --porcelain` empty. Source-level argument is not a substitute —
       see the correction below.
-- [ ] Whichever side is fixed, it is red-proofed: observed failing under a
+      **WAIVED 2026-09-10 (worker-2): requires `git checkout` to a prior
+      commit in a worktree, which this worker is barred from running (no git
+      write commands — checkout is explicitly forbidden by the dispatching
+      task); cannot be established cheaply within scope.**
+- [x] Whichever side is fixed, it is red-proofed: observed failing under a
       deliberate mutation before being accepted as passing.
+      **DONE (worker-2, 2026-09-10): the card is "explain AND taint" so both
+      checkers were probed separately. `check_explain`: mutated
+      `json.get("function")` → `json.get("function_MUTATION_PROBE")`, ran
+      `cargo test -p tldr-cli --test exhaustive_matrix test_explain_on_rust`
+      → `test result: FAILED. 0 passed; 1 failed`. Reverted with Edit, reran
+      → `test result: ok. 1 passed; 0 failed`. `check_taint`: same mutation
+      on its own `json.get("function")` (`exhaustive_matrix.rs:1203`), ran
+      `cargo test -p tldr-cli --test exhaustive_matrix test_taint_on_rust` →
+      `test result: FAILED. 0 passed; 1 failed`. Reverted with Edit, reran →
+      implicit in the full-target rerun below. Full target re-verified clean
+      after both reverts: `test result: ok. 677 passed; 0 failed`.**
 
 ## Provenance — what is and is not established
 
