@@ -60,19 +60,26 @@ fn test_structure_elixir_method_infos_populated() {
     assert_eq!(files.len(), 1, "exactly one elixir file expected");
     let f0 = &files[0];
 
-    let methods = f0
-        .get("methods")
+    // `methods: [String]` is suppressed on the wire (schema-cleanup-v1
+    // BUG-13, see types.rs FileStructure) — read the same information from
+    // `definitions[]` where `kind == "method"` instead of the legacy key.
+    let definitions = f0
+        .get("definitions")
         .and_then(Value::as_array)
-        .expect("methods array present");
-    let method_names: Vec<&str> = methods.iter().filter_map(Value::as_str).collect();
+        .expect("definitions array present");
+    let method_names: Vec<&str> = definitions
+        .iter()
+        .filter(|d| d.get("kind").and_then(Value::as_str) == Some("method"))
+        .filter_map(|d| d.get("name").and_then(Value::as_str))
+        .collect();
     assert!(
         method_names.contains(&"bar"),
-        "legacy methods[] must contain `bar`, got {:?}",
+        "definitions[] kind==method must contain `bar`, got {:?}",
         method_names
     );
     assert!(
         method_names.contains(&"baz"),
-        "legacy methods[] must contain `baz`, got {:?}",
+        "definitions[] kind==method must contain `baz`, got {:?}",
         method_names
     );
 
@@ -124,10 +131,12 @@ fn test_structure_elixir_method_infos_populated() {
 }
 
 /// elixir-method-infos-v1: count parity invariant. For an Elixir source file
-/// where every `def`/`defp` lives inside a single `defmodule`, the legacy
-/// `methods: [String]` field and the new `method_infos: [MethodInfo]` field
-/// MUST report the same length — they describe the same set of declarations
-/// from two angles (string view vs structured view).
+/// where every `def`/`defp` lives inside a single `defmodule`, the
+/// `definitions[]` entries tagged `kind == "method"` and the new
+/// `method_infos: [MethodInfo]` field MUST report the same length — they
+/// describe the same set of declarations from two angles (structured-list
+/// view vs dedicated-record view). `methods: [String]` is suppressed on the
+/// wire (schema-cleanup-v1 BUG-13), so `definitions[]` stands in for it.
 #[test]
 fn test_structure_elixir_method_infos_count_matches_methods() {
     let temp = TempDir::new().unwrap();
@@ -137,7 +146,13 @@ fn test_structure_elixir_method_infos_count_matches_methods() {
     let v = run_structure(&temp);
     let f0 = &v.get("files").and_then(Value::as_array).unwrap()[0];
 
-    let methods_len = f0.get("methods").and_then(Value::as_array).unwrap().len();
+    let methods_len = f0
+        .get("definitions")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .filter(|d| d.get("kind").and_then(Value::as_str) == Some("method"))
+        .count();
     let mi_len = f0
         .get("method_infos")
         .and_then(Value::as_array)
@@ -146,7 +161,7 @@ fn test_structure_elixir_method_infos_count_matches_methods() {
 
     assert_eq!(
         methods_len, mi_len,
-        "elixir-method-infos-v1: methods.len() ({}) must equal method_infos.len() ({}); they describe the same defmodule-scoped declarations",
+        "elixir-method-infos-v1: definitions[kind==method].len() ({}) must equal method_infos.len() ({}); they describe the same defmodule-scoped declarations",
         methods_len, mi_len
     );
 }

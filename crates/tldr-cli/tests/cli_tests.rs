@@ -93,17 +93,38 @@ class Bar:
     .unwrap();
 
     let mut cmd = tldr_cmd();
-    cmd.args([
-        "structure",
-        temp.path().to_str().unwrap(),
-        "-l",
-        "python",
-        "-q",
-    ])
-    .assert()
-    .success()
-    .stdout(predicate::str::contains("\"functions\""))
-    .stdout(predicate::str::contains("\"classes\""));
+    let output = cmd
+        .args([
+            "structure",
+            temp.path().to_str().unwrap(),
+            "-l",
+            "python",
+            "-q",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    // `functions`/`methods` are suppressed on the wire (schema-cleanup-v1
+    // BUG-13, see types.rs FileStructure) — the intended schema is
+    // `definitions[]`. Parse structurally instead of matching on a key the
+    // producer no longer emits.
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let definitions = json["files"][0]["definitions"]
+        .as_array()
+        .expect("definitions array present");
+    assert!(
+        definitions
+            .iter()
+            .any(|d| d["name"] == "foo" && d["kind"] == "function"),
+        "expected a function definition named foo, got: {definitions:?}"
+    );
+    assert!(
+        definitions
+            .iter()
+            .any(|d| d["name"] == "Bar" && d["kind"] == "class"),
+        "expected a class definition named Bar, got: {definitions:?}"
+    );
 }
 
 // =============================================================================
