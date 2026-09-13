@@ -1,9 +1,9 @@
 ---
 trdd-id: Y0EF8ZVF
 title: Guard the repo-root join against paths that escape the repository root
-column: dev
+column: complete
 created: 2026-09-13T18:35:16+0200
-updated: 2026-09-13T21:22:07+0200
+updated: 2026-09-13T21:31:09+0200
 current-owner: emanuelesabetta
 created-by: emanuelesabetta
 task-type: bugfix
@@ -14,7 +14,7 @@ mandated-by: none
 approved: true
 approval-judge: emanuelesabetta
 approval-datetime: 2026-09-13T18:35:16+0200
-implementation-commits: [b76490e]
+implementation-commits: [b76490e, 8b67078]
 ---
 
 # Guard the repo-root join against paths that escape the repository root
@@ -43,9 +43,10 @@ Do NOT filter the offending path out silently. Dropping it hides malformed git o
 
 - [x] Every joined path is checked with starts_with against repo_root before being returned
 - [x] A failing check produces an error naming both the offending raw git line and the repo root
-- [ ] A test feeds git output containing an absolute path and asserts the error, and that test FAILS if the guard is removed
+- [x] A test feeds git output containing an absolute path and asserts the error, and that test FAILS if the guard is removed
 
 ## Approval log
 
 - 2026-09-13T18:35:16+0200 — MANDATE issued by emanuelesabetta (min-approval-requirement: none). Pre-approved: issuer authority >= required approver. No approval request was sent.
 - 2026-09-13T18:35:26+0200 — column → dev. A worker is implementing this right now; backburner would claim it is deferred
+- 2026-09-13T21:31:09+0200 — COMPLETE by emanuelesabetta. all three acceptance boxes met and verified: guard present, error names both the line and the root, and the regression test proves it with a real git invocation.
