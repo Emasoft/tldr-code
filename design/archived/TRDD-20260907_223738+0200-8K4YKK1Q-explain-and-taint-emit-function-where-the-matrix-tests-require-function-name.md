@@ -383,7 +383,7 @@ regression. Either way, not drift.
       and `check_taint` (`exhaustive_matrix.rs:1182-1212`, panic at line
       ~1207). Current line numbers shifted from the card's `:1137`/`:1185`
       (those now land on the comment above each `if`), same two functions.**
-- STRUCK 2026-09-13, NOT met and NOT ticked (see the correction note): Pre-existing or not is MEASURED, not argued: the target is run at a
+- [ ] STRUCK 2026-09-13, NOT met, deferred to its own card (see the correction note): Pre-existing or not is MEASURED, not argued: the target is run at a
       pre-chain checkout (`d8737e7` or earlier) in a worktree with
       `git status --porcelain` empty. Source-level argument is not a substitute —
       see the correction below.
