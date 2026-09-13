@@ -34,6 +34,23 @@ fn git_changed_files(project: &Path, args: &[&str]) -> Result<Vec<PathBuf>> {
         anyhow::bail!("git command failed: {}", stderr);
     }
 
+    // Git always prints paths relative to the repository top-level directory
+    // (verified empirically: `git -C <subdir> diff --name-only` still emits
+    // `<subdir>/file`), regardless of `current_dir`. Re-bind `project` to
+    // that root before joining below, so a subdirectory `project` (e.g. a
+    // crate dir under the repo) never gets its segment doubled by the join
+    // (TRDD-M2MUQ7QH) and the doc comment above stays literally true.
+    let root_output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(project)
+        .output()
+        .context("Failed to resolve git repository root")?;
+    if !root_output.status.success() {
+        let stderr = String::from_utf8_lossy(&root_output.stderr);
+        anyhow::bail!("git rev-parse --show-toplevel failed: {}", stderr);
+    }
+    let project = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(stdout
         .lines()

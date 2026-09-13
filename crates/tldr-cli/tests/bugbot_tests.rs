@@ -111,6 +111,76 @@ fn bugbot_check_staged_flag_changes_detection_method() {
     );
 }
 
+
+#[test]
+fn bugbot_check_staged_from_crate_subdir_does_not_double_the_path() {
+    // Regression for TRDD-M2MUQ7QH: `cargo test -p tldr-cli` runs with cwd
+    // set to the crate directory, so `bugbot check --staged .` resolves
+    // `project` to that crate dir (a subdirectory of the repo), not the repo
+    // root. Reproduce that shape with a nested tempdir repo.
+    let root = tempfile::tempdir().expect("tempdir");
+    let crate_dir = root.path().join("crate");
+    std::fs::create_dir_all(crate_dir.join("src")).expect("mkdir crate/src");
+    let source_ext: String = ["r", "s"].concat();
+    let file_name = format!("lib.{source_ext}");
+    let file_path = crate_dir.join("src").join(&file_name);
+    std::fs::write(&file_path, "fn main() {}\n").expect("write source fixture");
+
+    let git = |args: &[&str], dir: &std::path::Path| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git command failed to run")
+    };
+    git(&["init", "-q"], root.path());
+    git(&["config", "user.email", "test@example.com"], root.path());
+    git(&["config", "user.name", "test"], root.path());
+    git(&["add", "."], root.path());
+    let commit = git(&["commit", "-q", "-m", "init"], root.path());
+    assert!(
+        commit.status.success(),
+        "initial commit should succeed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    // Stage a change so `--staged` has something to report.
+    std::fs::write(&file_path, "fn main() { let _ = 1; }\n").expect("rewrite source fixture");
+    git(&["add", "."], root.path());
+
+    let output = tldr_bin()
+        .args(["--lang", "rust", "bugbot", "check", "--staged", "--no-fail", "."])
+        .current_dir(&crate_dir)
+        .output()
+        .expect("failed to execute bugbot check");
+
+    assert!(
+        output.status.success(),
+        "bugbot check --staged should exit 0 with --no-fail, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+
+    let changed_files = json["changed_files"]
+        .as_array()
+        .expect("changed_files should be an array");
+    assert!(
+        !changed_files.is_empty(),
+        "expected at least one changed file, got: {}",
+        stdout
+    );
+
+    for f in changed_files {
+        let path = f.as_str().expect("changed_files entries should be strings");
+        assert!(
+            std::path::Path::new(path).exists(),
+            "changed_files entry {path} should name a path that exists on disk (crate dir must not be doubled)"
+        );
+    }
+}
+
 #[test]
 fn bugbot_check_custom_base_ref() {
     let output = tldr_bin()
