@@ -1,9 +1,9 @@
 ---
 trdd-id: M2MUQ7QH
 title: bugbot check --staged doubles the project path when run from a crate dir
-column: dev
+column: todo
 created: 2026-09-10T14:24:17+0200
-updated: 2026-09-13T21:21:40+0200
+updated: 2026-09-13T21:23:38+0200
 current-owner: session-claude
 task-type: bugfix
 scope: project
@@ -11,7 +11,7 @@ min-approval-requirement: none
 labels: [cli, paths, bugbot]
 implementation-commits: [7d6a2bb, a17e57b, b76490e]
 assignee: emanuelesabetta
-created-by: session-claude
+
 ---
 
 # bugbot check --staged doubles the project path when run from a crate dir
@@ -68,7 +68,7 @@ repo it stages itself) rather than the ambient one.
 
 ## Acceptance
 
-- [x] The path doubling is reproduced deliberately (a documented command +
+- [ ] The path doubling is reproduced deliberately (a documented command +
       cwd) and its actual mechanism read from the source, replacing the
       hypothesis above with a verified statement.
 - [x] `changed_files` entries name paths that exist on disk, from any cwd. A
@@ -86,3 +86,4 @@ repo it stages itself) rather than the ambient one.
 ## Approval log
 
 - 2026-09-13T21:21:35+0200 — column → dev. three commits citing this card have landed (7d6a2bb, a17e57b, b76490e); boxes 1-2 met and verified, box 3 (the ambient-index test) untouched and box 4 blocked on it -- todo claimed unstarted while the work was half done
+- 2026-09-13T21:23:38+0200 — column → todo. dev claimed active work; nobody is working boxes 3-4. Partly landed and unowned is what todo means -- ready to be pulled. The original defect was the missing implementation-commits, not the column
