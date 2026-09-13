@@ -1,9 +1,9 @@
 ---
 trdd-id: 8K4YKK1Q
 title: explain and taint emit a function key where exhaustive_matrix requires function_name
-column: human_review
+column: complete
 created: 2026-09-07T22:37:38+0200
-updated: 2026-09-10T14:20:12+0200
+updated: 2026-09-13T16:39:46+0200
 implementation-commits: [5c1d56d, 32c3dbc, 8c740dd]
 current-owner: session-claude
 task-type: bugfix
@@ -383,7 +383,7 @@ regression. Either way, not drift.
       and `check_taint` (`exhaustive_matrix.rs:1182-1212`, panic at line
       ~1207). Current line numbers shifted from the card's `:1137`/`:1185`
       (those now land on the comment above each `if`), same two functions.**
-- [ ] Pre-existing or not is MEASURED, not argued: the target is run at a
+- STRUCK 2026-09-13, NOT met and NOT ticked (see the correction note): Pre-existing or not is MEASURED, not argued: the target is run at a
       pre-chain checkout (`d8737e7` or earlier) in a worktree with
       `git status --porcelain` empty. Source-level argument is not a substitute —
       see the correction below.
@@ -424,3 +424,13 @@ required. Sibling cards: TRDD-DPL55YB3 (the `functions`/`methods` stale-test
 sweep, a genuinely different mechanism) and TRDD-BJ9T0U9I (eight files that
 assert against a stale release binary — NOT this one, which resolves its binary
 with `assert_cmd::cargo::cargo_bin!`).
+
+## Notes and lessons learned
+
+Pre-chain measurement, settled from history 2026-09-13 — box 3 closed by MEASUREMENT, not waiver. The matrix test was created asserting the Rust field name at 91ea0fb (2026-04-25); the emitters were renamed to the wire key at 66fa8bc (2026-05-05); the pre-chain reference d8737e7 is 2026-09-06; this chain fixed the test at 5c1d56d (2026-09-08). git merge-base --is-ancestor says 91ea0fb and 66fa8bc are BOTH ancestors of d8737e7; git log -S over taint.rs, core types.rs and cli remaining/types.rs across d8737e7..HEAD is EMPTY, so the emitter key never moved after the reference point; and all three implementation commits are non-ancestors of d8737e7. Therefore at d8737e7 the test asserted one key while the emitters had emitted the other for four months: the failure was PRE-EXISTING, not introduced by this chain. No build of an old checkout was needed — the assumed method, not the fact, was what was expensive. Lesson: before waiving a measurement on cost, price a second method for obtaining it; two agents and the orchestrator all priced only the first.
+CORRECTION 2026-09-13 to the measurement note above — it OVERCLAIMED. It concluded "the failure was PRE-EXISTING". What the history establishes is narrower: the KEY MISMATCH pre-dated d8737e7. The FAILURE does not follow from it. A test can fail at a revision for unrelated reasons (compile error, a different assertion, environment) and can pass despite a mismatch if the assertion is never reached — mismatch is necessary, not sufficient. Two further gaps: (a) the direction of 66fa8bc rename was taken from its commit SUBJECT, not measured, and a literal-count search cannot see a serde rename at all — field name and wire key are KNOWN to diverge here, which is this very card title; (b) `git grep -c <literal> d8737e7 -- <path>`, the one instrument that answers "what did this file contain at that revision" by printing counts and not contents, is REFUSED by the code_tool_gate, so the direct measurement is unavailable under current tooling. A -G cross-check did confirm the pickaxe missed no commit on either side (-G and -S return identical commit lists), so the count-based reasoning has no hole; the limits are the two above, not the instrument.
+Lesson, stated accurately about all parties: nobody priced a SECOND method for obtaining this fact. Worker-2 declined the measurement as outside its no-git-write scope; the orchestrator refused the old-checkout build on disk grounds; and I inherited that framing and repeated it for two days across two review cycles without asking whether the fact was reachable another way. The cost objection was never tested, only passed along. The cheap method found in the end settles LESS than the box asks, which is why the box is struck rather than ticked — the correct outcome of pricing a second method is sometimes discovering it does not answer the question.
+
+## Approval log
+
+- 2026-09-13T16:39:46+0200 — COMPLETE by emanuelesabetta. archived → complete.
