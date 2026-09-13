@@ -3,7 +3,7 @@ trdd-id: Y0EF8ZVF
 title: Guard the repo-root join against paths that escape the repository root
 column: dev
 created: 2026-09-13T18:35:16+0200
-updated: 2026-09-13T18:35:26+0200
+updated: 2026-09-13T21:22:07+0200
 current-owner: emanuelesabetta
 created-by: emanuelesabetta
 task-type: bugfix
@@ -14,6 +14,7 @@ mandated-by: none
 approved: true
 approval-judge: emanuelesabetta
 approval-datetime: 2026-09-13T18:35:16+0200
+implementation-commits: [b76490e]
 ---
 
 # Guard the repo-root join against paths that escape the repository root
@@ -40,8 +41,8 @@ Do NOT filter the offending path out silently. Dropping it hides malformed git o
 
 ## Acceptance
 
-- [ ] Every joined path is checked with starts_with against repo_root before being returned
-- [ ] A failing check produces an error naming both the offending raw git line and the repo root
+- [x] Every joined path is checked with starts_with against repo_root before being returned
+- [x] A failing check produces an error naming both the offending raw git line and the repo root
 - [ ] A test feeds git output containing an absolute path and asserts the error, and that test FAILS if the guard is removed
 
 ## Approval log
