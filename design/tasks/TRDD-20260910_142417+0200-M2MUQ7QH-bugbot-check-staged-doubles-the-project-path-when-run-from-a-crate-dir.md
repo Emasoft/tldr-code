@@ -10,7 +10,7 @@ scope: project
 min-approval-requirement: none
 labels: [cli, paths, bugbot]
 implementation-commits: [7d6a2bb, a17e57b, b76490e]
-assignee: emanuelesabetta
+
 
 ---
 
