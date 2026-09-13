@@ -391,7 +391,7 @@ fn perf_abstract_interp_corpus() {
 
     // Top 20 slowest functions
     let mut by_duration = all_timings;
-    by_duration.sort_by(|a, b| b.duration.cmp(&a.duration));
+    by_duration.sort_by_key(|b| std::cmp::Reverse(b.duration));
 
     eprintln!("══ Top 20 Slowest Functions ══");
     for (i, t) in by_duration.iter().take(20).enumerate() {
