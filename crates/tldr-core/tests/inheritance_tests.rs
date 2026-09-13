@@ -736,7 +736,7 @@ fn test_detect_mixins_by_usage() {
     }
 
     // Update references
-    for (_, node) in graph.nodes.iter_mut() {
+    for node in graph.nodes.values_mut() {
         for base in &mut node.bases {
             if base == "TimestampMixin" {
                 *base = "Auditable".to_string();

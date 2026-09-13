@@ -221,12 +221,12 @@ mod context_tests {
             let complex_fn = ctx.functions.iter().find(|f| f.name == "complex_function");
             if let Some(f) = complex_fn {
                 // CFG metrics are optional but should be attempted
-                if f.blocks.is_some() {
-                    assert!(f.blocks.unwrap() > 0, "Should have blocks");
+                if let Some(blocks) = f.blocks {
+                    assert!(blocks > 0, "Should have blocks");
                 }
-                if f.cyclomatic.is_some() {
+                if let Some(cyclomatic) = f.cyclomatic {
                     assert!(
-                        f.cyclomatic.unwrap() > 1,
+                        cyclomatic > 1,
                         "complex_function should have high complexity"
                     );
                 }
