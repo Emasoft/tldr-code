@@ -585,4 +585,27 @@ mod tests {
             "expected x.py in {ok:?}"
         );
     }
+
+    /// Feeds git output that legitimately reports an absolute path (via
+    /// `rev-parse --show-toplevel`) joined onto an unrelated `repo_root`, and
+    /// asserts the escape guard rejects it -- proving the guard actually
+    /// fires rather than silently letting `Path::join` discard `repo_root`.
+    #[test]
+    fn test_git_changed_files_rejects_path_that_escapes_repo_root() {
+        let tmp = init_git_repo();
+        let dir = tmp.path();
+        let unrelated = TempDir::new().expect("create unrelated temp dir");
+        let fake_root = unrelated
+            .path()
+            .canonicalize()
+            .expect("canonicalize unrelated root");
+
+        let err = git_changed_files(dir, &fake_root, &["rev-parse", "--show-toplevel"])
+            .expect_err("an absolute path outside repo_root must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("escapes the root"),
+            "error must name the escape, got: {msg}"
+        );
+    }
 }
