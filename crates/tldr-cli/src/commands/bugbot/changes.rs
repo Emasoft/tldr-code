@@ -21,9 +21,10 @@ pub struct ChangeDetectionResult {
 
 /// Resolve and canonicalize the git repository root for `project`.
 ///
-/// Git always prints paths relative to the repository top-level directory
-/// (verified empirically: `git -C <subdir> diff --name-only` still emits
-/// `<subdir>/file`), regardless of `current_dir`. This is the single place
+/// The git invocations in this module are all made to print paths relative to
+/// the repository top-level directory -- `diff --name-only` does so inherently
+/// (verified: `git -C <subdir> diff --name-only` still emits `<subdir>/file`),
+/// and `ls-files` only when its caller passes `--full-name`. This is the single place
 /// that resolves and canonicalizes that root, so every `git_changed_files`
 /// call made from the same `detect_changes` invocation joins against the
 /// exact same value -- a subdirectory `project` (e.g. a crate dir under the
@@ -59,10 +60,31 @@ fn resolve_canonical_repo_root(project: &Path) -> Result<PathBuf> {
         .with_context(|| format!("Failed to canonicalize git repository root '{raw_root}'"))
 }
 
-/// Run a git command in `project` and return the listed file paths.
+/// Run a git command in `project`, then join each non-empty stdout line onto `repo_root`.
 ///
-/// Each non-empty line of stdout is joined with `project` to form an absolute path.
+/// `repo_root` (never `project`) is the correct join base even when `project` is a
+/// subdirectory -- but only if `args` make git print root-relative paths, which
+/// CALLERS MUST ENSURE. It is inherent for `diff --name-only`; `ls-files` requires
+/// `--full-name` (it is CWD-relative otherwise). A caller that omits it produces
+/// paths under `repo_root` that point nowhere -- which the escape guard below
+/// cannot detect, because such a path is still under the root. The `ls-files`
+/// case is therefore enforced below rather than merely documented.
 fn git_changed_files(project: &Path, repo_root: &Path, args: &[&str]) -> Result<Vec<PathBuf>> {
+    // `ls-files` is CWD-relative unless `--full-name` is passed, so joining its
+    // output onto `repo_root` from a subdirectory `project` yields paths that are
+    // under the root yet point nowhere -- a wrongness the `starts_with` guard
+    // below is structurally unable to see. Fail fast on the caller's mistake
+    // rather than returning plausible-looking garbage. This is a contract check,
+    // not error handling: a correct caller can never trip it.
+    if args.contains(&"ls-files") && !args.contains(&"--full-name") {
+        anyhow::bail!(
+            "git_changed_files called with `ls-files` but without `--full-name`: {:?}. \
+             `ls-files` reports paths relative to the current directory, so its output \
+             cannot be joined onto the repo root without it.",
+            args
+        );
+    }
+
     let output = Command::new("git")
         .args(args)
         .current_dir(project)
@@ -75,11 +97,32 @@ fn git_changed_files(project: &Path, repo_root: &Path, args: &[&str]) -> Result<
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout
+    stdout
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|l| repo_root.join(l))
-        .collect())
+        .map(|l| {
+            let joined = repo_root.join(l);
+            // `Path::join` silently DISCARDS `repo_root` when `l` is absolute
+            // (or drops back out of it via `..`), so a malformed/adversarial
+            // line in git's stdout can produce a path outside `repo_root` --
+            // and the next consumer of this list, `filter_tldrignored`,
+            // panics on exactly that ("path is expected to be under the
+            // root"), with no indication of which line caused it. Fail fast
+            // here instead, with the offending line named, rather than
+            // silently dropping it (that would hide malformed git output)
+            // or letting the panic surface downstream with no context.
+            if !joined.starts_with(repo_root) {
+                anyhow::bail!(
+                    "git reported a path outside the repo root: line {:?} joined onto \
+                     {:?} produced {:?}, which escapes the root",
+                    l,
+                    repo_root,
+                    joined
+                );
+            }
+            Ok(joined)
+        })
+        .collect()
 }
 
 /// Detect changed files in `project`, filtered to the given `language`.
@@ -119,12 +162,22 @@ pub fn detect_changes(
         // Uncommitted = modified tracked + staged + untracked
         let mut files = git_changed_files(project, &repo_root, &["diff", "--name-only", "HEAD"])
             .context("Failed to list uncommitted changes")?;
-        let staged_files = git_changed_files(project, &repo_root, &["diff", "--name-only", "--staged"])
-            .context("Failed to list staged changes")?;
+        let staged_files =
+            git_changed_files(project, &repo_root, &["diff", "--name-only", "--staged"])
+                .context("Failed to list staged changes")?;
+
+        // `--full-name` is load-bearing: unlike `diff --name-only`, `ls-files`
+        // defaults to printing paths relative to the CURRENT DIRECTORY, not the
+        // repo top level (verified: `git -C crates/tldr-cli ls-files` prints
+        // `Cargo.toml`; with `--full-name` it prints `crates/tldr-cli/Cargo.toml`).
+        // Without it, a `project` below the repo root yields lines that join onto
+        // `repo_root` into paths that do not exist -- and the escape guard in
+        // `git_changed_files` does NOT catch that, because such a path is still
+        // under the root, just wrong.
         let untracked = git_changed_files(
             project,
             &repo_root,
-            &["ls-files", "--others", "--exclude-standard"],
+            &["ls-files", "--others", "--exclude-standard", "--full-name"],
         )
         .context("Failed to list untracked files")?;
         files.extend(staged_files);
@@ -155,7 +208,13 @@ pub fn detect_changes(
         .collect();
 
     // Filter out paths matching .tldrignore patterns (e.g. corpus/, vendor/).
-    let changed_files = tldr_core::callgraph::filter_tldrignored(project, changed_files);
+    // `changed_files` entries were joined against `repo_root` (see
+    // `git_changed_files`), so the ignore matcher must be rooted at the SAME
+    // base -- `repo_root` is canonical and git reports paths relative to the
+    // repo top level anyway. Passing the non-canonical `project` here panics
+    // when it differs from `repo_root` only by symlink resolution (e.g.
+    // macOS /var/folders vs /private/var/folders).
+    let changed_files = tldr_core::callgraph::filter_tldrignored(&repo_root, changed_files);
 
     Ok(ChangeDetectionResult {
         changed_files,
@@ -410,6 +469,120 @@ mod tests {
             }),
             "src/main.py should be present, got: {:?}",
             result.changed_files
+        );
+    }
+
+    #[test]
+    fn test_detect_changes_project_is_subdirectory_of_repo_root() {
+        let tmp = init_git_repo();
+        let dir = tmp.path();
+
+        // `project` will be `<dir>/crate`, a SUBDIRECTORY of the repo root
+        // `<dir>` itself. This is the only shape where rooting the
+        // `.tldrignore` matcher at `project` (the old, buggy behavior) and
+        // rooting it at `repo_root` (the fix) can actually disagree -- every
+        // other test in this file uses `project == repo_root`.
+        std::fs::create_dir_all(dir.join("crate/src")).unwrap();
+        std::fs::write(dir.join("crate/src/main.py"), "y = 2\n").unwrap();
+        std::fs::create_dir_all(dir.join("other")).unwrap();
+        std::fs::write(dir.join("other/skip.py"), "x = 1\n").unwrap();
+
+        // `.tldrignore` lives at the REPO ROOT, not under `project`.
+        std::fs::write(dir.join(".tldrignore"), "other/\n").unwrap();
+
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .expect("git add");
+
+        let project = dir.join("crate");
+        let result =
+            detect_changes(&project, "HEAD", true, &Language::Python).expect("detect_changes");
+
+        let repo_root = dir.canonicalize().expect("canonicalize repo root");
+        let expected = vec![repo_root.join("crate/src/main.py")];
+        assert_eq!(
+            result.changed_files, expected,
+            "expected exactly crate/src/main.py, got: {:?}",
+            result.changed_files
+        );
+    }
+
+    #[test]
+    fn test_detect_changes_untracked_in_subdirectory_project_resolves_to_real_path() {
+        let tmp = init_git_repo();
+        let dir = tmp.path();
+
+        // An UNTRACKED file under a crate subdirectory. Untracked files are the
+        // only ones reached via `ls-files`, which -- unlike `diff --name-only` --
+        // reports CWD-relative paths unless `--full-name` is passed. Without that
+        // flag this returns `<repo_root>/src/new.py`, a path that does not exist,
+        // instead of `<repo_root>/crate/src/new.py`.
+        std::fs::create_dir_all(dir.join("crate/src")).unwrap();
+        std::fs::write(dir.join("crate/src/new.py"), "z = 3\n").unwrap();
+
+        // An untracked file the repo-root `.tldrignore` excludes BY ITS
+        // ROOT-RELATIVE path. It only matches once the path is spelled
+        // `crate/vendor/skip.py`; the buggy spelling `vendor/skip.py` slips
+        // past the matcher. So this also pins the ignore interaction, which
+        // path-validity alone would not cover.
+        std::fs::create_dir_all(dir.join("crate/vendor")).unwrap();
+        std::fs::write(dir.join("crate/vendor/skip.py"), "w = 4\n").unwrap();
+        std::fs::write(dir.join(".tldrignore"), "crate/vendor/\n").unwrap();
+
+        let project = dir.join("crate");
+        let result =
+            detect_changes(&project, "HEAD", false, &Language::Python).expect("detect_changes");
+
+        let repo_root = dir.canonicalize().expect("canonicalize repo root");
+        assert!(
+            result
+                .changed_files
+                .contains(&repo_root.join("crate/src/new.py")),
+            "expected the real path crate/src/new.py, got: {:?}",
+            result.changed_files
+        );
+        // The wrong path is named explicitly so a reader sees exactly which
+        // regression this guards; it can never pass vacuously.
+        assert!(
+            !result.changed_files.contains(&repo_root.join("src/new.py")),
+            "got the CWD-relative spelling src/new.py -- `--full-name` is missing: {:?}",
+            result.changed_files
+        );
+        assert!(
+            !result
+                .changed_files
+                .iter()
+                .any(|f| f.to_string_lossy().contains("skip.py")),
+            "crate/vendor/ is .tldrignore'd and must not survive, got: {:?}",
+            result.changed_files
+        );
+    }
+
+    #[test]
+    fn test_git_changed_files_rejects_ls_files_without_full_name() {
+        let tmp = init_git_repo();
+        let dir = tmp.path();
+        let repo_root = dir.canonicalize().expect("canonicalize repo root");
+
+        let err = git_changed_files(dir, &repo_root, &["ls-files", "--others"])
+            .expect_err("ls-files without --full-name must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--full-name"),
+            "error must name the missing flag, got: {msg}"
+        );
+
+        // The positive control must produce a real path, not merely avoid
+        // erroring -- otherwise it cannot tell a correct guard from one that
+        // never fires at all.
+        std::fs::write(dir.join("x.py"), "").unwrap();
+        let ok = git_changed_files(dir, &repo_root, &["ls-files", "--others", "--full-name"])
+            .expect("ls-files with --full-name must be accepted");
+        assert!(
+            ok.contains(&repo_root.join("x.py")),
+            "expected x.py in {ok:?}"
         );
     }
 }
