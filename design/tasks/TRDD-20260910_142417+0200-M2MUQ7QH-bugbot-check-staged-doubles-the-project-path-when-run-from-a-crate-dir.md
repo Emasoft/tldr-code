@@ -1,14 +1,17 @@
 ---
 trdd-id: M2MUQ7QH
 title: bugbot check --staged doubles the project path when run from a crate dir
-column: todo
+column: dev
 created: 2026-09-10T14:24:17+0200
-updated: 2026-09-10T14:24:17+0200
+updated: 2026-09-13T21:21:40+0200
 current-owner: session-claude
 task-type: bugfix
 scope: project
 min-approval-requirement: none
 labels: [cli, paths, bugbot]
+implementation-commits: [7d6a2bb, a17e57b, b76490e]
+assignee: emanuelesabetta
+created-by: session-claude
 ---
 
 # bugbot check --staged doubles the project path when run from a crate dir
@@ -65,10 +68,10 @@ repo it stages itself) rather than the ambient one.
 
 ## Acceptance
 
-- [ ] The path doubling is reproduced deliberately (a documented command +
+- [x] The path doubling is reproduced deliberately (a documented command +
       cwd) and its actual mechanism read from the source, replacing the
       hypothesis above with a verified statement.
-- [ ] `changed_files` entries name paths that exist on disk, from any cwd. A
+- [x] `changed_files` entries name paths that exist on disk, from any cwd. A
       test pins this from a NON-root cwd specifically, since from the repo root
       the bug is invisible.
 - [ ] `bugbot_check_staged_flag_changes_detection_method` no longer depends on
@@ -79,3 +82,7 @@ repo it stages itself) rather than the ambient one.
       code before being accepted as passing.
 
 ## Notes
+
+## Approval log
+
+- 2026-09-13T21:21:35+0200 — column → dev. three commits citing this card have landed (7d6a2bb, a17e57b, b76490e); boxes 1-2 met and verified, box 3 (the ambient-index test) untouched and box 4 blocked on it -- todo claimed unstarted while the work was half done
