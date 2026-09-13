@@ -19,10 +19,50 @@ pub struct ChangeDetectionResult {
     pub detection_method: String,
 }
 
+/// Resolve and canonicalize the git repository root for `project`.
+///
+/// Git always prints paths relative to the repository top-level directory
+/// (verified empirically: `git -C <subdir> diff --name-only` still emits
+/// `<subdir>/file`), regardless of `current_dir`. This is the single place
+/// that resolves and canonicalizes that root, so every `git_changed_files`
+/// call made from the same `detect_changes` invocation joins against the
+/// exact same value -- a subdirectory `project` (e.g. a crate dir under the
+/// repo) never gets its segment doubled (TRDD-M2MUQ7QH), and the result
+/// compares equal to any other canonicalized path even when the OS reports
+/// the same location under two different spellings (e.g. macOS `/var/...`
+/// vs `/private/var/...`). Callers must not canonicalize `project`
+/// themselves and expect it to matter here -- this function is the only
+/// source of truth for the repo root, by construction, not by convention.
+fn resolve_canonical_repo_root(project: &Path) -> Result<PathBuf> {
+    let root_output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(project)
+        .output()
+        .context("Failed to resolve git repository root")?;
+    if !root_output.status.success() {
+        let stderr = String::from_utf8_lossy(&root_output.stderr);
+        anyhow::bail!("git rev-parse --show-toplevel failed: {}", stderr);
+    }
+    let raw_root = String::from_utf8_lossy(&root_output.stdout)
+        .trim()
+        .to_string();
+    if raw_root.is_empty() {
+        anyhow::bail!(
+            "git rev-parse --show-toplevel returned an empty path for '{}' \
+             (expected a work-tree root; this happens for a bare repo, or \
+             when GIT_DIR is set without a work tree)",
+            project.display()
+        );
+    }
+    PathBuf::from(&raw_root)
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize git repository root '{raw_root}'"))
+}
+
 /// Run a git command in `project` and return the listed file paths.
 ///
 /// Each non-empty line of stdout is joined with `project` to form an absolute path.
-fn git_changed_files(project: &Path, args: &[&str]) -> Result<Vec<PathBuf>> {
+fn git_changed_files(project: &Path, repo_root: &Path, args: &[&str]) -> Result<Vec<PathBuf>> {
     let output = Command::new("git")
         .args(args)
         .current_dir(project)
@@ -34,28 +74,11 @@ fn git_changed_files(project: &Path, args: &[&str]) -> Result<Vec<PathBuf>> {
         anyhow::bail!("git command failed: {}", stderr);
     }
 
-    // Git always prints paths relative to the repository top-level directory
-    // (verified empirically: `git -C <subdir> diff --name-only` still emits
-    // `<subdir>/file`), regardless of `current_dir`. Re-bind `project` to
-    // that root before joining below, so a subdirectory `project` (e.g. a
-    // crate dir under the repo) never gets its segment doubled by the join
-    // (TRDD-M2MUQ7QH) and the doc comment above stays literally true.
-    let root_output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(project)
-        .output()
-        .context("Failed to resolve git repository root")?;
-    if !root_output.status.success() {
-        let stderr = String::from_utf8_lossy(&root_output.stderr);
-        anyhow::bail!("git rev-parse --show-toplevel failed: {}", stderr);
-    }
-    let project = PathBuf::from(String::from_utf8_lossy(&root_output.stdout).trim());
-
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(stdout
         .lines()
         .filter(|l| !l.is_empty())
-        .map(|l| project.join(l))
+        .map(|l| repo_root.join(l))
         .collect())
 }
 
@@ -80,18 +103,30 @@ pub fn detect_changes(
     staged: bool,
     language: &Language,
 ) -> Result<ChangeDetectionResult> {
+    // Resolve the canonical repo root exactly once, here, and pass it down
+    // to every `git_changed_files` call below -- see `resolve_canonical_repo_root`
+    // for why a single shared resolution point (rather than each call
+    // re-resolving and re-canonicalizing on its own) is what prevents the
+    // root used for one call from silently drifting from the root used for
+    // another within the same `detect_changes` invocation.
+    let repo_root = resolve_canonical_repo_root(project)?;
+
     let (raw_files, detection_method) = if staged {
-        let files = git_changed_files(project, &["diff", "--name-only", "--staged"])
+        let files = git_changed_files(project, &repo_root, &["diff", "--name-only", "--staged"])
             .context("Failed to list staged changes")?;
         (files, "git:staged".to_string())
     } else if base_ref == "HEAD" {
         // Uncommitted = modified tracked + staged + untracked
-        let mut files = git_changed_files(project, &["diff", "--name-only", "HEAD"])
+        let mut files = git_changed_files(project, &repo_root, &["diff", "--name-only", "HEAD"])
             .context("Failed to list uncommitted changes")?;
-        let staged_files = git_changed_files(project, &["diff", "--name-only", "--staged"])
+        let staged_files = git_changed_files(project, &repo_root, &["diff", "--name-only", "--staged"])
             .context("Failed to list staged changes")?;
-        let untracked = git_changed_files(project, &["ls-files", "--others", "--exclude-standard"])
-            .context("Failed to list untracked files")?;
+        let untracked = git_changed_files(
+            project,
+            &repo_root,
+            &["ls-files", "--others", "--exclude-standard"],
+        )
+        .context("Failed to list untracked files")?;
         files.extend(staged_files);
         files.extend(untracked);
         files.sort();
@@ -99,7 +134,7 @@ pub fn detect_changes(
         (files, "git:uncommitted".to_string())
     } else {
         let range = format!("{}...HEAD", base_ref);
-        let files = git_changed_files(project, &["diff", "--name-only", &range])
+        let files = git_changed_files(project, &repo_root, &["diff", "--name-only", &range])
             .context("Failed to list base-ref changes")?;
         (files, format!("git:{}...HEAD", base_ref))
     };

@@ -166,19 +166,31 @@ fn bugbot_check_staged_from_crate_subdir_does_not_double_the_path() {
     let changed_files = json["changed_files"]
         .as_array()
         .expect("changed_files should be an array");
-    assert!(
-        !changed_files.is_empty(),
-        "expected at least one changed file, got: {}",
-        stdout
-    );
 
-    for f in changed_files {
-        let path = f.as_str().expect("changed_files entries should be strings");
-        assert!(
-            std::path::Path::new(path).exists(),
-            "changed_files entry {path} should name a path that exists on disk (crate dir must not be doubled)"
-        );
-    }
+    // Exact-set assertion, not existence-only: an empty result set would
+    // vacuously satisfy an "every path exists" check, so it could never
+    // catch the path-doubling bug this test guards against. Compare the
+    // full sorted set of reported paths against the one file we staged,
+    // canonicalized the same way the CLI canonicalizes the repo root
+    // (TRDD-M2MUQ7QH / repo-root canonicalization hardening), so the
+    // comparison is exact rather than a subset/contains check.
+    let canonical_root = root.path().canonicalize().expect("canonicalize tempdir root");
+    let expected_path = canonical_root.join("crate").join("src").join(&file_name);
+    let mut actual_paths: Vec<String> = changed_files
+        .iter()
+        .map(|f| {
+            f.as_str()
+                .expect("changed_files entries should be strings")
+                .to_string()
+        })
+        .collect();
+    actual_paths.sort();
+    let expected_paths = vec![expected_path.to_string_lossy().to_string()];
+    assert_eq!(
+        actual_paths, expected_paths,
+        "changed_files should report exactly the one staged file, canonicalized \
+         under the repo root (crate dir must not be doubled), got: {stdout}"
+    );
 }
 
 #[test]
