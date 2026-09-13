@@ -1833,8 +1833,11 @@ result = len([1, 2, 3])
     fn test_definition_invalid_position() {
         let temp = TempDir::new().unwrap();
         let file_path = create_test_file(&temp, "sample.py", PYTHON_DEFINITION_SAMPLE);
+        let line_count = PYTHON_DEFINITION_SAMPLE.lines().count();
 
-        // Command gracefully handles invalid positions (returns placeholder, exit 0)
+        // Fail-fast: an out-of-range line is an invalid argument, not an
+        // empty result -- the command must exit non-zero and name both the
+        // requested line and the file's real line count.
         tldr_assert_cmd()
             .args([
                 "definition",
@@ -1843,7 +1846,11 @@ result = len([1, 2, 3])
                 "0",
             ])
             .assert()
-            .success();
+            .failure()
+            .stderr(
+                predicate::str::contains("9999")
+                    .and(predicate::str::contains(line_count.to_string())),
+            );
     }
 
     // -------------------------------------------------------------------------
