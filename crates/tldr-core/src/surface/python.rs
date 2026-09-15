@@ -317,17 +317,25 @@ fn parse_python_reexport_line(line: &str) -> Option<PythonReexport> {
 /// into a single logical line so `parse_python_reexport_line` can parse it.
 /// Every other line passes through unchanged.
 fn join_python_reexport_statements(source: &str) -> Vec<String> {
+    // why: a trailing `# comment` hides the `(` / `)` from the ends_with /
+    // strip_suffix checks. An unseen closing `)  # noqa` made the join swallow
+    // every later line of the file, dropping all re-exports after it. Python
+    // identifiers never contain '#', so cutting the line there is safe.
+    fn code_part(line: &str) -> &str {
+        line.split('#').next().unwrap_or("").trim()
+    }
+
     let mut statements = Vec::new();
     let mut lines = source.lines();
     while let Some(line) = lines.next() {
-        let trimmed = line.trim();
+        let trimmed = code_part(line);
         if trimmed.starts_with("from .") && trimmed.ends_with('(') {
             // Keep commas as item separators -- `parse_python_reexport_line`
             // splits the import list on them, and a trailing comma produces
             // a harmless empty item it already skips.
             let mut joined = trimmed.trim_end_matches('(').to_string();
             for cont in lines.by_ref() {
-                let cont_trimmed = cont.trim();
+                let cont_trimmed = code_part(cont);
                 if let Some(before_close) = cont_trimmed.strip_suffix(')') {
                     let before_close = before_close.trim();
                     if !before_close.is_empty() {
@@ -1320,6 +1328,38 @@ mod tests {
         let root = PathBuf::from("/site-packages/json");
         let file = PathBuf::from("/site-packages/json/__init__.py");
         assert_eq!(compute_module_path(&file, &root, "json"), "json");
+    }
+
+    #[test]
+    fn test_join_python_reexport_handles_noqa_comment_on_closing_paren() {
+        // Catches a pre-fix bug: a trailing `# noqa` comment on the closing
+        // `)` line hid it from the raw ends_with/strip_suffix checks (which
+        // saw `)  # noqa`, not `)`), so the multi-line join never found its
+        // terminator and swallowed every later line of the file -- dropping
+        // `from .b import y` entirely from the package's re-exports.
+        let source = "from .a import (\n    x,\n)  # noqa\nfrom .b import y\n";
+        let joined = join_python_reexport_statements(source);
+
+        let mut exported = Vec::new();
+        for line in &joined {
+            if let Some((_, imported)) = parse_python_reexport_line(line) {
+                for (_, alias) in imported {
+                    exported.push(alias);
+                }
+            }
+        }
+
+        assert!(
+            exported.contains(&"x".to_string()),
+            "x from the parenthesized import should be re-exported, got {:?}",
+            exported
+        );
+        assert!(
+            exported.contains(&"y".to_string()),
+            "y from `from .b import y` (after the noqa'd close-paren) must not be \
+             swallowed, got {:?}",
+            exported
+        );
     }
 
     #[test]
