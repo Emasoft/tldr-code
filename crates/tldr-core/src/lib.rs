@@ -104,11 +104,11 @@ pub use fs::get_file_tree;
 
 // Re-export Layer 2 functions for convenience
 pub use analysis::{
-    architecture_analysis, change_impact, change_impact_extended, collect_all_functions,
-    dead_code_analysis, enrich_impact_with_references, find_importers, find_references,
-    impact_analysis, impact_analysis_with_ast_fallback, names_match, ChangeImpactMetadata,
-    ChangeImpactReport, ChangeImpactStatus, DetectionMethod, Reference, ReferenceKind,
-    ReferencesOptions, ReferencesReport, TestFunction,
+    analyze_definition_order, architecture_analysis, change_impact, change_impact_extended,
+    collect_all_functions, dead_code_analysis, enrich_impact_with_references, find_importers,
+    find_references, impact_analysis, impact_analysis_with_ast_fallback, names_match,
+    ChangeImpactMetadata, ChangeImpactReport, ChangeImpactStatus, DetectionMethod, OrderIssue,
+    OrderReport, Reference, ReferenceKind, ReferencesOptions, ReferencesReport, TestFunction,
 };
 pub use callgraph::build_project_call_graph;
 

@@ -9,6 +9,7 @@
 //! - `change_impact` - Find tests affected by changed files
 //! - `hubs` - Hub detection using centrality measures (in-degree, out-degree)
 //! - `references` - Find all references to a symbol across the codebase
+//! - `order` - Definition-order (use-before-define / TDZ) analysis (issue #8b)
 //! - `clones` - Code clone detection (Type-1, Type-2, Type-3)
 //! - `similarity` - Code similarity analysis (Dice, Jaccard, Cosine)
 //!
@@ -40,6 +41,7 @@ pub mod deps;
 pub mod hubs;
 pub mod impact;
 pub mod importers;
+pub mod order;
 pub mod refcount;
 pub mod references;
 pub mod similarity;
@@ -79,6 +81,7 @@ pub use impact::{
     enrich_impact_with_references, impact_analysis, impact_analysis_with_ast_fallback, names_match,
 };
 pub use importers::find_importers;
+pub use order::{analyze_definition_order, OrderIssue, OrderReport};
 pub use references::{
     classify_reference_kind, find_references, find_text_candidates, verify_candidates_with_ast,
     Definition, DefinitionKind, Reference, ReferenceKind, ReferenceStats, ReferencesOptions,

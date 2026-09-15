@@ -45,7 +45,8 @@ use tldr_cli::commands::{
     DefinitionArgs, DepsArgs,
     DiagnosticsArgs, DiceArgs, DiffArgs, DoctorArgs, ExplainArgs, ExtractArgs, FixArgs,
     HalsteadArgs, HealthArgs, HotspotsArgs, HubsArgs, ImpactArgs, ImportersArgs, ImportsArgs,
-    InheritanceArgs, InvariantsArgs, LocArgs, PatternsArgs, ReachingDefsArgs, ReferencesArgs,
+    InheritanceArgs, InvariantsArgs, LocArgs, OrderArgs, PatternsArgs, ReachingDefsArgs,
+    ReferencesArgs,
     SecureArgs, SliceArgs, SmartSearchArgs, SmellsArgs, SpecsArgs, StatsArgs, StructureArgs,
     TaintArgs, TodoArgs, TreeArgs, VerifyArgs, WarmArgs, WhatbreaksArgs,
 };
@@ -321,6 +322,10 @@ pub enum Command {
     #[command(name = "body")]
     Body(BodyArgs),
 
+    /// Report use-before-define / TDZ hazards computed from definition line ranges (JS/TS/Python).
+    #[command(name = "order")]
+    Order(OrderArgs),
+
     /// Extract behavioral specifications from pytest test files
     #[command(visible_alias = "sp")]
     Specs(SpecsArgs),
@@ -569,6 +574,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::DeadStores(_) => "dead-stores",
         Command::Chop(_) => "chop",
         Command::Body(_) => "body",
+        Command::Order(_) => "order",
         Command::Specs(_) => "specs",
         Command::Invariants(_) => "invariants",
         Command::Verify(_) => "verify",
@@ -697,6 +703,9 @@ fn run_command(cli: &Cli) -> Result<()> {
         Command::DeadStores(args) => args.run(cli.format, q),
         Command::Chop(args) => args.run(cli.format, q),
         Command::Body(args) => args.run(cli.format, q, cli.lang),
+        // Issue #8b: definition-order / TDZ report — threads (format, quiet, lang)
+        // exactly like References.
+        Command::Order(args) => args.run(cli.format, q, cli.lang),
         Command::Specs(args) => args.run(cli.format, q),
         Command::Invariants(args) => args.run(cli.format, q),
         Command::Verify(args) => args.run(cli.format, q),

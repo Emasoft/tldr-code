@@ -80,8 +80,12 @@ pub mod bugbot;
 // Body - safe contiguous byte-faithful source reader (issue #8)
 pub mod body;
 
+// Order - use-before-define / TDZ report (issue #8b)
+pub mod order;
+
 // Re-export Args types for convenience
 pub use body::BodyArgs;
+pub use order::OrderArgs;
 pub use calls::CallsArgs;
 pub use dead::DeadArgs;
 pub use impact::ImpactArgs;
