@@ -3,6 +3,7 @@
 //! Computes backward or forward program slices from a line.
 //! Auto-routes through daemon when available for ~35x speedup.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -14,6 +15,17 @@ use tldr_core::{get_slice_rich, Language, SliceDirection};
 
 use crate::commands::daemon_router::{params_with_file_function_line, try_daemon_route};
 use crate::output::{OutputFormat, OutputWriter};
+
+// slice-contiguous-v1 (issue #4): a dataflow slice is a sparse set of
+// lines, not a contiguous source region. Every default-mode slice output
+// carries this exact warning — a JSON `warnings` entry and a first-line
+// text banner — so consumers never reconstruct or edit from slice output
+// as if it were whole source.
+const NON_CONTIGUOUS_WARNING: &str =
+    "dataflow slice — NOT contiguous source; do not reconstruct or edit from this output";
+
+// slice-contiguous-v1 (issue #4): header printed by `--contiguous` output.
+const CONTIGUOUS_HEADER: &str = "contiguous view — elided lines shown as markers";
 
 /// Compute program slice from a line
 #[derive(Debug, Args)]
@@ -38,6 +50,12 @@ pub struct SliceArgs {
     /// Programming language (auto-detected from file extension if not specified)
     #[arg(long, short = 'l')]
     pub lang: Option<Language>,
+
+    /// Emit every line from the first to the last slice line; non-criterion
+    /// lines are elided with a visible marker instead of dropped. Safe basis
+    /// for reading/reconstructing a region.
+    #[arg(long)]
+    pub contiguous: bool,
 }
 
 /// CLI wrapper for slice direction
@@ -72,6 +90,11 @@ struct SliceLine {
     dep_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dep_label: Option<String>,
+    /// slice-contiguous-v1 (issue #4): true when this line sits inside the
+    /// contiguous span but is not part of the slice — its real code was
+    /// elided behind a visible marker instead of being dropped silently.
+    #[serde(default, skip_serializing_if = "is_false")]
+    elided: bool,
 }
 
 /// Edge in slice output
@@ -106,6 +129,25 @@ struct SliceOutput {
     /// pattern so empty results are not silent.
     #[serde(skip_serializing_if = "Option::is_none")]
     explanation: Option<String>,
+    /// slice-contiguous-v1 (issue #4): consumer-facing warnings. Default
+    /// (non-contiguous) mode always carries the non-contiguous-source
+    /// warning; `--contiguous` output stays warning-free.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
+    /// slice-contiguous-v1 (issue #4): number of span lines elided behind a
+    /// visible marker (populated only by `--contiguous`; 0 otherwise).
+    #[serde(default, skip_serializing_if = "u32_is_zero")]
+    elided_count: u32,
+}
+
+// slice-contiguous-v1 (issue #4): serde skip predicates for the additive
+// contiguous-view fields.
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+fn u32_is_zero(v: &u32) -> bool {
+    *v == 0
 }
 
 /// Legacy daemon output (old format without rich data)
@@ -137,16 +179,30 @@ impl SliceArgs {
         };
 
         // Try daemon first for cached result (use file's parent as project root)
+        //
+        // slice-contiguous-v1 (issue #4): `--contiguous` bypasses the daemon
+        // route entirely. The legacy daemon output is a bare line-number
+        // list that cannot honor the flag (span expansion with visible
+        // elision markers), so contiguous mode always computes locally.
         let project = self.file.parent().unwrap_or(&self.file);
-        if let Some(output) = try_daemon_route::<LegacySliceOutput>(
-            project,
-            "slice",
-            params_with_file_function_line(&self.file, &self.function, self.line),
-        ) {
+        let daemon_output = if self.contiguous {
+            None
+        } else {
+            try_daemon_route::<LegacySliceOutput>(
+                project,
+                "slice",
+                params_with_file_function_line(&self.file, &self.function, self.line),
+            )
+        };
+        if let Some(output) = daemon_output {
             // Daemon returns legacy format -- enrich with source code if possible
             let source_lines = read_file_lines(&self.file);
             if writer.is_text() {
                 let mut text = String::new();
+                // slice-contiguous-v1 (issue #4): the daemon path returns the
+                // same sparse dataflow slice — print the same first-line
+                // warning as the direct path so neither route is silent.
+                text.push_str(&format!("WARNING: {NON_CONTIGUOUS_WARNING}\n"));
                 text.push_str(&format!(
                     "Program Slice ({} from line {})\n",
                     output.direction, output.criterion_line
@@ -215,6 +271,7 @@ impl SliceArgs {
                             uses: Vec::new(),
                             dep_type: None,
                             dep_label: None,
+                            elided: false,
                         }
                     })
                     .collect();
@@ -241,6 +298,10 @@ impl SliceArgs {
                     slice_lines,
                     edges: Vec::new(),
                     explanation,
+                    // slice-contiguous-v1 (issue #4): the daemon's slice is
+                    // just as non-contiguous as the directly computed one.
+                    warnings: vec![NON_CONTIGUOUS_WARNING.to_string()],
+                    elided_count: 0,
                 };
                 writer.write(&rich_output)?;
                 return Ok(());
@@ -270,7 +331,7 @@ impl SliceArgs {
         let lines: Vec<u32> = rich.nodes.iter().map(|n| n.line).collect();
 
         // Build rich line data
-        let slice_lines: Vec<SliceLine> = rich
+        let criterion_slice_lines: Vec<SliceLine> = rich
             .nodes
             .iter()
             .map(|n| SliceLine {
@@ -280,8 +341,30 @@ impl SliceArgs {
                 uses: n.uses.clone(),
                 dep_type: n.dep_type.clone(),
                 dep_label: n.dep_label.clone(),
+                elided: false,
             })
             .collect();
+
+        // slice-contiguous-v1 (issue #4): contiguous mode expands the
+        // criterion slice into the full first..=last span, so the raw
+        // source is needed even for JSON output — read it once,
+        // error-tolerantly (empty vec on failure), exactly like the
+        // text-mode path. Default mode keeps the sparse slice and flags it.
+        let (slice_lines, elided_count, warnings) = if self.contiguous {
+            let source_lines = read_file_lines(&self.file);
+            let (expanded, elided) = build_contiguous_slice_lines(
+                criterion_slice_lines,
+                &source_lines,
+                elision_marker(language),
+            );
+            (expanded, elided, Vec::new())
+        } else {
+            (
+                criterion_slice_lines,
+                0,
+                vec![NON_CONTIGUOUS_WARNING.to_string()],
+            )
+        };
 
         // Build edge output
         let edges: Vec<SliceEdgeOutput> = rich
@@ -324,11 +407,13 @@ impl SliceArgs {
             slice_lines,
             edges,
             explanation,
+            warnings,
+            elided_count,
         };
 
         // Output based on format
         if writer.is_text() {
-            let text = format_rich_text(&output, data_count, ctrl_count);
+            let text = format_rich_text(&output, data_count, ctrl_count, self.contiguous);
             writer.write_text(&text)?;
         } else {
             writer.write(&output)?;
@@ -339,8 +424,24 @@ impl SliceArgs {
 }
 
 /// Format rich slice as compact text for LLM consumption
-fn format_rich_text(output: &SliceOutput, data_count: usize, ctrl_count: usize) -> String {
+///
+/// slice-contiguous-v1 (issue #4): default mode prepends a first-line
+/// warning that the slice is NOT contiguous source; `--contiguous` prints
+/// the contiguous-view header and renders every span line (non-slice lines
+/// as elision markers) instead of skipping blank lines.
+fn format_rich_text(
+    output: &SliceOutput,
+    data_count: usize,
+    ctrl_count: usize,
+    contiguous: bool,
+) -> String {
     let mut text = String::new();
+
+    // slice-contiguous-v1 (issue #4): warn before any rows so the hazard is
+    // visible even to consumers that only read the head of the output.
+    if !contiguous {
+        text.push_str(&format!("WARNING: {NON_CONTIGUOUS_WARNING}\n"));
+    }
 
     text.push_str(&format!(
         "Program Slice ({} from line {})\n",
@@ -359,6 +460,11 @@ fn format_rich_text(output: &SliceOutput, data_count: usize, ctrl_count: usize) 
     if let Some(diag) = &output.explanation {
         text.push_str(&format!("\n{}\n", diag));
         return text;
+    }
+
+    // slice-contiguous-v1 (issue #4): contiguous-view header.
+    if contiguous {
+        text.push_str(&format!("\n{CONTIGUOUS_HEADER}\n"));
     }
 
     // Count non-blank lines for accurate summary
@@ -385,8 +491,17 @@ fn format_rich_text(output: &SliceOutput, data_count: usize, ctrl_count: usize) 
     let mut prev_uses: Option<&Vec<String>> = None;
 
     for sl in &output.slice_lines {
-        // Skip blank lines — they waste tokens and carry no insight
-        if sl.code.trim().is_empty() {
+        // Skip blank lines — they waste tokens and carry no insight.
+        // slice-contiguous-v1 (issue #4): the contiguous view must show
+        // every span line so nothing appears to vanish.
+        if !contiguous && sl.code.trim().is_empty() {
+            continue;
+        }
+
+        // slice-contiguous-v1 (issue #4): elided span lines render as the
+        // bare language-appropriate marker, with no annotations.
+        if sl.elided {
+            text.push_str(&format!("  {:>5} | {}\n", sl.line, sl.code));
             continue;
         }
 
@@ -479,6 +594,84 @@ fn slice_oor_explanation(
     } else {
         None
     }
+}
+
+/// slice-contiguous-v1 (issue #4): language-appropriate comment marker for
+/// elided span lines, so a contiguous view never renders dropped code as
+/// blank space.
+fn elision_marker(language: Language) -> &'static str {
+    match language {
+        // Hash-comment family (Python, Ruby; also YAML/Shell).
+        Language::Python | Language::Ruby => "# ... elided",
+        // Dash-comment family (Lua/Luau, Elixir; also SQL/Haskell/Ada).
+        Language::Lua | Language::Luau | Language::Elixir => "-- ... elided",
+        // C-family, JS/TS, Rust, Go, Java, ... — and the default.
+        _ => "// ... elided",
+    }
+}
+
+/// slice-contiguous-v1 (issue #4): expand a criterion slice into the full
+/// contiguous span `min(slice lines)..=max(slice lines)`. Slice-member
+/// lines keep their real code (refreshed from the source read when the
+/// line is available on disk); every other span line is emitted in order
+/// with a visible elision marker and `elided: true` — never silently
+/// dropped. Returns the expanded lines plus the number of elided lines.
+fn build_contiguous_slice_lines(
+    criterion_slice_lines: Vec<SliceLine>,
+    source_lines: &[String],
+    marker: &str,
+) -> (Vec<SliceLine>, u32) {
+    if criterion_slice_lines.is_empty() {
+        return (Vec::new(), 0);
+    }
+
+    // Core sorts slice nodes by line, so first/last bound the span.
+    let first = criterion_slice_lines
+        .first()
+        .map(|sl| sl.line)
+        .unwrap_or_default();
+    let last = criterion_slice_lines
+        .last()
+        .map(|sl| sl.line)
+        .unwrap_or_default();
+
+    let mut in_slice: HashMap<u32, SliceLine> = criterion_slice_lines
+        .into_iter()
+        .map(|sl| (sl.line, sl))
+        .collect();
+
+    let mut expanded = Vec::with_capacity((last - first + 1) as usize);
+    let mut elided_count: u32 = 0;
+
+    for line in first..=last {
+        match in_slice.remove(&line) {
+            Some(mut sl) => {
+                // Keep the real code; prefer the fresh source read so the
+                // contiguous view always reflects the file on disk.
+                if let Some(src) = source_lines.get((line as usize).wrapping_sub(1)) {
+                    let trimmed = src.trim_end().to_string();
+                    if !trimmed.is_empty() {
+                        sl.code = trimmed;
+                    }
+                }
+                expanded.push(sl);
+            }
+            None => {
+                expanded.push(SliceLine {
+                    line,
+                    code: marker.to_string(),
+                    definitions: Vec::new(),
+                    uses: Vec::new(),
+                    dep_type: None,
+                    dep_label: None,
+                    elided: true,
+                });
+                elided_count += 1;
+            }
+        }
+    }
+
+    (expanded, elided_count)
 }
 
 // Optional helper accessor used in tests and richtext path; matches
