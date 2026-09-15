@@ -569,9 +569,14 @@ fn analyze_unexpected_token(error: &ParsedError, source: &str, token: &str) -> O
 /// `count_delimiters` so this skip logic exists exactly once.
 ///
 /// why: comments must be skipped too, and a `'`/`"` string must end at a
-/// newline (unless escaped). Otherwise an apostrophe in `// don't` opens a
-/// "string" that never closes, every later brace is ignored, and a file
-/// that is simply missing its final `}` gets no fix. Escaping (for the
+/// newline -- `\n` or `\r` (CRLF files included), unless escaped, and
+/// never inside a backtick template literal. Otherwise an apostrophe in
+/// `// don't` opens a "string" that never closes, every later brace is
+/// ignored, and a file that is simply missing its final `}` gets no fix.
+/// A `\` before a CRLF pair is still ONE line continuation: the toggling
+/// escape flag only lasts a single character, so the `\r` consumes the
+/// escape and the paired `\n` must be swallowed explicitly (below) or it
+/// would end the string as an unescaped newline. Escaping (for the
 /// string-end check, the comment-open check, and the regex-close check
 /// alike) is tracked with a TOGGLING flag, not a bare "is the previous
 /// char a backslash" check -- so `\\` (an escaped backslash) does not
@@ -629,9 +634,17 @@ fn code_chars_excluding_strings_and_comments(source: &str) -> Vec<char> {
                 in_block_comment = false;
             }
         } else if in_string {
-            if (ch == string_char && !esc) || (ch == '\n' && string_char != '`' && !esc) {
+            if (ch == string_char && !esc)
+                || ((ch == '\n' || ch == '\r') && string_char != '`' && !esc)
+            {
                 in_string = false;
                 last_significant_code_char = Some(ch);
+            } else if esc && ch == '\r' && string_char != '`' && chars.peek() == Some(&'\n') {
+                // `\<CR><LF>` is ONE line continuation (like `\<LF>`): the
+                // toggling escape flag only covered the `\r`, so consume the
+                // paired `\n` here or it would be read as an unescaped
+                // newline that ends the string one line early.
+                chars.next();
             }
         } else if in_regex {
             if ch == '\n' {
@@ -1677,6 +1690,21 @@ mod tests {
         // `if (x) {` on the line after. Net effect: an extra phantom `{` is
         // counted alongside the real one.
         let source = "'a { \\\nb { c';\nif (x) {\n}";
+        let (opens, closes) = count_delimiters(source, '}');
+        assert_eq!(opens, 1, "only the real `{{` from `if (x) {{` should count");
+        assert_eq!(closes, 1);
+    }
+
+    #[test]
+    fn test_count_delimiters_line_continued_string_crlf_does_not_swallow_brace() {
+        // Same bug as the LF test above, on CRLF files: the toggling escape
+        // flag only lasts one character, so in `'a { \` + \r\n the `\r` ate
+        // the escape and the paired `\n` was read as an UNESCAPED newline
+        // that ended the string one line early -- `b { c` became phantom
+        // code with an extra `{`, and the closing `'` opened a second
+        // spurious string. `\<CR><LF>` must count as ONE line continuation,
+        // while an unescaped `\r` still ends a string like `\n` does.
+        let source = "'a { \\\r\nb { c';\r\nif (x) {\r\n}";
         let (opens, closes) = count_delimiters(source, '}');
         assert_eq!(opens, 1, "only the real `{{` from `if (x) {{` should count");
         assert_eq!(closes, 1);
