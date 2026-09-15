@@ -80,6 +80,15 @@ pub struct EnrichedResult {
     /// Code snippet preview (first few lines of the function body)
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub preview: String,
+    /// search-exact-token-v1 (issue #9): how the matched window related to
+    /// the query tokens — `"exact"` when at least one matched term occurs
+    /// as a whole token inside the card's window, `"substring"` when terms
+    /// occur only inside larger words (`"addresses"` ⊃ `"dres"`), `"fuzzy"`
+    /// reserved for sub-token similarity. Empty (omitted in JSON) for
+    /// unclassified cards: regex/hybrid modes and synthesized name-boost
+    /// cards do not derive from a classified match window.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub match_type: String,
 }
 
 /// Report from an enriched search operation.
@@ -275,6 +284,15 @@ fn name_boost_multiplier(name: &str, needle: &str) -> f64 {
     }
 }
 
+/// search-exact-token-v1 (issue #9): keep the strongest match label when
+/// several match windows merge into one result card (`"exact"` beats every
+/// other label; unclassified windows never overwrite a classification).
+fn merge_match_type(existing: &mut String, incoming: &str) {
+    if incoming == "exact" && existing != "exact" {
+        *existing = "exact".to_string();
+    }
+}
+
 /// Read a call graph cache file and build forward/reverse lookup maps.
 ///
 /// The cache is produced by the daemon's `warm` command and uses
@@ -395,6 +413,9 @@ fn regex_matches_to_bm25_results(matches: &[SearchMatch]) -> Vec<Bm25Result> {
                 line_end: m.line,
                 snippet: m.content.clone(),
                 matched_terms: vec![], // regex has no BM25 terms
+                // search-exact-token-v1 (issue #9): regex matches are not
+                // term-classified; left unclassified (omitted from JSON).
+                match_type: String::new(),
             }
         })
         .collect()
@@ -533,6 +554,22 @@ pub fn enriched_search_with_index(
     search_with_inner(query, root, language, options, Some(index), None, None)
 }
 
+/// Resolve a BM25 document id back to a readable file path under `root`.
+///
+/// search-exact-token-v1 (issue #9): when the search root IS a file
+/// (e.g. `tldr search 'dres' public/app.js`), the document id is the empty
+/// relative path, and `root.join("")` would append a trailing separator,
+/// making every subsequent read (tree-sitter parse) fail and silently
+/// degrading the results. The empty relative path maps back to `root`
+/// itself.
+fn resolve_indexed_path(root: &Path, rel_path: &Path) -> PathBuf {
+    if rel_path.as_os_str().is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel_path)
+    }
+}
+
 /// Process a single file's BM25 results: parse with tree-sitter, find enclosing
 /// functions, and produce `(dedup_key, EnrichedResult)` tuples.
 ///
@@ -548,7 +585,7 @@ fn process_file_results(
     language: Language,
     cached_defs: Option<&[DefinitionInfo]>,
 ) -> Vec<((PathBuf, String), EnrichedResult)> {
-    let abs_path = root.join(rel_path);
+    let abs_path = resolve_indexed_path(root, rel_path);
 
     // Use cached definitions if available, otherwise parse with tree-sitter
     let entries = if let Some(defs) = cached_defs {
@@ -570,7 +607,13 @@ fn process_file_results(
                 // Accumulate into a local dedup map for this file's fallback entries
                 let mut local_dedup: HashMap<(PathBuf, String), EnrichedResult> = HashMap::new();
                 for result in results {
-                    let key = (rel_path.clone(), rel_path.display().to_string());
+                    // search-exact-token-v1 (issue #9): key by window start
+                    // so per-window results stay separate cards when
+                    // tree-sitter parsing fails (recall guarantee).
+                    let key = (
+                        rel_path.clone(),
+                        format!("{}:{}", rel_path.display(), result.line_start),
+                    );
                     let entry = local_dedup.entry(key).or_insert_with(|| EnrichedResult {
                         name: rel_path.display().to_string(),
                         kind: "module".to_string(),
@@ -582,6 +625,7 @@ fn process_file_results(
                         score: result.score,
                         matched_terms: result.matched_terms.clone(),
                         preview: String::new(),
+                        match_type: result.match_type.clone(),
                     });
                     if result.score > entry.score {
                         entry.score = result.score;
@@ -620,11 +664,15 @@ fn process_file_results(
                     score: result.score,
                     matched_terms: result.matched_terms.clone(),
                     preview: entry.preview.clone(),
+                    match_type: result.match_type.clone(),
                 });
                 // Take the highest score and merge matched_terms
                 if result.score > enriched.score {
                     enriched.score = result.score;
                 }
+                // search-exact-token-v1 (issue #9): keep the strongest label
+                // when several windows merge into one card.
+                merge_match_type(&mut enriched.match_type, &result.match_type);
                 for term in &result.matched_terms {
                     if !enriched.matched_terms.contains(term) {
                         enriched.matched_terms.push(term.clone());
@@ -668,6 +716,7 @@ fn process_file_results(
                     score: result.score,
                     matched_terms: result.matched_terms.clone(),
                     preview: result.snippet.clone(),
+                    match_type: result.match_type.clone(),
                 });
             }
         }
@@ -726,6 +775,8 @@ fn enrich_and_deduplicate(
                     existing.matched_terms.push(term.clone());
                 }
             }
+            // search-exact-token-v1 (issue #9): keep the strongest label.
+            merge_match_type(&mut existing.match_type, &entry.match_type);
         }
     }
 
@@ -794,6 +845,8 @@ fn enrich_and_deduplicate_with_cache(
                     existing.matched_terms.push(term.clone());
                 }
             }
+            // search-exact-token-v1 (issue #9): keep the strongest label.
+            merge_match_type(&mut existing.match_type, &entry.match_type);
         }
     }
 
@@ -1165,7 +1218,7 @@ pub fn search_with_inner(
             let needle_lc = needle.to_lowercase();
             let mut synthesized: Vec<EnrichedResult> = Vec::new();
             for (rel_path, base_score) in &file_best_score {
-                let abs_path = root.join(rel_path);
+                let abs_path = resolve_indexed_path(root, rel_path);
 
                 // Use cached structure entries when available, else
                 // fall back to live tree-sitter parse. On parse errors
@@ -1219,6 +1272,9 @@ pub fn search_with_inner(
                             .cloned()
                             .unwrap_or_default(),
                         preview: entry.preview.clone(),
+                        // search-exact-token-v1 (issue #9): synthesized from a
+                        // symbol-NAME match, not a classified match window.
+                        match_type: String::new(),
                     });
                 }
             }
@@ -1893,6 +1949,7 @@ def parse_json(text):
             score: 0.94,
             matched_terms: vec!["verify".to_string(), "jwt".to_string(), "token".to_string()],
             preview: String::new(),
+            match_type: "exact".to_string(),
         };
 
         assert_eq!(result.name, "verify_jwt_token");
@@ -1916,6 +1973,7 @@ def parse_json(text):
             score: 0.5,
             matched_terms: vec!["test".to_string()],
             preview: String::new(),
+            match_type: String::new(),
         };
 
         let json = serde_json::to_string(&result).unwrap();
@@ -1936,6 +1994,65 @@ def parse_json(text):
         assert_eq!(report.query, "authentication");
         assert_eq!(report.total_files_searched, 42);
         assert_eq!(report.search_mode, "bm25+structure");
+    }
+
+    /// search-exact-token-v1 (issue #9): end-to-end enriched search on the
+    /// issue repro shape — whole-token occurrences far below a substring
+    /// decoy must be returned, ranked first, labeled `"exact"`, and the
+    /// substring-only decoy ("addresses" ⊃ "dres" inside the `rescanClicks`
+    /// comment) must not surface at all.
+    #[test]
+    fn test_enriched_search_exact_token_recall_and_ranking() {
+        let temp = TempDir::new().unwrap();
+        const REAL_LINE: usize = 20; // 1-indexed line of `const dres = ...`
+        let mut lines: Vec<String> = Vec::new();
+        lines.push("// App shell bootstrap.".to_string());
+        lines.push("// rescanClicks state: addresses stale UI flags after a rescan.".to_string());
+        lines.push("// See the rescan scheduler for details.".to_string());
+        let mut i = 0usize;
+        while lines.len() + 4 <= REAL_LINE - 1 {
+            lines.push(format!("function filler_{}(alpha, beta) {{", i));
+            lines.push(format!("  const sum_{} = alpha + beta;", i));
+            lines.push(format!("  return sum_{};", i));
+            lines.push("}".to_string());
+            i += 1;
+        }
+        while lines.len() < REAL_LINE - 1 {
+            lines.push(String::new());
+        }
+        lines.push("const dres = fetch('/api/data');".to_string());
+        lines.push("console.log(dres.status);".to_string());
+        let real_line_2 = lines.len(); // 1-indexed line of `console.log(...)`
+
+        fs::write(temp.path().join("app.js"), lines.join("\n") + "\n").unwrap();
+
+        let report = enriched_search("dres", temp.path(), Language::JavaScript, opts(10)).unwrap();
+
+        assert!(
+            !report.results.is_empty(),
+            "searching for 'dres' must return hits; got none: {:?}",
+            report.results
+        );
+        // Ranking: the top card covers the real whole-token occurrences.
+        let top = &report.results[0];
+        assert!(
+            top.line_range.0 as usize <= REAL_LINE && top.line_range.1 as usize >= real_line_2,
+            "top hit must cover lines {REAL_LINE}-{real_line_2}; got {:?}",
+            (&top.name, top.line_range, &top.signature)
+        );
+        // Labels: every hit is a whole-token (exact) match, and the
+        // substring-only decoy comment is gone.
+        for result in &report.results {
+            assert_eq!(
+                result.match_type, "exact",
+                "hit must be labeled exact; got: {result:?}"
+            );
+        }
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(
+            !json.contains("rescanClicks"),
+            "substring-only decoy must not be returned as a hit; json: {json}"
+        );
     }
 
     // =========================================================================

@@ -271,6 +271,7 @@ mod tests {
                 line_end: 10,
                 snippet: "snippet 1".to_string(),
                 matched_terms: vec!["process".to_string()],
+                match_type: String::new(),
             },
             Bm25Result {
                 file_path: std::path::PathBuf::from("file2.py"),
@@ -279,6 +280,7 @@ mod tests {
                 line_end: 5,
                 snippet: "snippet 2".to_string(),
                 matched_terms: vec!["data".to_string()],
+                match_type: String::new(),
             },
         ];
 
@@ -299,6 +301,7 @@ mod tests {
             line_end: 10,
             snippet: "snippet".to_string(),
             matched_terms: vec!["process".to_string()],
+            match_type: String::new(),
         }];
 
         let semantic_results = vec![SemanticResult {
