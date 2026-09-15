@@ -882,7 +882,7 @@ fn build_caller_tree_visited(
     func: &str,
     reverse_graph: &HashMap<FunctionKey, Vec<FunctionKey>>,
     max_depth: usize,
-    mut visited: HashSet<FunctionKey>,
+    visited: HashSet<FunctionKey>,
 ) -> CallerTree {
     let key = (file.to_path_buf(), func.to_string());
 
@@ -908,11 +908,17 @@ fn build_caller_tree_visited(
 
     if max_depth > 0 {
         if let Some(callers) = callers {
-            for (caller_file, caller_func) in callers {
-                let caller_key = (caller_file.clone(), caller_func.clone());
+            // why: `visited` must stay the ANCESTOR path only. Inserting each
+            // expanded sibling into it leaked that sibling into the subtrees of
+            // the siblings after it, so a diamond (target <- B, target <- C,
+            // C <- B) reported B as "Cycle detected" inside C's subtree and cut
+            // B's callers off there, with no cycle in the graph. Same-list
+            // duplicates are deduped by a separate per-list set.
+            let mut seen_in_list: HashSet<&FunctionKey> = HashSet::new();
+            for caller_key in callers {
+                let (caller_file, caller_func) = caller_key;
 
-                // Cycle detection (path- and sibling-aware, see fn doc above)
-                if visited.contains(&caller_key) {
+                if visited.contains(caller_key) || !seen_in_list.insert(caller_key) {
                     child_trees.push(CallerTree {
                         function: caller_func.clone(),
                         file: caller_file.clone(),
@@ -926,16 +932,15 @@ fn build_caller_tree_visited(
                     continue;
                 }
 
-                visited.insert(caller_key);
+                let mut path = visited.clone();
+                path.insert(caller_key.clone());
 
-                // Recursively build subtree with reduced depth, carrying the
-                // full ancestor path forward so descendants see it too.
                 let subtree = build_caller_tree_visited(
                     caller_file,
                     caller_func,
                     reverse_graph,
                     max_depth - 1,
-                    visited.clone(),
+                    path,
                 );
                 child_trees.push(subtree);
             }
@@ -1061,6 +1066,47 @@ mod tests {
         assert_eq!(result.total_targets, 1);
         let tree = result.targets.values().next().unwrap();
         assert_eq!(tree.caller_count, 2); // func_b and func_d
+    }
+
+    #[test]
+    fn test_diamond_shaped_callers_not_reported_as_cycle() {
+        // Diamond: target <- b, target <- c, c <- b (b also calls c). Built
+        // by hand (not via ProjectCallGraph) because ProjectCallGraph.edges
+        // is a HashSet, so build_reverse_graph's caller order for `target`
+        // is not deterministic -- the pre-fix sibling-leak bug only shows
+        // up when b is expanded before c, so a graph built through
+        // ProjectCallGraph catches the regression in only about half of
+        // runs. Pinning BOTH orderings here catches both known bugs:
+        // [b, c] catches the sibling leak (inserting each expanded sibling
+        // into the shared `visited` instead of a fresh per-branch clone),
+        // and [c, b] catches any other `&mut visited` leak across the
+        // sibling loop, regardless of which sibling triggers it first.
+        fn no_cycle_false_positive(tree: &CallerTree) -> bool {
+            if tree.note.as_deref() == Some("Cycle detected") {
+                return false;
+            }
+            tree.callers.iter().all(no_cycle_false_positive)
+        }
+
+        let target_key: FunctionKey = (PathBuf::from("t.py"), "target".to_string());
+        let b_key: FunctionKey = (PathBuf::from("b.py"), "func_b".to_string());
+        let c_key: FunctionKey = (PathBuf::from("c.py"), "func_c".to_string());
+
+        for target_callers in [
+            vec![b_key.clone(), c_key.clone()],
+            vec![c_key.clone(), b_key.clone()],
+        ] {
+            let mut reverse_graph: HashMap<FunctionKey, Vec<FunctionKey>> = HashMap::new();
+            reverse_graph.insert(target_key.clone(), target_callers);
+            reverse_graph.insert(c_key.clone(), vec![b_key.clone()]);
+
+            let tree = build_caller_tree(Path::new("t.py"), "target", &reverse_graph, 5);
+            assert_eq!(tree.caller_count, 2);
+            assert!(
+                no_cycle_false_positive(&tree),
+                "diamond graph has no cycle; no node should be reported as Cycle detected"
+            );
+        }
     }
 
     #[test]
