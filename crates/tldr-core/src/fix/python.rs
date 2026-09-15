@@ -3987,13 +3987,11 @@ mod tests {
 
     #[test]
     fn test_unicode_error_no_fix_when_encoding_present_with_spaces_around_equals() {
-        // Catches a pre-fix bug: matching the bare substring "encoding"
-        // (rather than requiring the `encoding=` keyword form) also matched
-        // spaced-out keyword syntax incorrectly if whitespace wasn't
-        // stripped first. `open(p, encoding = "utf-8")` already has the
-        // encoding kwarg -- with whitespace around `=` -- so it must not be
-        // flagged as a bare `open()` needing a second `encoding=` added
-        // (which would be a SyntaxError: keyword argument repeated).
+        // `find_bare_open_call` strips ALL whitespace from the argument text
+        // before matching `encoding=`, so the spaced-out
+        // `open(p, encoding = "utf-8")` is recognized as already-encoded and
+        // no fix is appended (appending a second `encoding=` would be a
+        // SyntaxError: keyword argument repeated).
         let source = "def read(p):\n    f = open(p, encoding = \"utf-8\")\n    return f.read()\n";
         let tree = parse_python(source);
         let error = ParsedError {

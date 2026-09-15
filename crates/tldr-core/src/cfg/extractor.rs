@@ -1893,11 +1893,11 @@ def tail_continue():
 
     #[test]
     fn test_rust_labelled_continue_still_back_edges_to_for_loop_header() {
-        // Catches the unsound "skip the back-edge for a labelled continue"
-        // guard: `continue 'outer;` is the only enclosing loop here, so
-        // skipping its back-edge would make it a dead end and `last = 1`
-        // would never reach the next iteration. Wiring to the innermost
-        // header (this for-loop's own header) is a sound over-approximation.
+        // For an unlabelled `continue`, the back-edge to the innermost loop header
+        // is exact; for a labelled `continue` targeting an OUTER loop, wiring to the
+        // innermost header is NOT sound: it over-approximates reachability (and
+        // can imply a bogus edge past a `return`); current behavior is less
+        // unsound, not sound. Upgrade path: track a label per `loop_headers` entry.
         let source = r#"
 fn walk(xs: &[i32]) -> i32 {
     let mut last = 0;
