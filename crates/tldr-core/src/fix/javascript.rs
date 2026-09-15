@@ -579,7 +579,7 @@ fn analyze_unexpected_token(error: &ParsedError, source: &str, token: &str) -> O
 fn code_chars_excluding_strings_and_comments(source: &str) -> Vec<char> {
     // A `/` that is not a comment starts a REGEX LITERAL (not division)
     // when the previous non-whitespace code character is one of
-    // `( , = : [ ! & | ? { } ; >` or there is none -- e.g. `s.split(/[/*]/)`
+    // `( , = : [ ! & | ? { ; >` or there is none -- e.g. `s.split(/[/*]/)`
     // or `xs.filter(x => /[/*]/.test(x))` -- so the `/` and `*` inside the
     // regex's own character class do not get misread as a comment opener;
     // a regex ends at the next unescaped `/` outside a `[...]` class, or a
@@ -587,12 +587,19 @@ fn code_chars_excluding_strings_and_comments(source: &str) -> Vec<char> {
     //
     // ponytail: a regex literal after a keyword (`return /re/`, `typeof`,
     // `case`, `yield`, `await`, ...) is still read as division -- there is
-    // no keyword tracking, only the previous punctuation character. And
-    // plain JSX text such as `<p>http://x</p>` still gets its `//` misread
-    // as opening a line comment: the comment-opener fires on any two
-    // consecutive slashes with no notion of JSX text nodes, before any
-    // regex or character-class logic is even reached. Fixing either needs
-    // a proper lexer, not more heuristics here.
+    // no keyword tracking, only the previous punctuation character. `}` is
+    // also NOT in the set above: in JSX like `<Foo a={x} />` the `/` after
+    // the `}` closing an attribute's `{...}` is the tag's own closer, not a
+    // regex open (letting `}` open regex mode misparsed every JSX
+    // self-closing tag and cascaded bogus errors). The tradeoff, accepted
+    // and documented: a regex literal directly after `}` (e.g. `function
+    // f(){}` followed by an expression statement starting with `/re/`) is
+    // now misread as division. And plain JSX text such as `<p>http://x</p>`
+    // still gets its `//` misread as opening a line comment: the
+    // comment-opener fires on any two consecutive slashes with no notion of
+    // JSX text nodes, before any regex or character-class logic is even
+    // reached. Fixing any of these needs a proper lexer, not more
+    // heuristics here.
     let mut result = Vec::new();
     let mut in_string = false;
     let mut in_line_comment = false;
@@ -655,8 +662,11 @@ fn code_chars_excluding_strings_and_comments(source: &str) -> Vec<char> {
                 '/' if !esc
                     && matches!(
                         last_significant_code_char,
+                        // No `}`: in JSX like `<Foo a={x} />` the `/` after
+                        // the attribute's closing `}` is tag-close syntax,
+                        // not a regex open. See the ponytail note above.
                         None | Some(
-                            '(' | ',' | '=' | ':' | '[' | '!' | '&' | '|' | '?' | '{' | '}' | ';'
+                            '(' | ',' | '=' | ':' | '[' | '!' | '&' | '|' | '?' | '{' | ';'
                                 | '>'
                         )
                     ) =>
@@ -1670,6 +1680,54 @@ mod tests {
         let (opens, closes) = count_delimiters(source, '}');
         assert_eq!(opens, 1, "only the real `{{` from `if (x) {{` should count");
         assert_eq!(closes, 1);
+    }
+
+    #[test]
+    fn test_syntax_error_unexpected_end_with_jsx_self_closing_tag() {
+        // Catches a pre-fix bug: in JSX like `<Foo a={v} />`, the `/` after
+        // the `}` closing an attribute's `{...}` expression was treated as
+        // opening a REGEX literal (`}` was in the "regex can start here"
+        // set), so the tag's `/>` closer was swallowed as regex content. In
+        // a one-line snippet that unterminated regex then ran to end of
+        // source, eating the arrow body's closing `}` too -- balanced code
+        // looked like it was missing a `}` and got a bogus "add closing
+        // `}`" fix. `}` no longer opens regex mode.
+        let source = "const C = (ok) => { return ok && <Foo a={v} />; };";
+
+        let (opens, closes) = count_delimiters(source, '}');
+        assert_eq!(opens, 2);
+        assert_eq!(closes, 2, "the `/>` must not swallow the arrow body's `}}`");
+        let (paren_opens, paren_closes) = count_delimiters(source, ')');
+        assert_eq!(paren_opens, 1);
+        assert_eq!(paren_closes, 1);
+
+        // With balanced delimiters, `analyze_unexpected_end` (reached via
+        // `analyze_syntax_error`) must not claim any unclosed `{` or
+        // suggest adding a closing `}` -- it only reports the generic
+        // "possibly unclosed string literal" hint with no fix.
+        let error = ParsedError {
+            error_type: "SyntaxError".to_string(),
+            message: "Unexpected end of input".to_string(),
+            file: Some(PathBuf::from("app.jsx")),
+            line: Some(1),
+            column: None,
+            language: "javascript".to_string(),
+            raw_text: String::new(),
+            function_name: None,
+            offending_line: None,
+        };
+
+        let diag = analyze_syntax_error(&error, source);
+        assert!(diag.is_some(), "Should diagnose unexpected end");
+        let d = diag.unwrap();
+        assert!(
+            d.fix.is_none(),
+            "Balanced JSX code must not get a bogus add-a-closing-brace fix"
+        );
+        assert!(
+            !d.message.contains("unclosed `{`"),
+            "The `/` after `}}` must not open a regex that eats the closing `}}`"
+        );
     }
 
     #[test]
