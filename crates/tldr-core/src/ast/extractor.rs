@@ -1028,6 +1028,19 @@ fn extract_cpp_methods(node: &Node, source: &str, methods: &mut Vec<String>) {
                     }
                 }
             }
+            // why: `extract_cpp_functions` keeps out-of-line member definitions
+            // (`void Foo::bar() {}`) out of `functions` via `has_qualified_scope`.
+            // Without this arm they were reported nowhere, so a `.cpp` holding only
+            // member implementations showed 0 functions and 0 methods.
+            "function_definition" if !is_inside_cpp_class(&child) => {
+                if let Some(declarator) = child.child_by_field_name("declarator") {
+                    if has_qualified_scope(&declarator) {
+                        if let Some(name) = extract_cpp_function_name(&declarator, source) {
+                            methods.push(name);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         extract_cpp_methods(&child, source, methods);
@@ -3460,6 +3473,27 @@ namespace greeting {
         assert!(
             functions.contains(&"greet".to_string()),
             "Should find greet function"
+        );
+    }
+
+    #[test]
+    fn test_extract_cpp_out_of_line_method_definition_in_methods() {
+        // Catches a pre-fix bug: a `.cpp` file holding ONLY an out-of-line
+        // member implementation (`void Foo::bar() {}`, no class/struct body
+        // anywhere in this translation unit) reported it as neither a
+        // function nor a method -- `has_qualified_scope` excluded it from
+        // `extract_cpp_functions`, and `extract_cpp_methods` only looked
+        // INSIDE class bodies, so it was invisible to both extractors.
+        let source = r#"
+void Foo::bar() {
+}
+"#;
+        let tree = parse(source, Language::Cpp).unwrap();
+        let methods = extract_methods(&tree, source, Language::Cpp);
+        assert!(
+            methods.contains(&"bar".to_string()),
+            "out-of-line `Foo::bar` definition should be reported in methods, got {:?}",
+            methods
         );
     }
 
