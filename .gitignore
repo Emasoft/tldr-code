@@ -82,6 +82,8 @@ META-INF/
 # regenerable runtime state and editor/OS/tool droppings
 # (.git/index.lock cannot be listed here: nothing under .git/ is subject to .gitignore)
 /.janitor/
+# late: agent harness state (command allowlist) — same rationale as janitor
+/.late/
 .DS_Store
 Thumbs.db
 *.swp
