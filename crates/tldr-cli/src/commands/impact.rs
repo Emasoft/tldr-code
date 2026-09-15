@@ -97,11 +97,22 @@ impl ImpactArgs {
         let type_aware_msg = if self.type_aware { " (type-aware)" } else { "" };
 
         // Try daemon first for cached result
-        if let Some(report) = try_daemon_route::<ImpactReport>(
+        if let Some(mut report) = try_daemon_route::<ImpactReport>(
             &analysis_root,
             "impact",
             params_with_func_depth(&self.function, Some(self.depth)),
         ) {
+            // impact-reference-sites-v1 (issue #1): daemon-path parity. The
+            // daemon's impact handler (daemon.rs `DaemonCommand::Impact`)
+            // runs the bare call-graph analysis and caches that raw report,
+            // WITHOUT the references enrichment the direct path applies —
+            // so a daemon-served `impact` still claimed
+            // "Entry point - no callers found" for a function wired as
+            // `addEventListener('click', handler)`. Apply the exact same
+            // CLI-side enrichment here, exactly once per invocation (the
+            // daemon cache stays raw; enrichment happens after retrieval).
+            enrich_impact_with_references(&mut report, &analysis_root, &self.function, language);
+
             // Output based on format
             if writer.is_text() {
                 let text = format_impact_text(&report, self.type_aware);

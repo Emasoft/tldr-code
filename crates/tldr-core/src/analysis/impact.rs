@@ -418,6 +418,25 @@ pub fn impact_analysis_with_ast_fallback(
     }
 }
 
+/// impact-reference-sites-v1 (issue #1): one synthetic caller candidate
+/// produced by the references enrichment. Since the enrichment now also
+/// consumes non-call reference sites (Read/Other), each candidate remembers
+/// whether any of its sites was a genuine call so the caller note can
+/// distinguish "Discovered via references … (call graph missing edge)"
+/// from "reference (not a call) at line {line}".
+struct RefCallerAddition {
+    /// Enclosing function name at the reference site (`<module>` for
+    /// top-level sites).
+    name: String,
+    /// File containing the reference site.
+    file: PathBuf,
+    /// Line of the (first) reference site backing this entry.
+    line: u32,
+    /// True when at least one site for this (name, file) is a genuine
+    /// `Call`; false when every site is a non-call reference.
+    is_call: bool,
+}
+
 /// Enrich `report.targets` with cross-file callers discovered via
 /// `find_references`. Mirrors the original CLI-side helper introduced in
 /// `language-adapter-fixes-v1` (P13.AGG13-4); promoted to tldr-core in
@@ -425,18 +444,23 @@ pub fn impact_analysis_with_ast_fallback(
 /// impact path benefits from the same enrichment that the user-facing
 /// `impact` command does.
 ///
-/// For each call site of `target_func` in the project:
-///   1. Locate the enclosing function in the call site's file by parsing
-///      with [`crate::extract_file`] and finding the function whose
-///      `[line_number, line_end]` range contains the call.
+/// For each reference site of `target_func` in the project (call sites and,
+/// since impact-reference-sites-v1 / issue #1, non-call sites such as a
+/// function handed to `addEventListener`):
+///   1. Locate the enclosing function in the reference site's file by
+///      parsing with [`crate::extract_file`] and finding the function whose
+///      `[line_number, line_end]` range contains the site (`<module>` for
+///      top-level sites).
 ///   2. For each target tree, append a top-level synthetic caller entry
-///      per unique (caller_function, caller_file) pair. Dedup against
+///      per unique (caller_function, caller_file) pair, labelled by whether
+///      the site was a genuine call or a non-call reference. Dedup against
 ///      existing direct callers using last-segment-aware name matching
 ///      (P14.AGG14-1) so the call-graph's qualified `Class.method` form
 ///      and references' bare `method` form are recognised as the same
 ///      caller.
 ///   3. Replace the "Entry point — no callers found" note when callers
-///      are added.
+///      are added; when references exist but none resolved into a caller,
+///      rewrite the entry-point note to say what was seen instead.
 pub fn enrich_impact_with_references(
     report: &mut ImpactReport,
     project_root: &Path,
@@ -451,7 +475,25 @@ pub fn enrich_impact_with_references(
     }
 
     let mut options = ReferencesOptions::new();
-    options.kinds = Some(vec![ReferenceKind::Call]);
+    // impact-reference-sites-v1 (issue #1): the enrichment used to request
+    // ONLY `Call` refs, so a function wired as a callback argument —
+    // `$('collect-btn').addEventListener('click', collectBtnClick)` — was
+    // invisible: the identifier sits inside an `arguments` node, the TS/JS
+    // classifier has no `arguments`-parent arm, the catch-all maps it to
+    // `Read` (references.rs:1316), and the kind filter discarded the site.
+    // The target then kept its dishonest "Entry point - no callers found"
+    // note even though the whole app pointed at it. Request the non-call
+    // kinds too so those sites reach the additions loop below.
+    // Definition-like kinds stay EXCLUDED: the target's own definition line
+    // is not a caller. Import/Write/Type stay excluded as well — import
+    // sites of the symbol in other modules would fabricate `<module>`
+    // callers for every `import` statement, which the pinned explain↔impact
+    // consistency tests do not want.
+    options.kinds = Some(vec![
+        ReferenceKind::Call,
+        ReferenceKind::Read,
+        ReferenceKind::Other,
+    ]);
     options.language = Some(language.as_str().to_string());
     options.limit = Some(500);
 
@@ -462,7 +504,7 @@ pub fn enrich_impact_with_references(
 
     let mut file_funcs_cache: HashMap<PathBuf, Vec<(String, u32, u32)>> = HashMap::new();
 
-    let mut additions: Vec<(String, PathBuf, u32)> = Vec::new();
+    let mut additions: Vec<RefCallerAddition> = Vec::new();
     // cross-cutting-and-clear-fix-bugs-v1 (P18.X3): collect references from
     // both the primary lookup and (for Lua/Luau qualified names like
     // `m.open`) a secondary bare-name lookup with a context filter — same
@@ -477,7 +519,15 @@ pub fn enrich_impact_with_references(
         if let Some(bare) = target_func.split('.').next_back() {
             if bare != target_func && !bare.is_empty() {
                 let mut bare_options = ReferencesOptions::new();
-                bare_options.kinds = Some(vec![ReferenceKind::Call]);
+                // impact-reference-sites-v1 (issue #1): same broadened kind
+                // set as the primary lookup. The `.name(` context filter
+                // below still gates what survives, so this only keeps the
+                // two lookups consistent.
+                bare_options.kinds = Some(vec![
+                    ReferenceKind::Call,
+                    ReferenceKind::Read,
+                    ReferenceKind::Other,
+                ]);
                 bare_options.language = Some(language.as_str().to_string());
                 bare_options.limit = Some(500);
                 if let Ok(bare_refs) = find_references(bare, project_root, &bare_options) {
@@ -502,6 +552,13 @@ pub fn enrich_impact_with_references(
         }
     }
     for r in &all_refs {
+        // impact-reference-sites-v1 (issue #1): a site only counts as a
+        // genuine call edge when the classifier says so. Argument
+        // positions (`addEventListener('click', fn)`) and other non-call
+        // contexts classify as Read/Other and become "reference (not a
+        // call)" caller entries instead of claimed call edges.
+        let is_call = r.kind == ReferenceKind::Call;
+
         let caller_file = r.file.clone();
         let funcs = file_funcs_cache
             .entry(caller_file.clone())
@@ -544,22 +601,67 @@ pub fn enrich_impact_with_references(
             continue;
         }
 
-        let key_pair = (enclosing.clone(), caller_file.clone());
-        if additions
-            .iter()
-            .any(|(n, f, _)| n == &key_pair.0 && f == &key_pair.1)
+        // impact-reference-sites-v1 (issue #1): dedup additions by
+        // (name, file) — one enclosing function in one file is a SINGLE
+        // caller entry no matter how many of its lines reference the
+        // target, which subsumes the (name, file, line) key (the same
+        // site can never produce two entries) and keeps caller_count
+        // stable so explain↔impact consistency holds when real call
+        // edges already exist. When the same function both reads and
+        // calls the target, upgrade the entry to the call site so the
+        // note keeps the stronger claim.
+        if let Some(existing) = additions
+            .iter_mut()
+            .find(|a| a.name == enclosing && a.file == caller_file)
         {
+            if is_call && !existing.is_call {
+                existing.line = r.line as u32;
+                existing.is_call = true;
+            }
             continue;
         }
-        additions.push((enclosing, caller_file, r.line as u32));
+        additions.push(RefCallerAddition {
+            name: enclosing,
+            file: caller_file,
+            line: r.line as u32,
+            is_call,
+        });
     }
 
+    // impact-reference-sites-v1 (issue #1): entry-point note gating. Three
+    // states:
+    //   - zero refs collected: the target really is unreferenced; keep the
+    //     honest "Entry point - no callers found" note untouched;
+    //   - refs collected but none resolved into a caller (every site sat
+    //     inside the target itself — self-recursion / self-reference):
+    //     keep the caller list empty but say what was seen instead of
+    //     claiming the symbol is unreferenced;
+    //   - refs resolved into additions: caller_count > 0 in the push loop
+    //     below, which rewrites the entry-point note there.
     if additions.is_empty() {
+        if !all_refs.is_empty() {
+            let referenced_note = format!(
+                "Referenced at {} site(s) outside any tracked caller (non-call references); no call edges found",
+                all_refs.len()
+            );
+            for tree in report.targets.values_mut() {
+                let claims_no_callers = tree
+                    .note
+                    .as_ref()
+                    .is_some_and(|n| n.contains("Entry point") || n.contains("no callers"));
+                if claims_no_callers && tree.caller_count == 0 {
+                    tree.note = Some(referenced_note.clone());
+                }
+            }
+        }
         return;
     }
 
     for tree in report.targets.values_mut() {
-        for (name, file, line) in &additions {
+        for addition in &additions {
+            let name = &addition.name;
+            let file = &addition.file;
+            let line = addition.line;
             // P14.AGG14-1: last-segment-aware dedup so call-graph
             // qualified-name (`Class.method`) and references bare-name
             // (`method`) collapse to the same caller.
@@ -572,16 +674,25 @@ pub fn enrich_impact_with_references(
             if already_present {
                 continue;
             }
+            // impact-reference-sites-v1 (issue #1): genuine call sites keep
+            // the historical note; non-call reference sites (Read/Other —
+            // e.g. a callback handed to addEventListener) are labelled
+            // honestly instead of being claimed as call edges.
+            let note = if addition.is_call {
+                format!(
+                    "Discovered via references at line {} (call graph missing edge)",
+                    line
+                )
+            } else {
+                format!("reference (not a call) at line {}", line)
+            };
             tree.callers.push(CallerTree {
                 function: name.clone(),
                 file: file.clone(),
                 caller_count: 0,
                 callers: vec![],
                 truncated: false,
-                note: Some(format!(
-                    "Discovered via references at line {} (call graph missing edge)",
-                    line
-                )),
+                note: Some(note),
                 confidence: None,
                 receiver_type: None,
             });
