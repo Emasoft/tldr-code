@@ -16,6 +16,7 @@ use tldr_core::{
 };
 
 use crate::commands::daemon_router::{params_with_func_depth, try_daemon_route};
+use crate::commands::remaining::explain::explain_project_root;
 use crate::output::{format_impact_dot, format_impact_text, OutputFormat, OutputWriter};
 use crate::path_validation::require_directory;
 
@@ -25,7 +26,7 @@ pub struct ImpactArgs {
     /// Function name to analyze
     pub function: String,
 
-    /// Project root directory (default: current directory)
+    /// Project directory or a single file (project root is resolved from it)
     #[arg(default_value = ".")]
     pub path: PathBuf,
 
@@ -51,23 +52,53 @@ impl ImpactArgs {
     pub fn run(&self, format: OutputFormat, quiet: bool) -> Result<()> {
         let writer = OutputWriter::new(format, quiet);
 
-        // Validate path exists AND is a directory BEFORE language detection
-        // / progress banner (lang-detect-default-v1).
-        // cli-error-clarity-v2 (P2.BUG-4): reject files with a clear message
-        // instead of saying "Path not found" or letting downstream surface
-        // cryptic IO errors.
-        require_directory(&self.path, "impact")?;
+        // issue-2 (impact-file-arg-v1): `<path>` now accepts a single FILE as
+        // well as a directory. A file argument resolves its enclosing project
+        // root with the same walk-up `tldr explain` uses
+        // (remaining/explain.rs `explain_project_root`), and the language is
+        // picked from the file's extension (`Language::from_path`,
+        // tldr-core/src/types.rs:208). Directory arguments keep the previous
+        // semantics untouched: `require_directory` still rejects a missing
+        // path with the clear "Path not found" error (cli-error-clarity-v2
+        // P2.BUG-4), and hubs/whatbreaks/change-impact are unaffected.
+        //
+        // The file argument's ONLY extra role is root resolution — it does
+        // NOT double as a target-side file filter. The core filter
+        // (`impact_analysis`, tldr-core/src/analysis/impact.rs:144-149)
+        // restricts the TARGET's own file, and the queried function is
+        // routinely defined in a different file than the one passed
+        // (`tldr impact callee caller.py` — the callee lives in callee.py);
+        // scoping targets to the passed file would report FunctionNotFound.
+        // The explicit `--file` flag keeps that disambiguation role in both
+        // modes.
+        let (analysis_root, language) = if self.path.is_file() {
+            let project_root = explain_project_root(&self.path);
+            let language = self
+                .lang
+                .unwrap_or_else(|| Language::from_path(&self.path).unwrap_or(Language::Python));
+            (project_root, language)
+        } else {
+            // Validate path exists AND is a directory BEFORE language
+            // detection / progress banner (lang-detect-default-v1).
+            // cli-error-clarity-v2 (P2.BUG-4): reject non-directory paths
+            // with a clear message instead of saying "Path not found" or
+            // letting downstream surface cryptic IO errors. (Files are
+            // handled above; a MISSING path lands here and still gets the
+            // clear "Path not found" error.)
+            require_directory(&self.path, "impact")?;
 
-        // Determine language (auto-detect from directory, default to Python)
-        let language = self
-            .lang
-            .unwrap_or_else(|| Language::from_directory(&self.path).unwrap_or(Language::Python));
+            // Determine language (auto-detect from directory, default to Python)
+            let language = self.lang.unwrap_or_else(|| {
+                Language::from_directory(&self.path).unwrap_or(Language::Python)
+            });
+            (self.path.clone(), language)
+        };
 
         let type_aware_msg = if self.type_aware { " (type-aware)" } else { "" };
 
         // Try daemon first for cached result
         if let Some(report) = try_daemon_route::<ImpactReport>(
-            &self.path,
+            &analysis_root,
             "impact",
             params_with_func_depth(&self.function, Some(self.depth)),
         ) {
@@ -90,13 +121,13 @@ impl ImpactArgs {
         // Fallback to direct compute
         writer.progress(&format!(
             "Building call graph for {} ({:?}){}...",
-            self.path.display(),
+            analysis_root.display(),
             language,
             type_aware_msg
         ));
 
         // Build call graph first
-        let graph = build_project_call_graph(&self.path, language, None, true)?;
+        let graph = build_project_call_graph(&analysis_root, language, None, true)?;
 
         writer.progress(&format!(
             "Analyzing impact of {}{}...",
@@ -111,7 +142,7 @@ impl ImpactArgs {
             &self.function,
             self.depth,
             self.file.as_deref(),
-            &self.path,
+            &analysis_root,
             language,
         )?;
 
@@ -126,7 +157,7 @@ impl ImpactArgs {
         // moved into `tldr-core::analysis::impact` so the same enrichment
         // also runs inside `whatbreaks`. The same-fix-different-shape
         // dedup (last-segment aware) lives in the core helper.
-        enrich_impact_with_references(&mut report, &self.path, &self.function, language);
+        enrich_impact_with_references(&mut report, &analysis_root, &self.function, language);
 
         // If type-aware was requested, add placeholder stats to indicate it's enabled
         // (actual type resolution is integrated in callgraph builder - Phase 8 full implementation)

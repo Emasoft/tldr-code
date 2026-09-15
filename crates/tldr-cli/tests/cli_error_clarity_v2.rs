@@ -3,8 +3,13 @@
 //!
 //! - P2.BUG-4 — `tldr hubs|impact|whatbreaks|change-impact <file>` previously
 //!   said "Path not found" (false: the file exists) or surfaced the cryptic
-//!   git "Not a directory (os error 20)". The four directory-taking commands
-//!   now return a clear error mentioning the file path and how to fix it.
+//!   git "Not a directory (os error 20)". The directory-taking commands
+//!   return a clear error mentioning the file path and how to fix it.
+//!   issue-2 re-scope (impact-file-arg-v1): `tldr impact` now ACCEPTS a file
+//!   argument (the enclosing project root is resolved from it), so the
+//!   file-rejection assertions below only cover hubs/whatbreaks/
+//!   change-impact; impact keeps the clear "Path not found" error for a
+//!   nonexistent path.
 //!
 //! - P2.BUG-5 — Per-command `--help` advertised every value of the global
 //!   `--format` enum (sarif, dot, …) even when the runtime rejects them with
@@ -34,7 +39,12 @@ fn tldr_cmd() -> Command {
 }
 
 // =============================================================================
-// P2.BUG-4: directory-taking commands reject files with a clear error
+// P2.BUG-4: directory-taking commands reject files with a clear error.
+// issue-2 re-scope (impact-file-arg-v1): `impact` now accepts a file path
+// (the project root is resolved from it) — its former file-rejection test
+// became `impact_on_file_now_succeeds` plus
+// `impact_on_missing_path_clear_error`. hubs/whatbreaks/change-impact still
+// reject files below, untouched.
 // =============================================================================
 
 /// Build a temp project containing a single .py file. Returns (TempDir, file
@@ -75,11 +85,51 @@ fn hubs_on_file_clear_error() {
     assert_clear_file_error("hubs", &["hubs", &file_str, "-q"]);
 }
 
+// issue-2 (impact-file-arg-v1): re-scope of the former
+// `impact_on_file_clear_error`. A FILE path is now a valid `impact`
+// argument — the enclosing project root is resolved from it (see
+// commands/impact.rs run()) — so it must SUCCEED with parseable JSON.
 #[test]
-fn impact_on_file_clear_error() {
+fn impact_on_file_now_succeeds() {
     let (_temp, file) = make_temp_project_with_file();
     let file_str = file.to_string_lossy().to_string();
-    assert_clear_file_error("impact", &["impact", "bar", &file_str, "-q"]);
+    let assert = tldr_cmd()
+        .args(["impact", "bar", &file_str, "--format", "json", "-q"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: Value = serde_json::from_str(&stdout).expect("impact on a file emits valid JSON");
+    let has_target = v["targets"]
+        .as_object()
+        .map(|targets| targets.values().any(|t| t["function"] == "bar"))
+        .unwrap_or(false);
+    assert!(
+        has_target,
+        "impact on a file should report a target for 'bar'; got:\n{}",
+        stdout
+    );
+}
+
+// issue-2 (impact-file-arg-v1): the clear-error surface moves to the case
+// that is still an error — a path that does not exist at all.
+#[test]
+fn impact_on_missing_path_clear_error() {
+    let assert = tldr_cmd()
+        .args(["impact", "bar", "/no/such/path/xyz", "-q"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("Path not found"),
+        "expected 'Path not found' in stderr; got:\n{}",
+        stderr
+    );
+    // Must echo the bad path so the user sees their mistake.
+    assert!(
+        stderr.contains("/no/such/path/xyz"),
+        "expected the missing path echoed in stderr; got:\n{}",
+        stderr
+    );
 }
 
 #[test]

@@ -1459,7 +1459,11 @@ fn format_explain_text(report: &ExplainReport) -> String {
 /// leaving `report.callers` empty even though `tldr impact` (which receives
 /// an explicit path) returns the correct callers. Canonicalizing first
 /// converts the input to an absolute path so each ancestor directory is real.
-fn explain_project_root(file: &std::path::Path) -> std::path::PathBuf {
+///
+/// issue-2 (impact-file-arg-v1): `pub(crate)` and shared with `tldr impact`
+/// so a FILE path argument resolves its enclosing project root exactly the
+/// way `tldr explain` does — one root-resolution rule across both commands.
+pub(crate) fn explain_project_root(file: &std::path::Path) -> std::path::PathBuf {
     let absolute = file
         .canonicalize()
         .unwrap_or_else(|_| {
