@@ -14,7 +14,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -38,7 +38,7 @@ use tldr_core::{
     architecture_analysis, build_project_call_graph, change_impact, collect_all_functions,
     dead_code_analysis, detect_or_parse_language, extract_file, find_importers, get_cfg_context,
     get_code_structure, get_dfg_context, get_file_tree, get_imports, get_relevant_context,
-    get_slice, impact_analysis, search as tldr_search, FileTree, Language, NodeType,
+    get_slice, impact_analysis, search as tldr_search, CodeStructure, FileTree, Language, NodeType,
     SliceDirection,
 };
 
@@ -53,6 +53,94 @@ fn hash_str_args(parts: &[&str]) -> u64 {
         part.hash(&mut hasher);
     }
     hasher.finish()
+}
+
+// daemon-warm-v2 (issue #7): every helper below builds the EXACT `QueryKey`
+// the corresponding `DaemonCommand` handler constructs for a request. The
+// Warm handler MUST warm through these same helpers — if warm computed its
+// own keys inline, a drift between the two shapes would silently re-create
+// the original issue #7 bug (warm fills cache slots no query ever reads).
+
+/// Build the `QueryKey` the `Structure` handler constructs for a request on
+/// `path` with the request's language string (empty string when the client
+/// sent no language hint).
+fn structure_query_key(path: &Path, lang_str: &str, language: Language) -> QueryKey {
+    QueryKey::new(
+        "structure",
+        hash_str_args(&[&path.to_string_lossy(), lang_str]),
+        language,
+    )
+}
+
+/// Build the `QueryKey` the `Extract` handler constructs for a request on
+/// `file`.
+fn extract_query_key(file: &Path, language: Language) -> QueryKey {
+    QueryKey::new(
+        "extract",
+        hash_str_args(&[&file.to_string_lossy()]),
+        language,
+    )
+}
+
+/// Build the `QueryKey` the `Cfg` handler constructs for a request on
+/// `file` / `function`.
+fn cfg_query_key(file: &Path, function: &str, language: Language) -> QueryKey {
+    QueryKey::new(
+        "cfg",
+        hash_str_args(&[&file.to_string_lossy(), function]),
+        language,
+    )
+}
+
+/// Build the `QueryKey` the `Dfg` handler constructs for a request on
+/// `file` / `function`.
+fn dfg_query_key(file: &Path, function: &str, language: Language) -> QueryKey {
+    QueryKey::new(
+        "dfg",
+        hash_str_args(&[&file.to_string_lossy(), function]),
+        language,
+    )
+}
+
+/// Build the `QueryKey` the `Imports` handler constructs for a request on
+/// `file`.
+fn imports_query_key(file: &Path, language: Language) -> QueryKey {
+    QueryKey::new(
+        "imports",
+        hash_str_args(&[&file.to_string_lossy()]),
+        language,
+    )
+}
+
+/// Build the `QueryKey` the `Calls` handler constructs for a request rooted
+/// at `root`.
+fn calls_query_key(root: &Path, language: Language) -> QueryKey {
+    QueryKey::new("calls", hash_str_args(&[&root.to_string_lossy()]), language)
+}
+
+/// Maximum number of `(file, function)` cfg/dfg slots warmed per source file.
+///
+/// Pathological files (machine-generated tables, minified bundles) can carry
+/// thousands of symbols; warming all of them would block the daemon's
+/// connection loop for seconds on a single `Warm` command. The cap bounds the
+/// per-file work; combined with the shared oversize file policy (checked via
+/// `tldr_core::fs::oversize`) it keeps a whole-project warm proportional to
+/// real source content.
+const MAX_WARM_FUNCTIONS_PER_FILE: usize = 128;
+
+/// Outcome summary of [`TLDRDaemon::warm_per_file_caches`].
+#[derive(Debug, Default)]
+struct PerFileWarmStats {
+    /// Number of query-cache entries inserted by the warm pass.
+    entries: usize,
+    /// Number of source files actually warmed.
+    files_processed: usize,
+    /// Number of source files skipped (oversize / undetectable language).
+    files_skipped: usize,
+    /// Human-readable notes for the Warm response message.
+    warmed: Vec<String>,
+    /// Human-readable per-file failures for the Warm response message.
+    errors: Vec<String>,
 }
 
 /// Resolve the effective `Language` for a daemon-handler invocation.
@@ -128,12 +216,27 @@ impl TLDRDaemon {
     pub fn new(project: PathBuf, config: DaemonConfig) -> Self {
         let (shutdown_tx, _shutdown_rx) = watch::channel(false);
 
+        // daemon-warm-v2 (issue #7): persistence used to be one-way —
+        // `persist_stats` wrote `.tldr/cache/query_cache.bin` on shutdown but
+        // this constructor never read it, so every daemon start began from an
+        // empty cache. Load the previous session's cache here. Missing file
+        // (first run) and corrupt/stale-schema files are both handled by
+        // `QueryCache::load_from_file`'s graceful-discard contract, which
+        // returns a fresh empty cache; only unexpected IO errors land in the
+        // `unwrap_or_else` fallback below.
+        let cache_path = project
+            .join(".tldr")
+            .join("cache")
+            .join("query_cache.bin");
+        let cache =
+            QueryCache::load_from_file(&cache_path).unwrap_or_else(|_| QueryCache::with_defaults());
+
         Self {
             project,
             config,
             start_time: Instant::now(),
             status: Arc::new(RwLock::new(DaemonStatus::Initializing)),
-            cache: QueryCache::with_defaults(),
+            cache,
             sessions: DashMap::new(),
             hooks: DashMap::new(),
             dirty_files: Arc::new(RwLock::new(HashSet::new())),
@@ -384,13 +487,10 @@ impl TLDRDaemon {
 
                 let mut warmed = Vec::new();
                 let mut errors = Vec::new();
+                let mut entries = 0usize;
 
                 // 1. Warm call graph
-                let calls_key = QueryKey::new(
-                    "calls",
-                    hash_str_args(&[&self.project.to_string_lossy()]),
-                    lang,
-                );
+                let calls_key = calls_query_key(&self.project, lang);
                 if self.cache.get::<serde_json::Value>(&calls_key).is_some() {
                     warmed.push("call_graph (cached)");
                 } else {
@@ -398,6 +498,7 @@ impl TLDRDaemon {
                         Ok(result) => {
                             let val = serde_json::to_value(&result).unwrap_or_default();
                             self.cache.insert(calls_key, &val, vec![]);
+                            entries += 1;
                             warmed.push("call_graph");
                         }
                         Err(e) => errors.push(format!("call_graph: {}", e)),
@@ -405,19 +506,28 @@ impl TLDRDaemon {
                 }
 
                 // 2. Warm code structure
-                let struct_key = QueryKey::new(
-                    "structure",
-                    hash_str_args(&[&self.project.to_string_lossy(), ""]),
-                    lang,
-                );
-                if self.cache.get::<serde_json::Value>(&struct_key).is_some() {
+                //
+                // daemon-warm-v2 (issue #7): the language string in the key now
+                // matches what the Structure handler would hash for the only
+                // request shape that can actually hit this slot. The CLI always
+                // sends an explicit language string (`language.as_str()`, e.g.
+                // "python"); the previous `""` slot was unreachable by design.
+                let struct_key = structure_query_key(&self.project, lang.as_str(), lang);
+                // Keep the structure result around so step 5 can enumerate the
+                // project's source files with the same walker/ignore rules the
+                // structure query itself used.
+                let mut project_structure: Option<CodeStructure> = None;
+                if let Some(cached) = self.cache.get::<CodeStructure>(&struct_key) {
                     warmed.push("structure (cached)");
+                    project_structure = Some(cached);
                 } else {
                     match get_code_structure(&self.project, lang, 0, None) {
                         Ok(result) => {
                             let val = serde_json::to_value(&result).unwrap_or_default();
                             self.cache.insert(struct_key, &val, vec![]);
+                            entries += 1;
                             warmed.push("structure");
+                            project_structure = Some(result);
                         }
                         Err(e) => errors.push(format!("structure: {}", e)),
                     }
@@ -437,6 +547,7 @@ impl TLDRDaemon {
                             let file_count = count_tree_files(&result);
                             let val = serde_json::to_value(&result).unwrap_or_default();
                             self.cache.insert(tree_key, &val, vec![]);
+                            entries += 1;
                             *self.indexed_files.write().await = file_count;
                             warmed.push("file_tree");
                         }
@@ -444,7 +555,24 @@ impl TLDRDaemon {
                     }
                 }
 
-                // 4. Warm semantic index
+                // 4. Warm per-file query caches (issue #7).
+                //
+                // Project-level keys only help queries that address the whole
+                // project. File-scoped handlers (extract/imports/structure per
+                // file, cfg/dfg per (file, function)) key on REQUEST strings —
+                // this step fills those exact slots for every source file the
+                // structure walk found, so the next CLI query is a cache hit
+                // instead of a guaranteed miss. Function+line-scoped keys
+                // (slice) are intentionally NOT warmed.
+                let per_file = self.warm_per_file_caches(lang, project_structure);
+                entries += per_file.entries;
+                if per_file.files_processed > 0 {
+                    warmed.push("per-file query caches");
+                }
+                warmed.extend(per_file.warmed.iter().map(|s| s.as_str()));
+                errors.extend(per_file.errors);
+
+                // 5. Warm semantic index
                 #[cfg(feature = "semantic")]
                 {
                     let mut index_guard = self.semantic_index.write().await;
@@ -470,7 +598,10 @@ impl TLDRDaemon {
                     }
                 }
 
-                let message = if errors.is_empty() {
+                // daemon-warm-v2 (issue #7): record how many query-cache
+                // entries this warm produced so callers can see that real
+                // precomputation happened (not just a cache sweep).
+                let mut message = if errors.is_empty() {
                     format!("Warmed: {}", warmed.join(", "))
                 } else {
                     format!(
@@ -479,6 +610,7 @@ impl TLDRDaemon {
                         errors.join("; ")
                     )
                 };
+                message.push_str(&format!("; {} query cache entries precomputed", entries));
 
                 DaemonResponse::Status {
                     status: "ok".to_string(),
@@ -574,17 +706,12 @@ impl TLDRDaemon {
             }
 
             DaemonCommand::Extract { file, session: _ } => {
-                let file_str = file.to_string_lossy().to_string();
                 // Extract auto-detects language from the file path. Tag the
                 // cache key with the detected language so two files with the
                 // same name in different language sub-projects do not collide.
                 let detected_lang = detect_or_parse_language(None, &file)
                     .unwrap_or(Language::Python);
-                let key = QueryKey::new(
-                    "extract",
-                    hash_str_args(&[&file_str]),
-                    detected_lang,
-                );
+                let key = extract_query_key(&file, detected_lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
@@ -628,7 +755,6 @@ impl TLDRDaemon {
             }
 
             DaemonCommand::Structure { path, lang } => {
-                let path_str = path.to_string_lossy().to_string();
                 let lang_str = lang.as_deref().unwrap_or("");
                 let language = match detect_or_parse_language(lang.as_deref(), &path) {
                     Ok(l) => l,
@@ -639,11 +765,7 @@ impl TLDRDaemon {
                         }
                     }
                 };
-                let key = QueryKey::new(
-                    "structure",
-                    hash_str_args(&[&path_str, lang_str]),
-                    language,
-                );
+                let key = structure_query_key(&path, lang_str, language);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
@@ -689,7 +811,6 @@ impl TLDRDaemon {
             }
 
             DaemonCommand::Cfg { file, function } => {
-                let file_str = file.to_string_lossy().to_string();
                 let language = match detect_or_parse_language(None, &file) {
                     Ok(l) => l,
                     Err(e) => {
@@ -699,16 +820,12 @@ impl TLDRDaemon {
                         }
                     }
                 };
-                let key = QueryKey::new(
-                    "cfg",
-                    hash_str_args(&[&file_str, &function]),
-                    language,
-                );
+                let key = cfg_query_key(&file, &function, language);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
                 let file_hash = super::salsa::hash_path(&file);
-                match get_cfg_context(&file_str, &function, language) {
+                match get_cfg_context(&file.to_string_lossy(), &function, language) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
                         self.cache.insert(key, &val, vec![file_hash]);
@@ -722,7 +839,6 @@ impl TLDRDaemon {
             }
 
             DaemonCommand::Dfg { file, function } => {
-                let file_str = file.to_string_lossy().to_string();
                 let language = match detect_or_parse_language(None, &file) {
                     Ok(l) => l,
                     Err(e) => {
@@ -732,16 +848,12 @@ impl TLDRDaemon {
                         }
                     }
                 };
-                let key = QueryKey::new(
-                    "dfg",
-                    hash_str_args(&[&file_str, &function]),
-                    language,
-                );
+                let key = dfg_query_key(&file, &function, language);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
                 let file_hash = super::salsa::hash_path(&file);
-                match get_dfg_context(&file_str, &function, language) {
+                match get_dfg_context(&file.to_string_lossy(), &function, language) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
                         self.cache.insert(key, &val, vec![file_hash]);
@@ -801,8 +913,7 @@ impl TLDRDaemon {
             DaemonCommand::Calls { path, language } => {
                 let root = path.unwrap_or_else(|| self.project.clone());
                 let lang = resolve_language(language);
-                let root_str = root.to_string_lossy().to_string();
-                let key = QueryKey::new("calls", hash_str_args(&[&root_str]), lang);
+                let key = calls_query_key(&root, lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
@@ -951,7 +1062,6 @@ impl TLDRDaemon {
             }
 
             DaemonCommand::Imports { file } => {
-                let file_str = file.to_string_lossy().to_string();
                 let language = match detect_or_parse_language(None, &file) {
                     Ok(l) => l,
                     Err(e) => {
@@ -961,11 +1071,7 @@ impl TLDRDaemon {
                         }
                     }
                 };
-                let key = QueryKey::new(
-                    "imports",
-                    hash_str_args(&[&file_str]),
-                    language,
-                );
+                let key = imports_query_key(&file, language);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
@@ -1059,6 +1165,187 @@ impl TLDRDaemon {
                 }
             }
         }
+    }
+
+    /// Warm the file-scoped query-cache slots for every source file in
+    /// `structure` (daemon-warm-v2, issue #7).
+    ///
+    /// Project-level keys only serve project-scoped requests; the file-scoped
+    /// daemon handlers key on the REQUEST's path string, so before this pass
+    /// every per-file CLI query was a guaranteed cache miss. For each file the
+    /// pass fills the exact `QueryKey` slots the corresponding handler
+    /// constructs (through the shared `*_query_key` helpers — warm and the
+    /// handlers MUST agree by construction):
+    ///
+    /// - `extract`, `imports`, `structure`: one entry per file
+    /// - `cfg`, `dfg`: one entry per `(file, function|method)` pair, mirrored
+    ///   from the file's own structure definitions
+    ///
+    /// Function+line-scoped keys (`slice`) are deliberately NOT warmed: the
+    /// line argument is request-specific, so there is no single slot to fill.
+    ///
+    /// Per-file work is capped consistently with the rest of the daemon:
+    /// files over the shared oversize policy (`tldr_core::fs::oversize`) are
+    /// skipped, as are files whose language cannot be detected, and each file
+    /// warms at most `MAX_WARM_FUNCTIONS_PER_FILE` cfg/dfg pairs.
+    fn warm_per_file_caches(
+        &self,
+        lang: Language,
+        structure: Option<CodeStructure>,
+    ) -> PerFileWarmStats {
+        let mut stats = PerFileWarmStats::default();
+        let structure = match structure {
+            Some(s) => s,
+            None => return stats,
+        };
+
+        for file_structure in &structure.files {
+            // FileStructure.path is RELATIVE to the structure root (see
+            // `extract_file_structure`), and the structure walk itself builds
+            // file paths as `project.join(relative)` — the daemon's own
+            // project string. Reconstruct the same absolute form here so the
+            // warmed key matches what a request on that absolute path hashes.
+            let path: PathBuf = if file_structure.path.is_absolute() {
+                file_structure.path.clone()
+            } else {
+                self.project.join(&file_structure.path)
+            };
+            let path = path.as_path();
+
+            // Size cap: skip files the daemon's own parse policy would skip,
+            // so warm never does work a query would refuse to reuse.
+            if let tldr_core::fs::oversize::SizeCheck::Oversize { .. } =
+                tldr_core::fs::oversize::check_size(path)
+            {
+                stats.files_skipped += 1;
+                continue;
+            }
+
+            // File-scoped handlers (extract/imports/cfg/dfg) derive the
+            // key language from the request path; mirror that detection
+            // exactly so the warmed slot matches the handler's slot.
+            let file_lang = match detect_or_parse_language(None, path) {
+                Ok(l) => l,
+                Err(_) => {
+                    stats.files_skipped += 1;
+                    continue;
+                }
+            };
+            let file_hash = super::salsa::hash_path(path);
+
+            // 1. extract — mirrors the DaemonCommand::Extract handler.
+            let extract_key = extract_query_key(path, file_lang);
+            if self.cache.get::<serde_json::Value>(&extract_key).is_none() {
+                match extract_file(path, Some(&self.project)) {
+                    Ok(result) => {
+                        let val = serde_json::to_value(&result).unwrap_or_default();
+                        self.cache.insert(extract_key, &val, vec![file_hash]);
+                        stats.entries += 1;
+                    }
+                    Err(e) => stats
+                        .errors
+                        .push(format!("extract {}: {}", path.display(), e)),
+                }
+            }
+
+            // 2. imports — mirrors the DaemonCommand::Imports handler.
+            let imports_key = imports_query_key(path, file_lang);
+            if self.cache.get::<serde_json::Value>(&imports_key).is_none() {
+                match get_imports(path, file_lang) {
+                    Ok(result) => {
+                        let val = serde_json::to_value(&result).unwrap_or_default();
+                        self.cache.insert(imports_key, &val, vec![file_hash]);
+                        stats.entries += 1;
+                    }
+                    Err(e) => stats
+                        .errors
+                        .push(format!("imports {}: {}", path.display(), e)),
+                }
+            }
+
+            // 3. structure for this single file — mirrors the
+            //    DaemonCommand::Structure handler for the request shape the
+            //    CLI sends (`tldr structure <file>` always passes an explicit
+            //    language string). The handler inserts with NO input
+            //    dependencies, so warm must not add any either.
+            let file_struct_key = structure_query_key(path, lang.as_str(), lang);
+            if self
+                .cache
+                .get::<serde_json::Value>(&file_struct_key)
+                .is_none()
+            {
+                match get_code_structure(path, lang, 0, None) {
+                    Ok(result) => {
+                        let val = serde_json::to_value(&result).unwrap_or_default();
+                        self.cache.insert(file_struct_key, &val, vec![]);
+                        stats.entries += 1;
+                    }
+                    Err(e) => stats
+                        .errors
+                        .push(format!("structure {}: {}", path.display(), e)),
+                }
+            }
+
+            // 4. cfg + dfg per (file, function) — mirrors the
+            //    DaemonCommand::Cfg / DaemonCommand::Dfg handlers. Function
+            //    names come from the same structure walk, deduplicated;
+            //    classes/structs/callables are skipped (the cfg/dfg handlers
+            //    are function-scoped).
+            let mut functions: Vec<String> = Vec::new();
+            for def in &file_structure.definitions {
+                if def.kind != "function" && def.kind != "method" {
+                    continue;
+                }
+                if functions.contains(&def.name) {
+                    continue;
+                }
+                functions.push(def.name.clone());
+                if functions.len() >= MAX_WARM_FUNCTIONS_PER_FILE {
+                    break;
+                }
+            }
+
+            for function in &functions {
+                for (name, key, result) in [
+                    (
+                        "cfg",
+                        cfg_query_key(path, function, file_lang),
+                        get_cfg_context(&path.to_string_lossy(), function, file_lang)
+                            .map(|v| serde_json::to_value(&v).unwrap_or_default()),
+                    ),
+                    (
+                        "dfg",
+                        dfg_query_key(path, function, file_lang),
+                        get_dfg_context(&path.to_string_lossy(), function, file_lang)
+                            .map(|v| serde_json::to_value(&v).unwrap_or_default()),
+                    ),
+                ] {
+                    if self.cache.get::<serde_json::Value>(&key).is_some() {
+                        continue;
+                    }
+                    match result {
+                        Ok(val) => {
+                            self.cache.insert(key, &val, vec![file_hash]);
+                            stats.entries += 1;
+                        }
+                        Err(e) => stats
+                            .errors
+                            .push(format!("{} {}::{}: {}", name, path.display(), function, e)),
+                    }
+                }
+            }
+
+            stats.files_processed += 1;
+        }
+
+        if stats.files_processed > 0 {
+            stats.warmed.push(format!(
+                "{} file-scoped slots ({} file(s) scanned, {} skipped)",
+                stats.entries, stats.files_processed, stats.files_skipped
+            ));
+        }
+
+        stats
     }
 
     /// Handle the Status command.
@@ -2161,6 +2448,204 @@ mod tests {
             }
             other => panic!("Expected Status response, got {:?}", other),
         }
+    }
+
+    // =========================================================================
+    // daemon-warm-v2 (issue #7): warm must precompute what queries reuse
+    // =========================================================================
+
+    /// Issue #7 key-equality test.
+    ///
+    /// The Warm handler and the file-scoped handlers MUST construct
+    /// identical `QueryKey`s for the same request. Both sides go through the
+    /// same `*_query_key` helpers; the assertion proves it end-to-end: after
+    /// a Warm, the expected handler keys are already populated in the cache,
+    /// and issuing the real handler commands is served FROM cache (hits go
+    /// up, misses do not). Pre-fix, warm filled slots no query ever read.
+    #[tokio::test]
+    async fn test_warm_keys_match_file_scoped_handler_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        // Canonicalize like `tldr daemon start` does, so the path strings
+        // warm hashes (via the structure walk) and the strings the handlers
+        // hash from the request agree — on macOS temp paths sit under a
+        // /private symlink, so raw temp paths would diverge here.
+        let project = temp.path().canonicalize().unwrap();
+        let py_file = project.join("example.py");
+        std::fs::write(
+            &py_file,
+            "def add(a, b):\n    return a + b\n\ndef multiply(x, y):\n    return x * y\n",
+        )
+        .unwrap();
+
+        let daemon = TLDRDaemon::new(project.clone(), DaemonConfig::default());
+
+        // --- Warm, and require the entry-count report -------------------
+        let warm_response = daemon
+            .handle_command(DaemonCommand::Warm { language: None })
+            .await;
+        let warm_msg = match &warm_response {
+            DaemonResponse::Status { status, message } => {
+                assert_eq!(status, "ok");
+                message.clone().unwrap_or_default()
+            }
+            other => panic!("Expected Status response, got {:?}", other),
+        };
+        assert!(
+            warm_msg.contains("query cache entries precomputed"),
+            "warm must report how many entries it precomputed, got: {}",
+            warm_msg
+        );
+
+        let detected = detect_or_parse_language(None, &py_file).unwrap();
+        assert_eq!(detected, Language::Python);
+
+        // --- The keys the file-scoped handlers construct for queries on
+        //     this file, built through the SAME helpers the handlers use ---
+        let expected_keys = vec![
+            extract_query_key(&py_file, detected),
+            imports_query_key(&py_file, detected),
+            structure_query_key(&py_file, "python", Language::Python),
+            cfg_query_key(&py_file, "add", detected),
+            dfg_query_key(&py_file, "add", detected),
+            cfg_query_key(&py_file, "multiply", detected),
+            dfg_query_key(&py_file, "multiply", detected),
+        ];
+        for key in &expected_keys {
+            let cached: Option<serde_json::Value> = daemon.cache.get(key);
+            assert!(
+                cached.is_some(),
+                "warm must precompute the '{}' slot for {}",
+                key.query_name,
+                py_file.display()
+            );
+        }
+
+        // --- End-to-end: the real handler commands must now be cache hits.
+        //     Each handler performs exactly one cache lookup, so 7 commands
+        //     mean 7 hits and zero new misses.
+        let commands = vec![
+            DaemonCommand::Extract {
+                file: py_file.clone(),
+                session: None,
+            },
+            DaemonCommand::Imports {
+                file: py_file.clone(),
+            },
+            DaemonCommand::Structure {
+                path: py_file.clone(),
+                lang: Some("python".to_string()),
+            },
+            DaemonCommand::Cfg {
+                file: py_file.clone(),
+                function: "add".to_string(),
+            },
+            DaemonCommand::Dfg {
+                file: py_file.clone(),
+                function: "add".to_string(),
+            },
+            DaemonCommand::Cfg {
+                file: py_file.clone(),
+                function: "multiply".to_string(),
+            },
+            DaemonCommand::Dfg {
+                file: py_file.clone(),
+                function: "multiply".to_string(),
+            },
+        ];
+
+        let before = daemon.cache_stats();
+        for cmd in commands {
+            let response = daemon.handle_command(cmd).await;
+            assert!(
+                matches!(response, DaemonResponse::Result(_)),
+                "file-scoped query after warm must succeed, got {:?}",
+                response
+            );
+        }
+        let after = daemon.cache_stats();
+
+        assert_eq!(
+            after.hits - before.hits,
+            expected_keys.len() as u64,
+            "every file-scoped query must be served from the slots warm filled"
+        );
+        assert_eq!(
+            after.misses - before.misses,
+            0,
+            "no file-scoped query may miss after warm (keys must match exactly)"
+        );
+    }
+
+    /// Warm must skip oversize files (cap consistent with the daemon's own
+    /// parse policy) instead of blocking the connection loop on them.
+    #[tokio::test]
+    async fn test_warm_skips_oversize_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().canonicalize().unwrap();
+
+        // Small file: warmed.
+        let py_file = project.join("small.py");
+        std::fs::write(&py_file, "def small_fn():\n    return 1\n").unwrap();
+        // Oversize file: skipped (10 MB cap for normal source files).
+        let big_file = project.join("big.py");
+        let big_body = "# padding\n".repeat(11 * 1024 * 1024 / 9);
+        std::fs::write(&big_file, big_body).unwrap();
+
+        let daemon = TLDRDaemon::new(project.clone(), DaemonConfig::default());
+        let response = daemon
+            .handle_command(DaemonCommand::Warm { language: None })
+            .await;
+
+        match &response {
+            DaemonResponse::Status { status, .. } => assert_eq!(status, "ok"),
+            other => panic!("Expected Status response, got {:?}", other),
+        }
+
+        // The small file's slots are filled...
+        let detected = detect_or_parse_language(None, &py_file).unwrap();
+        let key = extract_query_key(&py_file, detected);
+        let cached: Option<serde_json::Value> = daemon.cache.get(&key);
+        assert!(cached.is_some(), "small file must be warmed");
+
+        // ...and the oversize file's are not.
+        let big_detected = detect_or_parse_language(None, &big_file).unwrap();
+        let big_key = extract_query_key(&big_file, big_detected);
+        let big_cached: Option<serde_json::Value> = daemon.cache.get(&big_key);
+        assert!(big_cached.is_none(), "oversize file must be skipped by warm");
+    }
+
+    /// daemon-warm-v2 (issue #7): persistence must round-trip. A daemon
+    /// restart loads the `query_cache.bin` the previous session wrote, so
+    /// warmed/queried slots survive the restart instead of being lost.
+    #[test]
+    fn test_daemon_new_loads_persisted_query_cache() {
+        let temp = TempDir::new().unwrap();
+        let cache_dir = temp.path().join(".tldr").join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let cache_path = cache_dir.join("query_cache.bin");
+
+        // Persist a cache entry exactly the way persist_stats does.
+        let key = QueryKey::new("extract", hash_str_args(&["/some/file.py"]), Language::Python);
+        let persisted = QueryCache::with_defaults();
+        persisted.insert(key.clone(), &serde_json::json!({ "precomputed": true }), vec![]);
+        persisted.save_to_file(&cache_path).unwrap();
+
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+        let loaded: Option<serde_json::Value> = daemon.cache.get(&key);
+        assert!(
+            loaded.is_some(),
+            "TLDRDaemon::new must load the persisted query cache from query_cache.bin"
+        );
+    }
+
+    /// A missing (first-run) persisted cache must not fail construction.
+    #[test]
+    fn test_daemon_new_without_persisted_cache_starts_fresh() {
+        let temp = TempDir::new().unwrap();
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+        assert!(daemon.cache.is_empty());
+        assert_eq!(daemon.cache_stats().hits, 0);
+        assert_eq!(daemon.cache_stats().misses, 0);
     }
 
     #[tokio::test]

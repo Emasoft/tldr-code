@@ -141,15 +141,20 @@ impl CacheStatsArgs {
     }
 
     /// Try to load salsa cache stats from persisted file.
+    ///
+    /// daemon-warm-v2 (issue #7): read `query_cache.bin` — the name
+    /// `TLDRDaemon::persist_stats` actually writes. This used to look for
+    /// `salsa_cache.bin`, a file name nothing in the daemon ever produced,
+    /// so offline `cache stats` never reported the persisted salsa stats.
     fn load_salsa_stats(&self, cache_dir: &Path) -> Option<SalsaCacheStats> {
-        let salsa_cache_file = cache_dir.join("salsa_cache.bin");
+        let query_cache_file = cache_dir.join("query_cache.bin");
 
-        if !salsa_cache_file.exists() {
+        if !query_cache_file.exists() {
             return None;
         }
 
         // Try to load the cache and extract stats
-        match QueryCache::load_from_file(&salsa_cache_file) {
+        match QueryCache::load_from_file(&query_cache_file) {
             Ok(cache) => Some(cache.stats()),
             Err(_) => None,
         }
@@ -400,5 +405,39 @@ mod tests {
 
         let result = args.run_async(OutputFormat::Json, true).await;
         assert!(result.is_ok());
+    }
+
+    /// daemon-warm-v2 (issue #7): `load_salsa_stats` must read
+    /// `query_cache.bin` — the file name `TLDRDaemon::persist_stats`
+    /// actually writes — not the never-written `salsa_cache.bin`.
+    #[test]
+    fn test_load_salsa_stats_reads_query_cache_bin() {
+        use crate::commands::daemon::salsa::QueryKey;
+        use tldr_core::Language;
+
+        let temp = TempDir::new().unwrap();
+        let cache_dir = temp.path().join(".tldr").join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let args = CacheStatsArgs {
+            project: temp.path().to_path_buf(),
+        };
+
+        // Nothing persisted yet -> no stats.
+        assert!(args.load_salsa_stats(&cache_dir).is_none());
+
+        // Persist a query cache under the name the daemon writes, with one
+        // recorded hit so the loaded stats are distinguishable from default.
+        let cache = QueryCache::with_defaults();
+        let key = QueryKey::new("extract", 42, Language::Python);
+        cache.insert(key.clone(), &"value".to_string(), vec![]);
+        let _: Option<String> = cache.get(&key); // records hits = 1
+        cache
+            .save_to_file(&cache_dir.join("query_cache.bin"))
+            .unwrap();
+
+        let stats = args
+            .load_salsa_stats(&cache_dir)
+            .expect("query_cache.bin must be readable by cache stats");
+        assert_eq!(stats.hits, 1, "persisted hit counter must be reported");
     }
 }

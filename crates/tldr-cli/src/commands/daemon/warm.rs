@@ -2,14 +2,23 @@
 //!
 //! CLI command: `tldr warm PATH [--background] [--lang LANG]`
 //!
-//! Pre-builds call graph cache for faster subsequent queries.
+//! Pre-builds caches for faster subsequent queries:
+//! - Without a daemon: writes the call-graph cache file
+//!   (`.tldr/cache/call_graph.json`).
+//! - With a daemon (or with `--background`, which starts one): sends a Warm
+//!   command over IPC so the daemon precomputes its Salsa query caches
+//!   (call graph, structure, file tree, plus per-file extract/imports/
+//!   structure/cfg/dfg slots). Query-result warming lives in the daemon —
+//!   the CLI cannot fill the daemon's in-memory cache from outside.
 //!
 //! # Behavior
 //!
-//! 1. If `--background`: spawn detached process, return immediately
-//! 2. Foreground mode: build call graph synchronously
-//! 3. If daemon is running: send Warm command via IPC
-//! 4. If daemon not running and background: start daemon then warm
+//! 1. If `--background`: ensure a daemon is running for the project (start
+//!    one detached when none is), then send Warm via IPC
+//! 2. Foreground mode with a running daemon: send Warm via IPC
+//! 3. Foreground mode without a daemon: build the call-graph cache file
+//!    synchronously (query caches are NOT warmed in this mode — the daemon
+//!    does that; see the stderr hint printed in this path)
 //!
 //! # Output
 //!
@@ -27,18 +36,18 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
 
 use clap::Args;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tldr_core::walker::walk_project;
 
-use crate::output::OutputFormat;
+use crate::output::{OutputFormat, OutputWriter};
 
+use super::daemon::{start_daemon_background, wait_for_daemon};
 use super::error::{DaemonError, DaemonResult};
 use super::ipc::{check_socket_alive, send_command};
-use super::types::DaemonCommand;
+use super::types::{DaemonCommand, DaemonResponse};
 
 // =============================================================================
 // CLI Arguments
@@ -128,37 +137,41 @@ impl WarmArgs {
         }
     }
 
-    /// Run warming in background (spawn detached process).
+    /// Run warming in background (daemon-backed).
+    ///
+    /// daemon-warm-v2 (issue #7): implements the documented promise. Query
+    /// caches live inside the daemon process, so `--background` no longer
+    /// re-spawns a detached `tldr warm` (which only rewrote call_graph.json
+    /// and warmed nothing). Instead it:
+    /// 1. starts the daemon detached when none is running for the project
+    ///    (reusing `start_daemon_background` + `wait_for_daemon`), and
+    /// 2. sends `DaemonCommand::Warm` over IPC so the daemon precomputes its
+    ///    query caches while this command returns.
     async fn run_background(
         &self,
         project: &Path,
         format: OutputFormat,
         quiet: bool,
     ) -> anyhow::Result<()> {
-        // Spawn detached process
-        let exe = std::env::current_exe()?;
-        let mut cmd = StdCommand::new(exe);
-        cmd.arg("warm").arg(project.to_str().unwrap_or("."));
+        // Start the daemon if it is not already running for this project.
+        let daemon_started = if check_socket_alive(project).await {
+            false
+        } else {
+            start_daemon_background(project).await?;
+            wait_for_daemon(project, 10)
+                .await
+                .map_err(|_| anyhow::anyhow!("Daemon failed to start within timeout"))?;
+            true
+        };
 
-        // Language auto-detection happens in the background process
+        // Ask the daemon to warm its query caches.
+        let cmd = DaemonCommand::Warm {
+            language: None, // Auto-detect / daemon default
+        };
 
-        // On Unix, we use setsid to detach
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-
-        // On Windows, use CREATE_NO_WINDOW and DETACHED_PROCESS
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            const DETACHED_PROCESS: u32 = 0x00000008;
-            cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
-        }
-
-        cmd.spawn()?;
+        let response = send_command(project, &cmd)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to send warm command to daemon: {}", e))?;
 
         // Output background message
         if !quiet {
@@ -166,12 +179,23 @@ impl WarmArgs {
                 OutputFormat::Json | OutputFormat::Compact => {
                     let output = serde_json::json!({
                         "status": "ok",
-                        "message": "Warming cache in background..."
+                        "message": "Warming daemon query caches in background...",
+                        "daemon_started": daemon_started,
+                        "daemon_response": response,
                     });
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 }
                 OutputFormat::Text | OutputFormat::Sarif | OutputFormat::Dot => {
-                    println!("Warming cache in background...");
+                    println!("Warming daemon query caches in background...");
+                    if daemon_started {
+                        println!("Daemon started for {}", project.display());
+                    }
+                    if let DaemonResponse::Status {
+                        message: Some(msg), ..
+                    } = &response
+                    {
+                        println!("{}", msg);
+                    }
                 }
             }
         }
@@ -215,6 +239,8 @@ impl WarmArgs {
         format: OutputFormat,
         quiet: bool,
     ) -> anyhow::Result<()> {
+        let writer = OutputWriter::new(format, quiet);
+
         if !quiet {
             match format {
                 OutputFormat::Text | OutputFormat::Sarif | OutputFormat::Dot => {
@@ -265,6 +291,16 @@ impl WarmArgs {
         };
 
         fs::write(&cache_path, serde_json::to_string_pretty(&cache)?)?;
+
+        // daemon-warm-v2 (issue #7): be honest about what this command did.
+        // Only the call-graph cache file was written; query-result caches are
+        // owned by the daemon process and can only be filled by it. Point the
+        // user at the command pair that actually precomputes query caches.
+        // `progress` goes to stderr and is auto-suppressed under JSON output.
+        writer.progress(
+            "Query-result warming happens in the daemon: run `tldr daemon start` \
+             then `tldr warm` to precompute query caches",
+        );
 
         // Output result
         let output = WarmOutput {
