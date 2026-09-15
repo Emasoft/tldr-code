@@ -121,3 +121,25 @@ harness = false
 [[bench]]
 name = "enriched_bench"
 harness = false
+
+# Bench-style suites are opt-in via `cargo test --test <name>` (`test = false` keeps them
+# out of default `cargo test` runs; a bare run used to execute hours of multilang benchmarks).
+[[test]]
+name = "bench_dataflow_multilang"
+test = false
+
+[[test]]
+name = "bench_l1_multilang"
+test = false
+
+[[test]]
+name = "bench_l2_multilang"
+test = false
+
+[[test]]
+name = "bench_patterns_security_multilang"
+test = false
+
+[[test]]
+name = "bench_surface_search_multilang"
+test = false
