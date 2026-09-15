@@ -378,13 +378,19 @@ fn is_self_param(param: &str) -> bool {
 /// `parse_generics`, truncating the generics clause before its closing `>`).
 fn find_top_level_open_paren(text: &str) -> Option<usize> {
     let mut angle_depth: i32 = 0;
+    let mut prev = '\0';
     for (i, ch) in text.char_indices() {
         match ch {
             '<' => angle_depth += 1,
-            '>' if angle_depth > 0 => angle_depth -= 1,
+            // why: the `>` of a `->` arrow inside a closure bound is not a closing
+            // angle bracket. Counting it dropped the depth to 0 early, so in
+            // `fn foo<F: Fn(i32) -> (i32, i32)>(f: F)` the return tuple's `(` was
+            // returned as the parameter list.
+            '>' if prev != '-' && angle_depth > 0 => angle_depth -= 1,
             '(' if angle_depth == 0 => return Some(i),
             _ => {}
         }
+        prev = ch;
     }
     None
 }
@@ -894,6 +900,19 @@ where
             params,
             vec!["map: HashMap<String, Vec<i32>>", "count: usize"]
         );
+    }
+
+
+    #[test]
+    fn test_parse_params_closure_bound_with_tuple_return_not_split() {
+        // Catches a pre-fix bug: `find_top_level_open_paren` used a naive
+        // angle-bracket depth counter that dropped to 0 on the `>` of the
+        // `Fn(i32) -> (i32, i32)` bound's own `->` arrow, so
+        // `fn foo<F: Fn(i32) -> (i32, i32)>(f: F)` had its parameter list
+        // extracted as the return tuple's `(i32, i32)` instead of the real
+        // `(f: F)`.
+        let params = parse_params("fn foo<F: Fn(i32) -> (i32, i32)>(f: F)");
+        assert_eq!(params, vec!["f: F"]);
     }
 
     #[test]
