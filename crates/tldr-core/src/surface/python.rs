@@ -288,6 +288,13 @@ fn parse_python_reexport_line(line: &str) -> Option<PythonReexport> {
     }
 
     let remainder = trimmed.strip_prefix("from .")?;
+    // why: a trailing `# comment` otherwise rides along with the parsed
+    // module and name (`from .a import x  # noqa` yielded the export name
+    // `x  # noqa`). Cut at '#' before splitting on " import " / ',' -- Python
+    // identifiers never contain '#', a from-import name list holds only
+    // identifiers / `as` aliases / parens, and the comment itself may contain
+    // commas or " as ", so it must go first. Same idiom as `code_part`.
+    let remainder = remainder.split('#').next().unwrap_or("");
     let (module_part, import_part) = remainder.split_once(" import ")?;
     let module = if module_part.is_empty() {
         None
@@ -1360,6 +1367,20 @@ mod tests {
              swallowed, got {:?}",
             exported
         );
+    }
+
+    #[test]
+    fn test_parse_python_reexport_strips_trailing_comment_from_names() {
+        // Catches a pre-fix bug: a trailing `# comment` rode along with the
+        // parsed name, so `from .a import x  # noqa` yielded the export name
+        // `x  # noqa` (and the aliased form yielded `y  # comment`) instead
+        // of the bare identifier, which then never matched a real export.
+        let (_, imported) = parse_python_reexport_line("from .a import x  # noqa").unwrap();
+        assert_eq!(imported, vec![("x".to_string(), "x".to_string())]);
+
+        let (_, imported) =
+            parse_python_reexport_line("from .a import x as y  # comment").unwrap();
+        assert_eq!(imported, vec![("x".to_string(), "y".to_string())]);
     }
 
     #[test]
