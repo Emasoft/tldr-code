@@ -77,7 +77,11 @@ pub mod fix;
 // Bugbot - automated bug detection on code changes
 pub mod bugbot;
 
+// Body - safe contiguous byte-faithful source reader (issue #8)
+pub mod body;
+
 // Re-export Args types for convenience
+pub use body::BodyArgs;
 pub use calls::CallsArgs;
 pub use dead::DeadArgs;
 pub use impact::ImpactArgs;

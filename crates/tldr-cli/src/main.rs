@@ -37,7 +37,8 @@ use tldr_core::Language;
 
 use tldr_cli::commands::remaining::{ApiCheckArgs, VulnArgs};
 use tldr_cli::commands::{
-    ApiSurfaceArgs, AvailableArgs, BugbotCheckArgs, CacheClearArgs, CacheStatsArgs, CallsArgs,
+    ApiSurfaceArgs, AvailableArgs, BodyArgs, BugbotCheckArgs, CacheClearArgs, CacheStatsArgs,
+    CallsArgs,
     ChangeImpactArgs, ChopArgs, ChurnArgs, ClonesArgs, CognitiveArgs, ComplexityArgs, ContextArgs,
     ContractsArgs, CoverageArgs, DaemonListArgs, DaemonNotifyArgs, DaemonQueryArgs,
     DaemonStartArgs, DaemonStatusArgs, DaemonStopArgs, DeadArgs, DeadStoresArgs, DebtArgs,
@@ -316,6 +317,10 @@ pub enum Command {
     #[command(name = "chop", visible_alias = "deps-between", alias = "chp")]
     Chop(ChopArgs),
 
+    /// Print the exact contiguous source of a function body or line range — byte-faithful (preserves CRLF/BOM/whitespace). Safe to read or reconstruct from, unlike slice/chop.
+    #[command(name = "body")]
+    Body(BodyArgs),
+
     /// Extract behavioral specifications from pytest test files
     #[command(visible_alias = "sp")]
     Specs(SpecsArgs),
@@ -563,6 +568,7 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Contracts(_) => "contracts",
         Command::DeadStores(_) => "dead-stores",
         Command::Chop(_) => "chop",
+        Command::Body(_) => "body",
         Command::Specs(_) => "specs",
         Command::Invariants(_) => "invariants",
         Command::Verify(_) => "verify",
@@ -690,6 +696,7 @@ fn run_command(cli: &Cli) -> Result<()> {
         // Bounds: archived
         Command::DeadStores(args) => args.run(cli.format, q),
         Command::Chop(args) => args.run(cli.format, q),
+        Command::Body(args) => args.run(cli.format, q, cli.lang),
         Command::Specs(args) => args.run(cli.format, q),
         Command::Invariants(args) => args.run(cli.format, q),
         Command::Verify(args) => args.run(cli.format, q),
