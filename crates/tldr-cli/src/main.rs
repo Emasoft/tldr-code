@@ -308,8 +308,12 @@ pub enum Command {
     #[command(visible_alias = "ds")]
     DeadStores(DeadStoresArgs),
 
-    /// Compute chop slice - intersection of forward and backward slices
-    #[command(visible_alias = "chp")]
+    /// Compute the dependency closure between two lines (forward slice of FROM ∩ backward slice of TO).
+    ///
+    /// NOT a line-range extractor: output is not bounded by FROM..TO and may include lines
+    /// outside the window (or nothing when no dependency path exists). For contiguous source
+    /// use `tldr body`.
+    #[command(name = "chop", visible_alias = "deps-between", alias = "chp")]
     Chop(ChopArgs),
 
     /// Extract behavioral specifications from pytest test files

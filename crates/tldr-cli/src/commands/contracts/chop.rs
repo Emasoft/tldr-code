@@ -1,8 +1,11 @@
 //! Chop command - Program slice intersection (forward AND backward).
 //!
 //! Computes the "chop" between two lines: the intersection of the forward slice
-//! from a source line with the backward slice to a target line. This reveals
-//! only those statements that are on any dependency path from source to target.
+//! from a source line with the backward slice to a target line. The result is a
+//! dependency *closure*: only statements on some dependency path from source to
+//! target. It is NOT a line-range extractor — the output is not bounded by
+//! `FROM..TO` and may include lines outside that window (or nothing at all when
+//! no dependency path exists). For contiguous source text use `tldr body`.
 //!
 //! # Algorithm
 //!
@@ -35,6 +38,10 @@
 //!     return w
 //!
 //! # chop(2, 4) = {2, 3, 4} - all lines on path from y=x+1 to w=z+10
+//!
+//! # Note: this is a dependency closure, not a line range. Lines outside
+//! # 2..4 can legitimately appear when they lie on a dependency path, and
+//! # the result is empty when no such path exists.
 //! ```
 
 use std::collections::HashSet;
@@ -127,10 +134,19 @@ fn line_outside_with_bounds(
 // CLI Arguments
 // =============================================================================
 
-/// Compute chop slice - intersection of forward and backward program slices.
+/// Compute the dependency closure between two lines (forward slice of FROM ∩
+/// backward slice of TO).
 ///
-/// The chop from source_line to target_line contains only those statements
-/// that are on any dependency path between the two lines.
+/// # Warning: NOT a line-range extractor
+///
+/// `chop` computes a dependency **closure**: `forward_slice(FROM) ∩
+/// backward_slice(TO)`. The result is NOT bounded by FROM..TO — it may include
+/// lines outside the window (or return nothing at all when no dependency path
+/// exists between the two lines). Do not use it to extract contiguous source
+/// text.
+///
+/// For contiguous ranges use `tldr body <file> <function>` or
+/// `tldr body <file> --from N --to M` instead.
 ///
 /// # Example
 ///
