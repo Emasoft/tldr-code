@@ -256,6 +256,9 @@ struct CfgBuilder<'a> {
     /// are still recognised by back-edge / fallthrough guards as terminating
     /// the local control path. (Fixes parcadei/tldr-code#18.)
     loop_exit_blocks: Vec<usize>,
+    /// Headers of the loops whose bodies are being built, innermost last.
+    /// `process_continue_statement` wires its block back to the top one.
+    loop_headers: Vec<usize>,
 }
 
 impl<'a> CfgBuilder<'a> {
@@ -279,6 +282,7 @@ impl<'a> CfgBuilder<'a> {
             exit_blocks: Vec::new(),
             statements: Vec::new(),
             loop_exit_blocks: Vec::new(),
+            loop_headers: Vec::new(),
         }
     }
 
@@ -670,7 +674,9 @@ impl<'a> CfgBuilder<'a> {
             self.add_edge(header_block, exit_block, EdgeType::False, None);
 
             self.current_block_id = body_block;
+            self.loop_headers.push(header_block);
             self.process_block(body_node, depth + 1)?;
+            self.loop_headers.pop();
 
             // Back edge to header
             if !self.exit_blocks.contains(&self.current_block_id)
@@ -730,7 +736,9 @@ impl<'a> CfgBuilder<'a> {
             self.add_edge(header_block, exit_block, EdgeType::False, None);
 
             self.current_block_id = body_block;
+            self.loop_headers.push(header_block);
             self.process_block(body_node, depth + 1)?;
+            self.loop_headers.pop();
 
             // Back edge
             if !self.exit_blocks.contains(&self.current_block_id)
@@ -779,7 +787,9 @@ impl<'a> CfgBuilder<'a> {
             self.add_edge(header_block, body_block, EdgeType::True, None);
 
             self.current_block_id = body_block;
+            self.loop_headers.push(header_block);
             self.process_block(body_node, depth + 1)?;
+            self.loop_headers.pop();
 
             // Back edge to header
             if !self.exit_blocks.contains(&self.current_block_id)
@@ -1200,6 +1210,26 @@ impl<'a> CfgBuilder<'a> {
         // `continue_block` as falling through and synthesize a spurious
         // unconditional edge to the join/exit block, corrupting the CFG.
         self.loop_exit_blocks.push(continue_block);
+
+        // why: the guards above now skip this block, so it needs its real
+        // successor wired explicitly. Without this edge the continue path is a
+        // dead end: definitions made before `continue` never reach the next
+        // iteration, and a body ending in `continue` has no back-edge at all.
+        //
+        // ponytail: a LABELLED continue (`continue outer;` JS/Java,
+        // `continue 'a` Rust, `continue L` Go) can target an OUTER loop, not
+        // `self.loop_headers.last()`. Wiring the back-edge to the innermost
+        // header anyway is an approximation and NOT a sound one: the outer
+        // header is reachable from the continue only if the rest of the outer
+        // body after the inner loop falls through to it. A `return`/`break`
+        // there (`'o: for .. { for .. { continue 'o; } return; }`) cuts that
+        // path, so definitions made before the continue never reach the next
+        // outer iteration. Still strictly better than no back-edge at all.
+        // Upgrade path: keep a label alongside each `loop_headers` entry and
+        // resolve `continue <label>` against it.
+        if let Some(&header) = self.loop_headers.last() {
+            self.add_edge(continue_block, header, EdgeType::BackEdge, None);
+        }
 
         self.current_block_id = continue_block;
         Ok(())
@@ -1788,4 +1818,103 @@ fn sum_items(items: &[i32]) -> i32 {
         let has_back = cfg.edges.iter().any(|e| e.edge_type == EdgeType::BackEdge);
         assert!(has_back, "Rust for should have a back edge");
     }
+
+    /// Assert that some `continue` statement in `cfg` back-edges to the
+    /// CFG's single loop header. Used by all three `continue`-back-edge
+    /// tests below so each one actually exercises the fix instead of
+    /// passing on the loop body's own unrelated fallthrough back-edge (a
+    /// bare "any BackEdge exists anywhere" check is vacuous: it also holds
+    /// on the buggy code that never wires the continue's own back-edge).
+    fn assert_continue_back_edges_to_loop_header(cfg: &CfgInfo) {
+        let header_ids: Vec<usize> = cfg
+            .blocks
+            .iter()
+            .filter(|b| b.block_type == BlockType::LoopHeader)
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(
+            header_ids.len(),
+            1,
+            "expected exactly one loop header block, got {:?}",
+            header_ids
+        );
+        let header_id = header_ids[0];
+
+        let continue_blocks: std::collections::HashSet<usize> = cfg
+            .edges
+            .iter()
+            .filter(|e| e.edge_type == EdgeType::Continue)
+            .map(|e| e.to)
+            .collect();
+        assert!(
+            !continue_blocks.is_empty(),
+            "expected at least one Continue edge into a continue-statement block"
+        );
+
+        let has_back_from_continue = cfg.edges.iter().any(|e| {
+            e.edge_type == EdgeType::BackEdge
+                && continue_blocks.contains(&e.from)
+                && e.to == header_id
+        });
+        assert!(
+            has_back_from_continue,
+            "a continue statement's own block must back-edge to the loop header"
+        );
+    }
+
+    #[test]
+    fn test_continue_back_edges_to_own_loop_header() {
+        let source = r#"
+def with_continue():
+    total = 0
+    for i in range(10):
+        if i % 2 == 0:
+            continue
+        total += i
+    return total
+"#;
+        let cfg = get_cfg_context(source, "with_continue", Language::Python).unwrap();
+        assert_continue_back_edges_to_loop_header(&cfg);
+    }
+
+    #[test]
+    fn test_loop_body_ending_in_continue_has_back_edge() {
+        let source = r#"
+def tail_continue():
+    total = 0
+    for i in range(10):
+        total += i
+        continue
+    return total
+"#;
+        let cfg = get_cfg_context(source, "tail_continue", Language::Python).unwrap();
+        assert_continue_back_edges_to_loop_header(&cfg);
+    }
+
+    #[test]
+    fn test_rust_labelled_continue_still_back_edges_to_for_loop_header() {
+        // Catches the unsound "skip the back-edge for a labelled continue"
+        // guard: `continue 'outer;` is the only enclosing loop here, so
+        // skipping its back-edge would make it a dead end and `last = 1`
+        // would never reach the next iteration. Wiring to the innermost
+        // header (this for-loop's own header) is a sound over-approximation.
+        let source = r#"
+fn walk(xs: &[i32]) -> i32 {
+    let mut last = 0;
+    'outer: for x in xs {
+        match x {
+            0 => {
+                last = 1;
+                continue 'outer;
+            }
+            _ => {}
+        }
+    }
+    last
+}
+"#;
+        let cfg = get_cfg_context(source, "walk", Language::Rust).unwrap();
+        assert_continue_back_edges_to_loop_header(&cfg);
+    }
+
 }
