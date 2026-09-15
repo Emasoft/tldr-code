@@ -772,9 +772,14 @@ fn find_bare_open_call(node: tree_sitter::Node, source: &str) -> Option<usize> {
                 // why: matching the bare substring "encoding" also matched an
                 // unrelated identifier like `my_encoding_var` passed positionally,
                 // which made a real bare `open()` call look already-encoded and
-                // silently skipped the fix. Require the `encoding=` keyword form.
+                // silently skipped the fix. Require the `encoding=` keyword form,
+                // ignoring whitespace so `encoding = "utf-8"` still counts --
+                // otherwise the fix would add a second `encoding=` (a SyntaxError).
                 if let Some(args) = node.child_by_field_name("arguments") {
-                    let args_text = &source[args.byte_range()];
+                    let args_text: String = source[args.byte_range()]
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect();
                     if !args_text.contains("encoding=") {
                         return Some(node.start_position().row + 1);
                     }
@@ -3977,6 +3982,37 @@ mod tests {
         assert!(
             diag.fix.is_none(),
             "Should not produce a fix when encoding= is already present"
+        );
+    }
+
+    #[test]
+    fn test_unicode_error_no_fix_when_encoding_present_with_spaces_around_equals() {
+        // Catches a pre-fix bug: matching the bare substring "encoding"
+        // (rather than requiring the `encoding=` keyword form) also matched
+        // spaced-out keyword syntax incorrectly if whitespace wasn't
+        // stripped first. `open(p, encoding = "utf-8")` already has the
+        // encoding kwarg -- with whitespace around `=` -- so it must not be
+        // flagged as a bare `open()` needing a second `encoding=` added
+        // (which would be a SyntaxError: keyword argument repeated).
+        let source = "def read(p):\n    f = open(p, encoding = \"utf-8\")\n    return f.read()\n";
+        let tree = parse_python(source);
+        let error = ParsedError {
+            error_type: "UnicodeDecodeError".to_string(),
+            message: "'utf-8' codec can't decode byte 0xff".to_string(),
+            file: None,
+            line: Some(2),
+            column: None,
+            language: "python".to_string(),
+            raw_text: "UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff".to_string(),
+            function_name: Some("read".to_string()),
+            offending_line: None,
+        };
+
+        let diag = diagnose_python(&error, source, &tree, None).unwrap();
+        assert_eq!(diag.error_code, "UnicodeError");
+        assert!(
+            diag.fix.is_none(),
+            "Should not produce a fix when `encoding = \"utf-8\"` (spaced) is already present"
         );
     }
 
