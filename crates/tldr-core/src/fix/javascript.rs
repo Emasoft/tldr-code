@@ -563,43 +563,149 @@ fn analyze_unexpected_token(error: &ParsedError, source: &str, token: &str) -> O
     })
 }
 
+/// Filter source characters down to "real code" -- excluding everything
+/// inside a string/template literal, a line/block comment, or a regex
+/// literal -- in original order. Shared by `analyze_unexpected_end` and
+/// `count_delimiters` so this skip logic exists exactly once.
+///
+/// why: comments must be skipped too, and a `'`/`"` string must end at a
+/// newline (unless escaped). Otherwise an apostrophe in `// don't` opens a
+/// "string" that never closes, every later brace is ignored, and a file
+/// that is simply missing its final `}` gets no fix. Escaping (for the
+/// string-end check, the comment-open check, and the regex-close check
+/// alike) is tracked with a TOGGLING flag, not a bare "is the previous
+/// char a backslash" check -- so `\\` (an escaped backslash) does not
+/// itself escape the character that follows it.
+fn code_chars_excluding_strings_and_comments(source: &str) -> Vec<char> {
+    // A `/` that is not a comment starts a REGEX LITERAL (not division)
+    // when the previous non-whitespace code character is one of
+    // `( , = : [ ! & | ? { } ; >` or there is none -- e.g. `s.split(/[/*]/)`
+    // or `xs.filter(x => /[/*]/.test(x))` -- so the `/` and `*` inside the
+    // regex's own character class do not get misread as a comment opener;
+    // a regex ends at the next unescaped `/` outside a `[...]` class, or a
+    // newline.
+    //
+    // ponytail: a regex literal after a keyword (`return /re/`, `typeof`,
+    // `case`, `yield`, `await`, ...) is still read as division -- there is
+    // no keyword tracking, only the previous punctuation character. And
+    // plain JSX text such as `<p>http://x</p>` still gets its `//` misread
+    // as opening a line comment: the comment-opener fires on any two
+    // consecutive slashes with no notion of JSX text nodes, before any
+    // regex or character-class logic is even reached. Fixing either needs
+    // a proper lexer, not more heuristics here.
+    let mut result = Vec::new();
+    let mut in_string = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut in_regex = false;
+    let mut in_regex_class = false;
+    let mut string_char = '"';
+    let mut prev_char = '\0';
+    let mut escaped = false;
+    let mut last_significant_code_char: Option<char> = None;
+
+    let mut chars = source.chars().peekable();
+    while let Some(ch) = chars.next() {
+        // `esc` is true when `ch` itself is escaped by an immediately
+        // preceding, itself-unescaped backslash. Toggling (rather than a
+        // bare prev-char check) means `\\` flips back to "unescaped" for
+        // whatever follows it.
+        let esc = escaped;
+        escaped = ch == '\\' && !esc;
+
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+            }
+        } else if in_block_comment {
+            if prev_char == '*' && ch == '/' {
+                in_block_comment = false;
+            }
+        } else if in_string {
+            if (ch == string_char && !esc) || (ch == '\n' && string_char != '`' && !esc) {
+                in_string = false;
+                last_significant_code_char = Some(ch);
+            }
+        } else if in_regex {
+            if ch == '\n' {
+                // An unterminated regex literal ends at end of line.
+                in_regex = false;
+                in_regex_class = false;
+            } else if !esc {
+                match ch {
+                    '[' => in_regex_class = true,
+                    ']' => in_regex_class = false,
+                    '/' if !in_regex_class => {
+                        in_regex = false;
+                        last_significant_code_char = Some('/');
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            match ch {
+                '/' if !esc && chars.peek() == Some(&'/') => in_line_comment = true,
+                '/' if !esc && chars.peek() == Some(&'*') => {
+                    chars.next();
+                    in_block_comment = true;
+                    // The consumed `*` must not close the comment as `/*/`.
+                    prev_char = '\0';
+                    continue;
+                }
+                '/' if !esc
+                    && matches!(
+                        last_significant_code_char,
+                        None | Some(
+                            '(' | ',' | '=' | ':' | '[' | '!' | '&' | '|' | '?' | '{' | '}' | ';'
+                                | '>'
+                        )
+                    ) =>
+                {
+                    in_regex = true;
+                    in_regex_class = false;
+                }
+                '"' | '\'' | '`' => {
+                    in_string = true;
+                    string_char = ch;
+                }
+                _ => {
+                    if !ch.is_whitespace() {
+                        last_significant_code_char = Some(ch);
+                    }
+                    result.push(ch);
+                }
+            }
+        }
+        prev_char = ch;
+    }
+
+    result
+}
+
 /// Analyze `Unexpected end of input` SyntaxError.
 ///
 /// This typically means an unclosed bracket, brace, paren, or string literal.
 fn analyze_unexpected_end(error: &ParsedError, source: &str) -> Option<Diagnosis> {
     // Count unmatched delimiters, skipping characters inside string/template
-    // literals -- otherwise a brace/paren/bracket that appears inside a
-    // quoted string (e.g. `"{"`) is miscounted as real code structure,
-    // producing a wrong depth and a bogus suggested fix. Mirrors the
-    // string-skipping logic in `count_delimiters` below.
+    // literals and comments -- otherwise a brace/paren/bracket that appears
+    // inside a quoted string (e.g. `"{"`) is miscounted as real code
+    // structure, producing a wrong depth and a bogus suggested fix. Shares
+    // its skip logic with `count_delimiters` via
+    // `code_chars_excluding_strings_and_comments` above.
     let mut brace_depth = 0i32;
     let mut paren_depth = 0i32;
     let mut bracket_depth = 0i32;
-    let mut in_string = false;
-    let mut string_char = '"';
-    let mut prev_char = '\0';
 
-    for ch in source.chars() {
-        if in_string {
-            if ch == string_char && prev_char != '\\' {
-                in_string = false;
-            }
-        } else {
-            match ch {
-                '"' | '\'' | '`' => {
-                    in_string = true;
-                    string_char = ch;
-                }
-                '{' => brace_depth += 1,
-                '}' => brace_depth -= 1,
-                '(' => paren_depth += 1,
-                ')' => paren_depth -= 1,
-                '[' => bracket_depth += 1,
-                ']' => bracket_depth -= 1,
-                _ => {}
-            }
+    for ch in code_chars_excluding_strings_and_comments(source) {
+        match ch {
+            '{' => brace_depth += 1,
+            '}' => brace_depth -= 1,
+            '(' => paren_depth += 1,
+            ')' => paren_depth -= 1,
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth -= 1,
+            _ => {}
         }
-        prev_char = ch;
     }
 
     let mut missing = Vec::new();
@@ -833,27 +939,15 @@ fn count_delimiters(source: &str, close_char: char) -> (usize, usize) {
 
     let mut opens = 0usize;
     let mut closes = 0usize;
-    let mut in_string = false;
-    let mut string_char = '"';
-    let mut prev_char = '\0';
 
-    for ch in source.chars() {
-        if in_string {
-            if ch == string_char && prev_char != '\\' {
-                in_string = false;
-            }
-        } else {
-            match ch {
-                '"' | '\'' | '`' => {
-                    in_string = true;
-                    string_char = ch;
-                }
-                c if c == open_char => opens += 1,
-                c if c == close_char => closes += 1,
-                _ => {}
-            }
+    // Shares its string/comment skip logic with `analyze_unexpected_end`
+    // above via `code_chars_excluding_strings_and_comments`.
+    for ch in code_chars_excluding_strings_and_comments(source) {
+        if ch == open_char {
+            opens += 1;
+        } else if ch == close_char {
+            closes += 1;
         }
-        prev_char = ch;
     }
 
     (opens, closes)
@@ -1459,6 +1553,154 @@ mod tests {
         let (opens, closes) = count_delimiters(source, '}');
         assert_eq!(opens, 2);
         assert_eq!(closes, 1);
+    }
+
+    #[test]
+    fn test_syntax_error_unexpected_end_with_apostrophe_comment() {
+        // Catches a pre-fix bug: analyze_unexpected_end did not skip line
+        // comments, so the apostrophe in `// don't` opened a "string" that
+        // never closed, every later brace was ignored, and a file that is
+        // simply missing its final `}` got no suggested fix.
+        let source = "function foo() {\n  // don't forget this\n  return 1;\n";
+        let error = ParsedError {
+            error_type: "SyntaxError".to_string(),
+            message: "Unexpected end of input".to_string(),
+            file: Some(PathBuf::from("app.js")),
+            line: Some(3),
+            column: None,
+            language: "javascript".to_string(),
+            raw_text: String::new(),
+            function_name: None,
+            offending_line: None,
+        };
+
+        let diag = analyze_syntax_error(&error, source);
+        assert!(diag.is_some(), "Should diagnose unexpected end");
+        let d = diag.unwrap();
+        assert!(
+            d.fix.is_some(),
+            "A `// don't` comment must not swallow the rest of the file as a string"
+        );
+    }
+
+    #[test]
+    fn test_syntax_error_unexpected_end_with_escaped_slash_in_regex() {
+        // Catches a pre-fix bug: a `/` followed by `/` or `*` opened a
+        // comment even when the `/` was itself escaped inside a regex
+        // literal (e.g. `/^\/*/` or `/https?:\/\//`), so the rest of the
+        // file after the regex was wrongly treated as a comment and a
+        // missing final `}` got no suggested fix.
+        let source = "function foo() {\n  path.replace(/^\\/*/, '');\n  return 1;\n";
+        let error = ParsedError {
+            error_type: "SyntaxError".to_string(),
+            message: "Unexpected end of input".to_string(),
+            file: Some(PathBuf::from("app.js")),
+            line: Some(3),
+            column: None,
+            language: "javascript".to_string(),
+            raw_text: String::new(),
+            function_name: None,
+            offending_line: None,
+        };
+
+        let diag = analyze_syntax_error(&error, source);
+        assert!(diag.is_some(), "Should diagnose unexpected end");
+        let d = diag.unwrap();
+        assert!(
+            d.fix.is_some(),
+            "An escaped `/` inside a regex literal must not open a comment"
+        );
+    }
+
+    #[test]
+    fn test_count_delimiters_skips_escaped_slash_in_regex() {
+        // Catches the same escaped-slash bug directly on `count_delimiters`:
+        // `/https?:\/\//` contains an unescaped-looking `//` that must NOT
+        // be read as a line comment, or the trailing `.test(u)) {` on the
+        // same line is wrongly skipped and the `{`/`}` counts come out wrong.
+        let source = "if (/https?:\\/\\//.test(u)) {\n}";
+        let (opens, closes) = count_delimiters(source, '}');
+        assert_eq!(opens, 1);
+        assert_eq!(closes, 1);
+    }
+
+    #[test]
+    fn test_syntax_error_unexpected_end_with_regex_character_class() {
+        // Catches a pre-fix bug: without character-class-aware regex
+        // tracking, `/[/*]/` is read char-by-char with no regex state at
+        // all, so its second `/` (immediately followed by `*`) is
+        // misdetected as a BLOCK COMMENT opener. Since no `*/` follows
+        // anywhere in the file, that "comment" swallows the real closing
+        // `}` too, and a file missing its final `}` gets no suggested fix.
+        let source = "function foo() {\n  const parts = s.split(/[/*]/);\n  return 1;\n";
+        let error = ParsedError {
+            error_type: "SyntaxError".to_string(),
+            message: "Unexpected end of input".to_string(),
+            file: Some(PathBuf::from("app.js")),
+            line: Some(3),
+            column: None,
+            language: "javascript".to_string(),
+            raw_text: String::new(),
+            function_name: None,
+            offending_line: None,
+        };
+
+        let diag = analyze_syntax_error(&error, source);
+        assert!(diag.is_some(), "Should diagnose unexpected end");
+        let d = diag.unwrap();
+        assert!(
+            d.fix.is_some(),
+            "A `/` inside a regex character class must not open a comment"
+        );
+    }
+
+    #[test]
+    fn test_count_delimiters_line_continued_string_does_not_swallow_brace() {
+        // Catches a pre-fix bug: a backslash-continued string literal
+        // (`'a { \` then a real newline then more string content) used to
+        // end at that newline UNCONDITIONALLY, even though the newline was
+        // escaped. That closed the string one line early, so the rest of
+        // the intended string content (`b { c`) was wrongly read as real
+        // code -- miscounting an extra `{` -- while the closing `'` then
+        // opened a SECOND spurious string that ate the following `;` and
+        // closed again on the next (unescaped) newline, before the real
+        // `if (x) {` on the line after. Net effect: an extra phantom `{` is
+        // counted alongside the real one.
+        let source = "'a { \\\nb { c';\nif (x) {\n}";
+        let (opens, closes) = count_delimiters(source, '}');
+        assert_eq!(opens, 1, "only the real `{{` from `if (x) {{` should count");
+        assert_eq!(closes, 1);
+    }
+
+    #[test]
+    fn test_syntax_error_unexpected_end_with_double_backslash_in_regex() {
+        // Catches a pre-fix bug: a bare `prev_char != '\\'` check (not a
+        // toggling escape flag) misreads the SECOND of two consecutive
+        // backslashes as itself escaping the char after it. In `/\\/g`
+        // (a regex matching one literal backslash, global flag), that made
+        // the real closing `/` look escaped, so the regex never closed, ate
+        // the rest of the file as regex content, and a file missing its
+        // final `}` got no suggested fix.
+        let source = "function foo() {\n  s.replace(/\\\\/g, '/');\n  return 1;\n";
+        let error = ParsedError {
+            error_type: "SyntaxError".to_string(),
+            message: "Unexpected end of input".to_string(),
+            file: Some(PathBuf::from("app.js")),
+            line: Some(3),
+            column: None,
+            language: "javascript".to_string(),
+            raw_text: String::new(),
+            function_name: None,
+            offending_line: None,
+        };
+
+        let diag = analyze_syntax_error(&error, source);
+        assert!(diag.is_some(), "Should diagnose unexpected end");
+        let d = diag.unwrap();
+        assert!(
+            d.fix.is_some(),
+            "a `\\\\` (escaped backslash) inside a regex must not itself escape the char after it"
+        );
     }
 
     #[test]
