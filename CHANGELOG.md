@@ -15,6 +15,26 @@
 
 ### Added
 
+- **OOXML container support: `tldr structure` on `.docx` / `.xlsx` / `.pptx`.** Office documents join the
+  analyzable formats without a new `Language` variant — the container is a ZIP package, not a tree-sitter file
+  (documented decision: a `.docx` is not "written in" a language, so `language` reports `null`; the XML parts
+  ARE tree-sitter files and parse through the existing XML grammar + element walker). `ast::ooxml` unzips the
+  container in memory and analyzes the main parts — `word/document.xml` for docx (headers/footers are future
+  work), `xl/worksheets/*.xml` sorted by name for xlsx, and `ppt/slides/slideN.xml` in NATURAL numeric order
+  for pptx (slide2 before slide10) — emitting one `kind: "element"` definition per XML element, with
+  `signature` carrying the zip part path so cross-part duplicates stay distinguishable. Byte spans are
+  **part-relative** and documented loudly: `byte_start`/`byte_end` index the decompressed part's bytes (there
+  is no stable container-relative mapping through a deflate stream), so `part_text[byte_start..byte_end]` is
+  the element's source text and `definition_line` is the line within the part. Size policy: the container file
+  passes the central `fs::oversize` gate first (oversize → the standard structured skip, not a hard error),
+  and each part's decompressed size is capped at the same `u32::MAX` ceiling as every tree-sitter parse — a
+  bloated part is skipped with a warning while the container's other parts still emit. Not-a-zip bytes and
+  packages missing their main part fail with structured `TldrError`s (exit code, no panic). New `zip =8.6.0`
+  dependency pinned exact with `default-features = false, features = ["deflate"]` (deflate is the only
+  compression those formats use; aes/bzip2/lzma/zstd/time backends never compile). The metrics binary-skip
+  list keeps skipping these extensions for LOC counting — the structure path reaches the containers through
+  its own early return, and the carve-out is documented at the list.
+
 - **Log format support: `Language::Log` + the new `tldr logs` command.** `.log` files join the
   supported formats as language 27 (signal=false, like the other formats — a directory of logs
   never outvotes source code), with one twist: **no maintained log grammar exists on crates.io**

@@ -210,6 +210,22 @@ const SKIP_DIRS: &[&str] = &[
 ];
 
 /// File extensions that are typically binary
+///
+/// ooxml-containers-v1 carve-out (2026-xx): `docx`/`xlsx`/`pptx` are in this
+/// list and STAY — but only the METRICS paths skip them. Proven consumer
+/// audit: this list's sole reader is [`has_binary_extension`] below, whose
+/// sole production caller is the LOC counter's binary gate
+/// (`metrics::loc` — "Binary file: …", correct: LOC must not count
+/// compressed bytes as lines). The STRUCTURE pipeline never consults it:
+/// `tldr structure <file>` reaches `get_code_structure`, whose OOXML early
+/// return (`ast::ooxml`, keyed on the path predicate) fires before any
+/// extension list is evaluated, and directory scans filter by
+/// `Language::scan_extensions()`, which has no OOXML entries. So
+/// `tldr structure report.docx` unzips and analyzes the container's XML
+/// parts while `tldr loc report.docx` still declines — no list change
+/// needed, the skip and the carve-out coexist by construction.
+///
+/// [`has_binary_extension`]: fn@has_binary_extension
 const BINARY_EXTENSIONS: &[&str] = &[
     // Images
     "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "svg", "tiff", "psd",

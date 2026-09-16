@@ -115,6 +115,12 @@ serial_test = "3"
 # hand-written test items for the 37-command extension.
 paste = "1"
 
+# ooxml-structure-v1: `zip` here is a TEST-ONLY fixture writer —
+# tests/ooxml_structure_v1.rs builds genuine minimal .docx/.xlsx/.pptx
+# packages with ZipWriter (deflate). The RUNTIME unpacking dependency lives
+# in tldr-core (ast::ooxml); this never links into the tldr binary.
+zip = { workspace = true }
+
 # Bench-style suites are opt-in via `cargo test --test <name>` (`test = false` keeps them
 # out of default `cargo test` runs; a bare run used to execute hours of multilang benchmarks).
 [[test]]

@@ -110,6 +110,12 @@ fs2 = { workspace = true }
 # M11 VAL-010: PATH lookup for git binary in change-impact resolver
 which = { workspace = true }
 
+# OOXML containers (2026-xx): unzip .docx/.xlsx/.pptx in memory so their XML
+# parts can feed the element walker (ast::ooxml). Lives in CORE (not cli) —
+# the unpacking is part of structure extraction. Exact workspace pin,
+# minimal features (deflate only).
+zip = { workspace = true }
+
 [features]
 default = []
 semantic = ["dep:fastembed"]

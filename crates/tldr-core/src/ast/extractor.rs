@@ -104,6 +104,77 @@ pub fn get_code_structure(
         });
     }
 
+    // OOXML containers (2026-xx): `.docx`/`.xlsx`/`.pptx` are ZIP packages,
+    // not tree-sitter files — and deliberately NOT a `Language` variant (the
+    // container-is-not-a-language decision is documented at the top of
+    // `ast::ooxml`: the container's XML PARTS are the tree-sitter files, and
+    // they parse as `Language::Xml` through the shared element walker). The
+    // early return keys off the PATH predicate (`is_ooxml_path`), exactly
+    // like the JSONL and Log returns above, so it fires before language
+    // resolution matters. `Language::from_path` returns `None` for these
+    // extensions today and is left untouched.
+    //
+    // `language: None` is the honest report: a `.json` IS a JSON document
+    // (hence `Some(Json)` on that path), but a `.docx` is a PACKAGE, not a
+    // document written in a language. Per-part skip warnings (one bloated
+    // decompressed part never aborts the container) ride the standard
+    // `warnings` channel; `files_skipped` is untouched on success.
+    if root.is_file() && crate::ast::ooxml::is_ooxml_path(root) {
+        return match crate::ast::ooxml::extract_ooxml(root) {
+            Ok((definitions, part_warnings)) => Ok(CodeStructure {
+                root: root.to_path_buf(),
+                language: None,
+                files: vec![FileStructure {
+                    path: root.to_path_buf(),
+                    functions: Vec::new(),
+                    classes: Vec::new(),
+                    methods: Vec::new(),
+                    method_infos: Vec::new(),
+                    imports: Vec::new(),
+                    definitions,
+                }],
+                files_skipped: 0,
+                warnings: part_warnings,
+                jsonl_stream: None,
+            }),
+            // Container over the central size policy → the SAME structured
+            // skip the single-file arm below produces for oversize source
+            // files: re-stat for exact bytes (the error's pre-rounded MB
+            // fields would render a KB-scale cap wrong) and emit the shared
+            // warning format.
+            Err(crate::error::TldrError::FileTooLarge { path, .. }) => {
+                files_skipped += 1;
+                let (size_bytes, max_bytes) = match crate::fs::oversize::check_size(&path) {
+                    crate::fs::oversize::SizeCheck::Oversize {
+                        size_bytes,
+                        max_bytes,
+                        ..
+                    } => (size_bytes, max_bytes),
+                    // Fallback: the file vanished between the failed
+                    // extraction and the warning emission.
+                    _ => (0, 0),
+                };
+                warnings.push(crate::fs::oversize::format_oversize_warning(
+                    &path,
+                    size_bytes,
+                    max_bytes,
+                    crate::fs::oversize::is_autogen_file(&path),
+                ));
+                Ok(CodeStructure {
+                    root: root.to_path_buf(),
+                    language: None,
+                    files: Vec::new(),
+                    files_skipped,
+                    warnings,
+                    jsonl_stream: None,
+                })
+            }
+            // Not-a-zip / missing-main-part propagate as the structured
+            // TldrErrors they already are (`ast::ooxml`).
+            Err(e) => Err(e),
+        };
+    }
+
     // Handle single file case: extract structure directly
     if root.is_file() {
         let parent = root.parent().unwrap_or(root);

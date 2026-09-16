@@ -148,6 +148,16 @@ walkdir = "2"
 ignore = "0.4"
 dunce = "1.0"
 
+# OOXML containers (2026-xx): .docx/.xlsx/.pptx are ZIP packages whose XML
+# parts feed the existing element walker (ast::ooxml). `deflate` is the only
+# compression method those formats use; default-features = false keeps the
+# aes-crypto/bzip2/lzma/ppmd/zstd/xz backends AND the `time` dep out of the
+# build. Pinned exact per the workspace policy above. 8.6.0 is the latest
+# stable at adoption (MSRV 1.88, below this repo's 1.97 toolchain); its
+# `deflate` feature routes through flate2's zlib-rs backend + zopfli, both
+# pure Rust — no C toolchain involvement.
+zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+
 # Difftastic L1/L2 graft - Phase 1
 bumpalo = "3.16.0"
 typed-arena = "2.0.2"
