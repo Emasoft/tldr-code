@@ -36,6 +36,7 @@ pub mod logs;
 pub mod ooxml;
 pub mod parser;
 pub mod toc;
+pub mod yaml_chunk;
 
 pub use count::{count_functions_canonical, count_functions_canonical_from_modules};
 pub use csvscan::{

@@ -84,13 +84,40 @@ pub fn extract_imports_from_tree(
         // tree is Text's structural placeholder and is ignored (regex-only
         // scan over the real source, which `parse_file_with_lang`'s Text
         // arm supplies).
+        // yaml-chunk-v1: a `.yaml` over the chunk threshold never produces a
+        // usable whole-file tree (the grammar's int16 row overflow aborts the
+        // parse at source row 32768 — see `ast::yaml_chunk`), so the file is
+        // re-parsed in document-aligned chunks and the per-chunk doclink
+        // scans are CONCATENATED. ImportInfo carries no spans, so the merge
+        // is a plain concatenation in source order (each chunk starts at a
+        // document boundary, so no link can straddle two chunks).
+        // NOTE — no warning channel: `ImportInfo` has no place to carry one,
+        // so a chunk that still aborts (a single document over the grammar's
+        // 32768-line limit) contributes whatever links its partial tree
+        // contains and the omission stays silent ON THIS PATH by
+        // construction. The `tldr structure` path warns via
+        // `CodeStructure.warnings` (see `extractor.rs`).
+        Language::Yaml => {
+            if crate::ast::yaml_chunk::should_chunk(source) {
+                let mut links = Vec::new();
+                for chunk in crate::ast::yaml_chunk::parse_yaml_chunks(source) {
+                    links.extend(super::doclinks::extract_doc_links(
+                        language,
+                        &source[chunk.byte_base..chunk.byte_end],
+                        Some(&chunk.tree),
+                    ));
+                }
+                links
+            } else {
+                super::doclinks::extract_doc_links(language, source, Some(tree))
+            }
+        }
         Language::Markdown
         | Language::Html
         | Language::Xml
         | Language::Css
         | Language::Latex
         | Language::Json
-        | Language::Yaml
         | Language::Toml
         | Language::Bash
         | Language::Text => super::doclinks::extract_doc_links(language, source, Some(tree)),

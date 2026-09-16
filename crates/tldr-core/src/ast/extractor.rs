@@ -9,7 +9,7 @@ use tree_sitter::{Node, Tree};
 
 use crate::fs::tree::{collect_files, get_file_tree};
 use crate::types::{
-    CodeStructure, DefinitionInfo, FileStructure, IgnoreSpec, Language, MethodInfo,
+    CodeStructure, DefinitionInfo, FileStructure, IgnoreSpec, ImportInfo, Language, MethodInfo,
 };
 use crate::TldrResult;
 
@@ -285,13 +285,16 @@ pub fn get_code_structure(
     if root.is_file() {
         let parent = root.parent().unwrap_or(root);
         match extract_file_structure(root, parent, language) {
-            Ok(structure) => {
+            Ok((structure, file_warnings)) => {
+                // yaml-chunk-v1: per-file warnings ride the report's
+                // `warnings` (a chunked large yaml that only partially
+                // parsed says so here instead of extracting in silence).
                 return Ok(CodeStructure {
                     root: root.to_path_buf(),
                     language: Some(language),
                     files: vec![structure],
                     files_skipped: 0,
-                    warnings: Vec::new(),
+                    warnings: file_warnings,
                     jsonl_stream: None,
                 });
             }
@@ -386,7 +389,12 @@ pub fn get_code_structure(
 
         // Try to extract structure, skip on error (per spec edge case handling)
         match extract_file_structure(&file_path, root, language) {
-            Ok(structure) => file_structures.push(structure),
+            Ok((structure, file_warnings)) => {
+                file_structures.push(structure);
+                // yaml-chunk-v1: per-file warnings (partially-parsed yaml
+                // chunks) accumulate on the report like every other skip.
+                warnings.extend(file_warnings);
+            }
             Err(crate::error::TldrError::FileTooLarge {
                 path,
                 size_mb,
@@ -451,12 +459,18 @@ pub fn get_code_structure(
     })
 }
 
-/// Extract structure from a single file
+/// Extract structure from a single file.
+///
+/// Returns the file's structure PLUS per-file warnings (empty in the common
+/// case). The second channel exists for `yaml-chunk-v1`: a large `.yaml`
+/// whose chunks only partially parse must say so in the report's `warnings`
+/// instead of silently extracting zero definitions (the pre-chunking
+/// failure mode). Callers merge the vec into their `CodeStructure.warnings`.
 fn extract_file_structure(
     path: &Path,
     root: &Path,
     language: Language,
-) -> TldrResult<FileStructure> {
+) -> TldrResult<(FileStructure, Vec<String>)> {
     // p19-secondary-fixes-v1 (BUG-P19-05 + BUG-P19-08): honor the caller-
     // supplied `language` over path-extension detection. Otherwise
     // `tldr structure tinyxml2.h --lang cpp` re-detects `.h` as C and the
@@ -467,6 +481,19 @@ fn extract_file_structure(
     let (tree, source, _) = crate::ast::parser::parse_file_with_lang(path, Some(language))?;
 
     let relative_path = path.strip_prefix(root).unwrap_or(path).to_path_buf();
+
+    // yaml-chunk-v1: files over the chunk threshold never produce a usable
+    // whole-file tree — the tree-sitter-yaml scanner overflows its int16 row
+    // counter at source row 32768 and error-recovery swallows the rest of
+    // the file into a root ERROR (silent ZERO definitions). Above the
+    // threshold the file is parsed in document-aligned chunks instead; see
+    // `ast::yaml_chunk` for the root cause and the split rules. At or below
+    // the threshold this branch never fires and everything below is
+    // byte-identical to the pre-chunking engine.
+    if language == Language::Yaml && crate::ast::yaml_chunk::should_chunk(&source) {
+        let chunks = crate::ast::yaml_chunk::parse_yaml_chunks(&source);
+        return merge_yaml_chunk_structure(path, relative_path, &source, chunks);
+    }
 
     // canonical-function-enumerator-v1: derive `functions` and `methods` from
     // the canonical `extract_file` enumerator so that
@@ -528,15 +555,114 @@ fn extract_file_structure(
         })
         .collect();
 
-    Ok(FileStructure {
+    Ok((
+        FileStructure {
+            path: relative_path,
+            functions,
+            classes,
+            methods,
+            method_infos,
+            imports,
+            definitions,
+        },
+        Vec::new(),
+    ))
+}
+
+/// yaml-chunk-v1: structure extraction for a `.yaml` file over the chunk
+/// threshold — one parse per document-aligned chunk
+/// (`ast::yaml_chunk::parse_yaml_chunks`), definitions and doclinks merged
+/// in source order, spans translated into full-file coordinates.
+///
+/// Merge math, per chunk:
+/// - `definitions` = legacy `extract_definitions` (empty for yaml today,
+///   kept for parity with the single-parse path) followed by the element
+///   walk, both over the CHUNK tree with the CHUNK SLICE as source (node
+///   byte ranges and rows are chunk-relative), then translated:
+///   `byte_start/byte_end += chunk.byte_base`,
+///   `line_start/line_end += chunk.line_base` — the chunk's row 0 is
+///   full-file row `line_base`, and each chunk begins at a document
+///   boundary so a node's byte range is identical in both coordinates.
+/// - `document` elements are renumbered continuously across chunks (each
+///   chunk's walker restarts at `document-1`).
+/// - `imports` = the per-chunk doclink scan concatenated (ImportInfo has no
+///   spans — the merge is a plain concatenation in source order).
+///
+/// Honesty: a chunk whose parse still errors is kept best-effort (whatever
+/// its partial tree contains) AND surfaces a warning here — the structure
+/// path is where "yaml extracted nothing" must become visible instead of
+/// silent.
+pub(crate) fn merge_yaml_chunk_structure(
+    path: &Path,
+    relative_path: std::path::PathBuf,
+    source: &str,
+    chunks: Vec<crate::ast::yaml_chunk::YamlChunk>,
+) -> TldrResult<(FileStructure, Vec<String>)> {
+    let mut definitions: Vec<DefinitionInfo> = Vec::new();
+    let mut imports: Vec<ImportInfo> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut next_doc_no = 1usize;
+
+    for chunk in &chunks {
+        let chunk_slice = &source[chunk.byte_base..chunk.byte_end];
+
+        let mut chunk_defs = extract_definitions(&chunk.tree, chunk_slice, Language::Yaml);
+        chunk_defs.extend(super::elements::extract_elements(
+            Language::Yaml,
+            &chunk.tree,
+            chunk_slice,
+        ));
+        for def in chunk_defs.iter_mut() {
+            crate::ast::yaml_chunk::translate_definition(def, chunk.byte_base, chunk.line_base);
+        }
+        next_doc_no = crate::ast::yaml_chunk::renumber_documents(&mut chunk_defs, next_doc_no);
+        definitions.extend(chunk_defs);
+
+        imports.extend(extract_imports_from_tree(
+            &chunk.tree,
+            chunk_slice,
+            Language::Yaml,
+        )?);
+
+        // A chunk spanning more than the grammar's line limit is an
+        // un-splittable single document — the int16-row abort itself, the
+        // one case chunking cannot fix. Any other chunk error is a parse
+        // failure inside the chunk (malformed yaml, or the pathological
+        // column-0 `---` mid-scalar cut) — same warning channel, different
+        // message, both instead of silence.
+        if chunk.has_error() {
+            let chunk_lines = chunk_slice.lines().count() as u32;
+            if chunk_lines > crate::ast::yaml_chunk::YAML_LINE_LIMIT {
+                warnings.push(format!(
+                    "Skipped sections of {}: a yaml document spanning lines {}-{} exceeds the tree-sitter-yaml line limit ({} lines — the grammar's scanner tracks rows as int16 and overflows above it); structure truncated/empty for that document",
+                    path.display(),
+                    chunk.line_base + 1,
+                    chunk.line_base + chunk_lines,
+                    crate::ast::yaml_chunk::YAML_LINE_LIMIT,
+                ));
+            } else {
+                warnings.push(format!(
+                    "Skipped sections of {}: the yaml section starting at line {} failed to parse cleanly; structure may be incomplete for that section",
+                    path.display(),
+                    chunk.line_base + 1,
+                ));
+            }
+        }
+    }
+
+    // yaml carries no methods — `method_infos` (derived from
+    // kind == "method" definitions) is empty by the same argument as the
+    // single-parse path.
+    let structure = FileStructure {
         path: relative_path,
-        functions,
-        classes,
-        methods,
-        method_infos,
+        functions: Vec::new(),
+        classes: Vec::new(),
+        methods: Vec::new(),
+        method_infos: Vec::new(),
         imports,
         definitions,
-    })
+    };
+    Ok((structure, warnings))
 }
 
 /// Map a parsed [`crate::ast::logs::LogEntry`] onto the `DefinitionInfo`

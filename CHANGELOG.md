@@ -4,6 +4,37 @@
 
 ### Fixed
 
+- **Large `.yaml` files no longer silently extract ZERO definitions.** Root cause found and pinned
+  empirically: tree-sitter-yaml's external scanner tracks the current source row in **`int16_t`**
+  (`scanner.c:136/147` in the published 0.7.0 crate; incremented per newline at `:217/:230`), and the
+  first token on source **row 32768 (0-indexed) = 2^15** overflows it negative — `has_nwl = cur_row >
+  row` (scanner.c:889) flips false, every block-structure decision after that is wrong, and the
+  parser's error recovery swallows the entire remaining file into one root `ERROR` node. The threshold
+  is the LINE index, shape-independent: a 241 351-byte / 32 768-line stream parses clean while 32 769
+  lines abort; a single mapping parses clean through 32 767 keys and aborts at 32 768; byte counts at
+  the break differ 3x between the two shapes, so it was never a size or node-count limit (the old
+  defect pin's "~65k nodes" was a numeric coincidence — the aborted tree happened to hold ~65.5k
+  named nodes). Any `.yaml` over ~250 KB therefore reported `files_skipped == 0`, empty definitions,
+  no warning. **No upstream fix exists** — crates.io's newest `tree-sitter-yaml` 0.7.2 (2025-10-07)
+  still declares `int16_t row/cur_row` (verified against the published crate source), so the pin stays
+  `=0.7.0` and the fix is engine-side: `ast::yaml_chunk` splits files over 512 KiB at column-0 `---`
+  document starts (the spec-guaranteed safe split point — a `---` inside a quoted scalar or block
+  scalar cannot sit at column 0 in valid yaml), coalesces documents into chunks of ≤ 8 192 lines (4x
+  margin under the 32 768-row ceiling), parses each segment independently, and translates every span
+  back into full-file coordinates (`byte += chunk.byte_base`, `line += chunk.line_base`) with
+  continuous `document-N` renumbering across chunks. Non-final chunks end at their last content byte —
+  the trailing newline run before the next `---` belongs to no document in a single whole-file parse
+  either, so chunked extraction is byte-identical to the small-file single parse (pinned by an
+  equivalence test). Files at or below 512 KiB take the unchanged single-parse path. Both yaml call
+  sites share the chunker: `tldr structure` merges per-chunk definitions and doclinks;
+  `tldr imports` concatenates per-chunk `$ref`/`extends` links (ImportInfo carries no spans).
+  **Honesty for the unfixable case:** a `---`-less single document longer than 32 768 lines cannot be
+  split — the structure path now warns (`"...exceeds the tree-sitter-yaml line limit (32768 lines —
+  the grammar's scanner tracks rows as int16 and overflows above it)..."`) instead of extracting in
+  silence, and a chunk that still fails to parse warns the same way; the imports path has no warning
+  channel (documented in `ast::imports`). Proof: the previously `#[ignore]`d defect-pin test
+  `yaml_100mib_byte_exact` now runs green — a 100 MiB / ~2.86M-document fixture extracts ~8.6M
+  byte-exact definitions in ~32 s (release) — and the full 13-format 100 MiB suite passes 13/13.
 - **`tldr explain --depth` actually scopes the project-callers traversal now.** It was declared in
   `--help` but ignored — the graph walk used a hard-coded depth 1, so `--depth 3` silently behaved
   like `--depth 1`.

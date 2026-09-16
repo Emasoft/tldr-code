@@ -46,10 +46,10 @@
 //! ```
 //!
 //! The default (`cargo test -p tldr-core --test large_file_accuracy_v1`) must
-//! compile-and-skip: `13 ignored; 0 failed`. Of the 13, twelve run green; the
-//! yaml test carries a defect pin (see the yaml section): the engine itself
-//! aborts large yaml parses, so that test stays ignored until the engine is
-//! fixed.
+//! compile-and-skip: `13 ignored; 0 failed`. All thirteen run green.
+//! (yaml-chunk-v1: the yaml test previously carried a defect pin —
+//! tree-sitter-yaml's scanner overflows its int16 row counter at source row
+//! 32768 — fixed by document-aligned chunk parsing in `ast::yaml_chunk`.)
 
 use std::fmt::Write as _;
 use std::time::Instant;
@@ -506,17 +506,15 @@ fn json_100mib_byte_exact() {
 // file's final newline at EOF, while the line span is EOF-stable. The
 // single-line `id` key is probed on the byte path.
 //
-// DEFECT PIN (found BY this suite): the test below is fully implemented and
-// byte-exact, but it CANNOT pass against the current engine — tree-sitter-yaml
-// 0.7.0 aborts any parse once the tree exceeds ~65k nodes (empirically: a
-// 294 KB / 8k-document stream parses clean, a 369 KB / 10k stream aborts with
-// root ERROR and a plateaued ~23 ms parse; the same abort hits single-document
-// mappings with >~20k keys, i.e. it is shape-INDEPENDENT). The consequence:
-// every .yaml file larger than a few hundred KB extracts ZERO definitions
-// (silent — `files_skipped == 0`, no warning). JSON parses a 100 MiB file
-// with 7M definitions through the same machinery, so the ceiling is specific
-// to the yaml grammar. The test is `#[ignore]`-gated on that defect; delete
-// the ignore attribute once the engine parses large yaml.
+// yaml-chunk-v1 (was a defect pin): tree-sitter-yaml's external scanner
+// tracks the source row in `int16_t` (scanner.c:136/147) and overflows at
+// source row 32768 — a single whole-file parse of this fixture aborts into a
+// root ERROR and extracts ZERO definitions. Fixed by document-aligned chunk
+// parsing (`ast::yaml_chunk`): the engine splits at column-0 `---` markers,
+// parses each segment independently under the row ceiling, and translates
+// every span back into full-file coordinates — which is what this test now
+// proves at 100 MiB scale (byte-exact `id` spans, line-exact documents and
+// `items`, continuous `document-N` numbering, no warnings, nothing skipped).
 // =============================================================================
 
 fn yaml_unit(i: usize) -> (String, Probe) {
@@ -534,7 +532,7 @@ fn yaml_unit(i: usize) -> (String, Probe) {
 }
 
 #[test]
-#[ignore = "yaml-scale defect (found by this suite): tree-sitter-yaml 0.7.0 aborts any parse above ~65k tree nodes, so a 100 MiB .yaml extracts ZERO definitions (root ERROR, silent). Un-ignore once the engine parses large yaml — see the yaml section above."]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
 fn yaml_100mib_byte_exact() {
     run_case(Language::Yaml, "large.yaml", "", "", yaml_unit, |units| {
         units * 3
