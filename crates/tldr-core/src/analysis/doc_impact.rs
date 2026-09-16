@@ -25,7 +25,8 @@
 //! # Link graph construction
 //!
 //! Every doc-language file in the project (extension union of Markdown, Html,
-//! Xml, Css, Latex via `get_file_tree`/`collect_files`) contributes edges:
+//! Xml, Css, Latex, Json, Yaml, Toml, Bash via `get_file_tree`/`collect_files`)
+//! contributes edges:
 //! `get_imports` yields one `ImportInfo` per document link (see
 //! `ast::doclinks`), and each raw target is resolved to a project file:
 //!
@@ -67,12 +68,23 @@ pub(crate) const DOC_NODE: &str = "<doc>";
 const DOC_NOTE: &str = "discovered via document link";
 
 /// The document languages participating in the document link graph:
-/// markdown/html/xml hyperlinks plus the CSS/LaTeX loaded elements
-/// (`@import`, `url()`, `\input`, `\includegraphics`, `\bibliography`, …).
+/// markdown/html/xml hyperlinks, the CSS/LaTeX loaded elements (`@import`,
+/// `url()`, `\input`, `\includegraphics`, `\bibliography`, …), and the
+/// config-batch reference surfaces — JSON/YAML `$ref`/`extends` mapping
+/// keys, TOML path-shaped string values, and bash `source`/`.` script
+/// loads (see `ast::doclinks` for each language's extraction policy).
 pub fn is_doc_language(language: Language) -> bool {
     matches!(
         language,
-        Language::Markdown | Language::Html | Language::Xml | Language::Css | Language::Latex
+        Language::Markdown
+            | Language::Html
+            | Language::Xml
+            | Language::Css
+            | Language::Latex
+            | Language::Json
+            | Language::Yaml
+            | Language::Toml
+            | Language::Bash
     )
 }
 
@@ -84,6 +96,10 @@ fn doc_language_extensions() -> HashSet<String> {
         Language::Xml,
         Language::Css,
         Language::Latex,
+        Language::Json,
+        Language::Yaml,
+        Language::Toml,
+        Language::Bash,
     ]
     .iter()
     .flat_map(|l| l.extensions().iter().map(|s| s.to_string()))
@@ -270,15 +286,19 @@ mod tests {
     }
 
     #[test]
-    fn is_doc_language_covers_the_five_doc_languages() {
+    fn is_doc_language_covers_the_nine_doc_languages() {
         assert!(is_doc_language(Language::Markdown));
         assert!(is_doc_language(Language::Html));
         assert!(is_doc_language(Language::Xml));
         assert!(is_doc_language(Language::Css));
         assert!(is_doc_language(Language::Latex));
+        // doclinks-v1 config batch: config files join the reference graph.
+        assert!(is_doc_language(Language::Json));
+        assert!(is_doc_language(Language::Yaml));
+        assert!(is_doc_language(Language::Toml));
+        assert!(is_doc_language(Language::Bash));
         assert!(!is_doc_language(Language::Python));
-        assert!(!is_doc_language(Language::Json));
-        assert!(!is_doc_language(Language::Bash));
+        assert!(!is_doc_language(Language::Log));
     }
 
     #[test]

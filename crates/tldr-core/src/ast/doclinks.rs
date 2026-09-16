@@ -51,11 +51,71 @@
 //!   links inside code blocks therefore never emit. All masking is
 //!   byte-length-preserving so match offsets stay valid against the
 //!   original source.
-//! - **Deferred (next batch):** JSON/YAML/TOML path-strings, bash `source`,
-//!   and plain text — no link surface is wired for those languages yet.
 //! - HTML comments and `<script>` bodies are not masked (documented scope:
 //!   the attribute scan is textual, like the C include scan); the CSS and
 //!   LaTeX scans are likewise textual (comments are not masked).
+//!
+//! # JSON and YAML — the AST-keyed `$ref` / `extends` key policy
+//!
+//! JSON and YAML are **AST-keyed** extractors: they walk the tree-sitter tree
+//! (passed in by the caller — `get_imports` has already parsed it) and emit a
+//! mapping pair ONLY when its KEY is exactly `$ref` or `extends` and its
+//! VALUE is a string. `alias` = the matched key, exactly as written (the same
+//! provenance-as-name rule the HTML/XML attribute scan uses).
+//!
+//! Why a key allow-list and nothing else: JSON and YAML have NO general
+//! "path string" convention — a generic string scan would fabricate edges out
+//! of descriptions, IDs, titles and versions. The two keys chosen are the
+//! de-facto cross-tool reference keys: `$ref` (JSON Schema/OpenAPI external
+//! pointers, swagger-style composition) and `extends` (Compose-style file
+//! inheritance, GitLab CI job templates). JSON Pointer internals
+//! (`"$ref": "#/components/schemas/X"`) are suppressed by the shared
+//! `emittable` rule (fragment-only targets emit nothing).
+//!
+//! YAML additionally refuses, BY DESIGN, to scan keys named `include`,
+//! `resources`, `import` and the like even though those conventions do load
+//! files (Compose `include:`, GitHub Actions `strategy.matrix.include`,
+//! kustomize `resources:`). The false-positive analysis: Actions `include:`
+//! is a matrix EXPANSION key whose entries are parameter maps, not files —
+//! scanning it would fabricate a file edge out of every matrix parameter;
+//! kustomize `resources:` entries are real files but the key name is
+//! overloaded across tools with wildly different value types (strings,
+//! objects, lists of maps), so a scan cannot tell a path from a name without
+//! per-tool schemas. Suppress-only for ambiguous conventions: a convention
+//! is wired only when its key alone disambiguates the value (`$ref`,
+//! `extends`), never when the value's TYPE has to carry the meaning. Values
+//! must be scalars — a `$ref` whose value is a mapping/sequence is skipped.
+//!
+//! # TOML — the string-value path scan
+//!
+//! TOML has no reference convention at all (`$ref` is not idiomatic there),
+//! so TOML uses a different, honestly-heuristic surface: every STRING value
+//! in the tree (basic + literal strings, in tables and inline tables) that
+//! "looks like a path or URL" per [`looks_like_path_or_url`] emits, with
+//! alias `path`. This surfaces config-referenced assets (`asset =
+//! "./img/logo.svg"`), theme/config loads and remote references. The
+//! heuristic is deliberately conservative (see the function docs) and false
+//! positives ARE possible (e.g. `dir = "assets/v1.2"` — a dotted directory
+//! name reads like an extension); it is kept because TOML consumers asked
+//! for config-file loads, and unresolved targets are inert downstream. There
+//! is NO key filter and NO cap — deterministic source (tree) order.
+//!
+//! # Bash — `source` / `.`
+//!
+//! Bash is scanned line-by-line (extraction stays regex-textual; the shell
+//! has no import statement, `source` is a builtin): a line-anchored pattern
+//! matches the `source`/`.` operator only after a line start or a `;`, `&&`
+//! or `||` separator, followed by whitespace and a target token. The `.`
+//! (POSIX) form additionally requires a `/` in the target — `. TOKEN` is
+//! textually ambiguous (`.`, `..`, arithmetic, `.hidden`-style words), while
+//! a real dot-sourced path virtually always contains a separator. Quoted
+//! targets are unwrapped only when the quotes BALANCE within the token (the
+//! capture stops at whitespace, so `"a b.sh"` is unbalanced and skipped).
+//! Full-line `#` comments are truncated before matching (suppress-only);
+//! mid-line `#` truncation can only remove candidates, never add them.
+//! Known limitation (kept simple by design): `if … ; then source x.sh` on a
+//! single line does not match — the keyword forms `then|else|do` are not
+//! separators here.
 //!
 //! # External targets
 //!
@@ -66,6 +126,7 @@
 
 use lazy_static::lazy_static;
 use regex::Regex;
+use tree_sitter::{Node, Tree};
 
 use crate::types::{ImportInfo, Language};
 
@@ -187,14 +248,358 @@ fn emittable(target: &str) -> bool {
 /// One entry per link, in deterministic source order (ascending byte
 /// offset; ties keep scan order). See the module docs for the ImportInfo
 /// mapping and the masking scope.
-pub fn extract_doc_links(language: Language, source: &str) -> Vec<ImportInfo> {
+///
+/// `tree` is the caller's parsed syntax tree when the language has a
+/// tree-sitter grammar. The AST-keyed extractors (JSON/YAML/TOML) REQUIRE
+/// it and emit nothing when it is `None` — callers (`get_imports`) always
+/// parse first, so the tree arrives already built and no double parse
+/// happens. The regex-only extractors (markdown/html/xml/css/latex/bash)
+/// ignore the tree.
+pub fn extract_doc_links(language: Language, source: &str, tree: Option<&Tree>) -> Vec<ImportInfo> {
     match language {
         Language::Markdown => extract_markdown_links(source),
         Language::Html => extract_html_links(source),
         Language::Xml => extract_xml_links(source),
         Language::Css => extract_css_links(source),
         Language::Latex => extract_latex_links(source),
+        Language::Json => extract_json_ref_links(source, tree),
+        Language::Yaml => extract_yaml_ref_links(source, tree),
+        Language::Toml => extract_toml_path_links(source, tree),
+        Language::Bash => extract_bash_source_links(source),
         _ => Vec::new(),
+    }
+}
+
+// =============================================================================
+// JSON — the AST-keyed `$ref` / `extends` key policy
+// =============================================================================
+
+/// JSON: emit only `pair` nodes whose key is exactly `$ref` or `extends`
+/// and whose value is a string (raw, quotes already stripped by taking the
+/// `string_content` child). Nothing else — JSON has no general path-string
+/// convention and a generic scan would fabricate edges (see the module
+/// docs). Internal JSON Pointers (`"#/components/…"`), `data:` URIs and
+/// empty values are dropped by `emittable`. `alias` = the matched key.
+/// Requires `tree`; `None` yields no emissions.
+fn extract_json_ref_links(source: &str, tree: Option<&Tree>) -> Vec<ImportInfo> {
+    const REF_KEYS: [&str; 2] = ["$ref", "extends"];
+    let Some(tree) = tree else {
+        return Vec::new();
+    };
+    let mut imports = Vec::new();
+    walk_json_pairs(tree.root_node(), source, &mut |key, value| {
+        if REF_KEYS.contains(&key) && emittable(value) {
+            imports.push(doc_import(value, key));
+        }
+    });
+    imports
+}
+
+/// Walk every JSON `pair` (nested objects recurse) and call `f` with the
+/// pair's key text (exact, unquoted) and its string value, when the value
+/// IS a string. Non-string values (number/bool/null/object/array) call
+/// nothing for that pair but do not stop the recursion.
+fn walk_json_pairs<'a>(node: Node<'a>, source: &'a str, f: &mut impl FnMut(&str, &str)) {
+    if node.kind() == "pair" {
+        // Grammar (tree-sitter-json): `pair` fields `key: string` and
+        // `value: _value` (the supertype lands as a concrete node —
+        // `string` for string values).
+        let key = node.child_by_field_name("key").and_then(|k| {
+            k.children(&mut k.walk())
+                .find(|c| c.kind() == "string_content")
+                .map(|c| &source[c.byte_range()])
+        });
+        let value = node.child_by_field_name("value").and_then(|v| {
+            if v.kind() == "string" {
+                v.children(&mut v.walk())
+                    .find(|c| c.kind() == "string_content")
+                    .map(|c| &source[c.byte_range()])
+            } else {
+                None
+            }
+        });
+        if let (Some(key), Some(value)) = (key, value) {
+            f(key, value);
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_json_pairs(child, source, f);
+    }
+}
+
+// =============================================================================
+// YAML — the AST-keyed `$ref` / `extends` key policy (include/resources
+// suppression documented in the module docs)
+// =============================================================================
+
+/// YAML: emit only mapping pairs (`block_mapping_pair` in block context,
+/// `flow_pair` in flow mappings) whose KEY text (plain or quoted scalar,
+/// unquoted) is exactly `$ref` or `extends` and whose VALUE resolves to a
+/// scalar string. Sequence/mapping values are skipped (scalar-only — a
+/// `$ref` pointing at a mapping is not a file reference). Keys named
+/// `include`/`resources`/`import` are deliberately NOT scanned — see the
+/// module docs for the false-positive analysis. `alias` = the matched key.
+/// Requires `tree`; `None` yields no emissions.
+fn extract_yaml_ref_links(source: &str, tree: Option<&Tree>) -> Vec<ImportInfo> {
+    const REF_KEYS: [&str; 2] = ["$ref", "extends"];
+    let Some(tree) = tree else {
+        return Vec::new();
+    };
+    let mut imports = Vec::new();
+    walk_yaml_pairs(tree.root_node(), source, &mut |key, value| {
+        if REF_KEYS.contains(&key) && emittable(value) {
+            imports.push(doc_import(value, key));
+        }
+    });
+    imports
+}
+
+/// Walk every YAML mapping pair and call `f` with the key text and scalar
+/// value text when both resolve. Handles both pair kinds (the grammar wraps
+/// pair fields in `block_node`/`flow_node`; the scalar hides one level down,
+/// the same structure `ast::elements` walks for definitions).
+fn walk_yaml_pairs<'a>(node: Node<'a>, source: &'a str, f: &mut impl FnMut(&str, &str)) {
+    if node.kind() == "block_mapping_pair" || node.kind() == "flow_pair" {
+        let key = node
+            .child_by_field_name("key")
+            .and_then(|k| yaml_scalar_text(&k, source));
+        let value = node
+            .child_by_field_name("value")
+            .and_then(|v| yaml_scalar_text(&v, source));
+        if let (Some(key), Some(value)) = (key, value) {
+            f(&key, &value);
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_yaml_pairs(child, source, f);
+    }
+}
+
+/// Text of a YAML scalar node: plain / single-quoted / double-quoted
+/// scalars carry it directly (quotes stripped); `block_node`/`flow_node`
+/// wrappers descend one level to the scalar child (the grammar wraps pair
+/// fields — verified against tree-sitter-yaml 0.7.0 node-types). Anything
+/// else (mappings, sequences, aliases, anchors, block scalars) is not a
+/// scalar string → `None`.
+fn yaml_scalar_text(node: &Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "plain_scalar" | "single_quote_scalar" | "double_quote_scalar" => {
+            Some(unquote_yaml(&source[node.byte_range()]))
+        }
+        "block_node" | "flow_node" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if matches!(
+                    child.kind(),
+                    "plain_scalar" | "single_quote_scalar" | "double_quote_scalar"
+                ) {
+                    return Some(unquote_yaml(&source[child.byte_range()]));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Strip one layer of matching YAML `'` / `"` scalar quoting (the quoting
+/// is syntax, not content — same rule as [`strip_quotes`]).
+fn unquote_yaml(s: &str) -> String {
+    strip_quotes(s).to_string()
+}
+
+// =============================================================================
+// TOML — the string-value path scan (no key policy; heuristic documented
+// in the module docs and in `looks_like_path_or_url`)
+// =============================================================================
+
+/// TOML: every `pair` whose value is a `string` and whose content passes
+/// [`looks_like_path_or_url`] emits, in deterministic tree order — no key
+/// filter, no cap. TOML has no reference convention, so the path-shaped
+/// strings themselves are the surface (config-referenced assets, theme and
+/// config loads, remote URLs); false positives are possible and accepted
+/// (unresolved targets are inert downstream). `alias` = `"path"`. Requires
+/// `tree`; `None` yields no emissions.
+fn extract_toml_path_links(source: &str, tree: Option<&Tree>) -> Vec<ImportInfo> {
+    let Some(tree) = tree else {
+        return Vec::new();
+    };
+    let mut imports = Vec::new();
+    walk_toml_strings(tree.root_node(), source, &mut |value| {
+        if looks_like_path_or_url(value) && emittable(value) {
+            imports.push(doc_import(value, "path"));
+        }
+    });
+    imports
+}
+
+/// Walk every TOML `pair` (tables, table arrays and inline tables recurse)
+/// and call `f` with each STRING value's content. The grammar's `pair` has
+/// no named fields — the leading key part is a `bare_key`/`quoted_key`/
+/// `dotted_key` child and the value is a typed child (`string`, `integer`,
+/// `float`, `boolean`, dates, `array`, `inline_table`); only `string`
+/// children are reported. Unlike JSON, the TOML grammar has NO
+/// `string_content` node — the `string` node's own byte range INCLUDES the
+/// quote tokens (verified against tree-sitter-toml-ng-0.7.0 grammar.js), so
+/// the quotes are stripped here.
+fn walk_toml_strings(node: Node, source: &str, f: &mut impl FnMut(&str)) {
+    if node.kind() == "pair" {
+        let value = node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "string");
+        if let Some(value) = value {
+            f(strip_toml_quotes(&source[value.byte_range()]));
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_toml_strings(child, source, f);
+    }
+}
+
+/// Strip the TOML string wrapper: `"""…"""` / `'''…'''` (multiline) shed
+/// three quotes per side, `"…"` / `'…'` one. Anything else comes back
+/// untouched (defensive — the grammar always wraps).
+fn strip_toml_quotes(s: &str) -> &str {
+    for q in ["\"\"\"", "'''"] {
+        if let Some(inner) = s.strip_prefix(q) {
+            if let Some(inner) = inner.strip_suffix(q) {
+                return inner;
+            }
+        }
+    }
+    strip_quotes(s)
+}
+
+/// Heuristic: does this TOML string value look like a path or URL?
+///
+/// TRUE for: `http://…` / `https://…` URLs; `./x` and `../x`; absolute
+/// `/x`; `~/x`; and relative paths that contain a `/` AND a dot-extension
+/// on the last segment (`assets/logo.svg`, `config/dev.toml`).
+///
+/// FALSE for: bare words (`tldr`, `1.2.3`, `foo_bar` — no `/`); bare
+/// filenames without a directory (`logo.svg`); `#`-fragments; `data:` URIs
+/// and other non-http scheme tokens; values with ANY whitespace; values
+/// containing `{`/`}` (template/interpolation braces) or `<`/`>`; empty
+/// strings and directory-only references (`assets/` — the last segment has
+/// no extension). Known accepted false-positive class: dotted directory
+/// names read like extensions (`assets/v1.2` → true).
+pub(crate) fn looks_like_path_or_url(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() || t.chars().any(char::is_whitespace) {
+        return false;
+    }
+    if t.contains(['{', '}', '<', '>']) {
+        return false;
+    }
+    // `#`-fragments and `data:` URIs are the same suppression the other
+    // extractors apply through `emittable`; non-http scheme tokens
+    // (`mailto:x`, `ftp://…`) are not filesystem paths either.
+    if t.starts_with('#') {
+        return false;
+    }
+    if let Some(scheme_end) = t.find(':') {
+        let head = &t[..scheme_end];
+        if head.len() >= 4 && head[..4].eq_ignore_ascii_case("data") {
+            return false;
+        }
+        if t[..scheme_end].contains('/') {
+            // A colon AFTER a slash is ordinary in paths (`a/b:c`), not a
+            // scheme marker — fall through to the path rules.
+        } else if !t.starts_with("http://") && !t.starts_with("https://") {
+            return false;
+        }
+    }
+    if t.starts_with("http://") || t.starts_with("https://") {
+        return true;
+    }
+    if t.starts_with("./") || t.starts_with("../") {
+        return true;
+    }
+    if t.starts_with('/') || t.starts_with("~/") {
+        return true;
+    }
+    // Relative with a separator AND a dot-extension on the last segment.
+    if t.contains('/') {
+        let last = t.rsplit('/').next().unwrap_or("");
+        if let Some(dot) = last.rfind('.') {
+            return dot > 0 && dot + 1 < last.len();
+        }
+    }
+    false
+}
+
+// =============================================================================
+// Bash — `source` / `.` (line-anchored regex; rules documented in the
+// module docs)
+// =============================================================================
+
+lazy_static! {
+    /// Bash `source`/`.` invocation, matched PER LINE after comment
+    /// truncation. The operator must sit right after a line start or a
+    /// `;` / `&&` / `||` separator (plus optional blanks) — that IS the
+    /// "preceded by whitespace/start" requirement, and it also keeps
+    /// `echo .hidden` / `xsource y.sh` / a trailing `echo .foo` inert: the
+    /// anchored prefix cannot skip over ordinary words. The target token
+    /// stops at whitespace and shell metacharacters (`; # & |`).
+    static ref BASH_SOURCE: Regex = Regex::new(
+        r"(?:^|;|&&|\|\|)[ \t]*(?:(?P<kw>source)|(?P<dot>\.))(?P<sp>[ \t]+)(?P<target>[^\s;#&|]+)"
+    )
+    .expect("BASH_SOURCE regex");
+}
+
+/// Bash: one [`ImportInfo`] per `source TARGET` / `. TARGET` invocation, in
+/// line order. `alias` = `"source"` for both spellings (the `.` form IS the
+/// POSIX `source`). Extra rules: the dot form requires a `/` in the target;
+/// quoted targets are unwrapped only when the quotes balance inside the
+/// captured token (unbalanced → the quoted string had spaces and is
+/// skipped); full-line comments are truncated before matching.
+fn extract_bash_source_links(source: &str) -> Vec<ImportInfo> {
+    let mut imports = Vec::new();
+    for line in source.lines() {
+        // Truncate at the first `#` — suppress-only (a comment can hide a
+        // candidate, never create one; quoted `#` in echo strings cannot
+        // fabricate a source statement because the operator prefix still
+        // has to match).
+        let code = line.split('#').next().unwrap_or(line);
+        for caps in BASH_SOURCE.captures_iter(code) {
+            let dot_form = caps.name("dot").is_some();
+            let raw = caps.name("target").map(|m| m.as_str()).unwrap_or("");
+            let (target, balanced) = balance_strip_quotes(raw);
+            if !balanced || target.is_empty() {
+                continue;
+            }
+            // The POSIX `.` spelling is textually ambiguous (`. 5`, `. ..`,
+            // a `.hidden` word after a separator) — require a real path
+            // separator in its target. `source` stays unrestricted.
+            if dot_form && !target.contains('/') {
+                continue;
+            }
+            if emittable(&target) {
+                imports.push(doc_import(&target, "source"));
+            }
+        }
+    }
+    imports
+}
+
+/// Strip one layer of `"` / `'` quoting from a bash target token ONLY when
+/// the quotes balance (the token capture stops at whitespace, so a quoted
+/// string containing spaces arrives as an unbalanced prefix like `"a` —
+/// that must not emit). Returns `(unquoted, was_balanced)`.
+fn balance_strip_quotes(raw: &str) -> (String, bool) {
+    let bytes = raw.as_bytes();
+    if bytes.len() >= 2
+        && (bytes[0] == b'"' || bytes[0] == b'\'')
+        && bytes[bytes.len() - 1] == bytes[0]
+    {
+        (raw[1..raw.len() - 1].to_string(), true)
+    } else if bytes.first() == Some(&b'"') || bytes.first() == Some(&b'\'') {
+        (raw.to_string(), false)
+    } else {
+        (raw.to_string(), true)
     }
 }
 
@@ -708,6 +1113,7 @@ fn mask_indented_code_blocks(source: &str, out: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::parser::parse;
 
     fn targets(imports: &[ImportInfo]) -> Vec<&str> {
         imports.iter().map(|i| i.module.as_str()).collect()
@@ -715,6 +1121,24 @@ mod tests {
 
     fn aliases(imports: &[ImportInfo]) -> Vec<Option<&str>> {
         imports.iter().map(|i| i.alias.as_deref()).collect()
+    }
+
+    /// Convenience for the REGEX-ONLY extractors, which ignore the tree
+    /// argument entirely: every pre-existing markdown/html/xml/css/latex
+    /// pin calls through this 2-arg wrapper (documenting that those
+    /// extractors never need a parse). The AST-keyed languages
+    /// (JSON/YAML/TOML) are pinned through [`ast_doc`] below, which parses
+    /// and passes the real tree — the same shape `get_imports` hands over.
+    fn extract_doc_links(language: Language, source: &str) -> Vec<ImportInfo> {
+        super::extract_doc_links(language, source, None)
+    }
+
+    /// Parse `source` with the language's grammar and run the full
+    /// extractor with the tree — the exact call shape of
+    /// `extract_imports_from_tree`.
+    fn ast_doc(language: Language, source: &str) -> Vec<ImportInfo> {
+        let tree = parse(source, language).expect("parse fixture");
+        super::extract_doc_links(language, source, Some(&tree))
     }
 
     // =========================================================================
@@ -1318,25 +1742,34 @@ mod tests {
     // Language gating
     // =========================================================================
 
-    /// Css and Latex ARE document languages now (their extractors live in
-    /// the CSS/LaTeX sections above); these languages still have no link
-    /// surface.
+    /// Log and Python still have no link surface. (Css/Latex joined in
+    /// doclinks-v1's css/latex batch; JSON/YAML/TOML/Bash joined with the
+    /// config batch — each has its own extractor section and pins above.
+    /// Log never parses through tree-sitter and Bash is pinned in the
+    /// bash section; neither appears here because the config batch turned
+    /// JSON/YAML/TOML/Bash into doc languages.)
     #[test]
     fn non_document_languages_emit_nothing() {
-        for lang in [
-            Language::Json,
-            Language::Yaml,
-            Language::Toml,
-            Language::Log,
-            Language::Bash,
-            Language::Python,
-        ] {
+        for lang in [Language::Log, Language::Python] {
             let imports = extract_doc_links(
                 lang,
                 "[a](b.md) <x href=\"y.md\"> @import \"z.css\"; \\input{w.tex}",
             );
             assert!(imports.is_empty(), "{lang:?} must emit nothing");
         }
+    }
+
+    /// The AST-keyed extractors REQUIRE a tree — `None` (no parse) yields
+    /// no emissions rather than a regex fallback. The JSON pin is
+    /// representative; YAML/TOML share the dispatcher arm shape.
+    #[test]
+    fn ast_keyed_extractors_need_the_tree() {
+        let src = r#"{"$ref": "./b.json"}"#;
+        assert!(super::extract_doc_links(Language::Json, src, None).is_empty());
+        let yaml = "root:\n  $ref: ./b.yaml\n";
+        assert!(super::extract_doc_links(Language::Yaml, yaml, None).is_empty());
+        let toml = "asset = \"./b.svg\"\n";
+        assert!(super::extract_doc_links(Language::Toml, toml, None).is_empty());
     }
 
     // =========================================================================
@@ -1366,5 +1799,287 @@ mod tests {
         let source = "a ``x `[y](z.md)` y`` b";
         let masked = mask_inline_code_spans(source);
         assert!(!masked.contains("y.md"), "got {masked:?}");
+    }
+
+    // =========================================================================
+    // JSON — AST-keyed `$ref` / `extends`
+    // =========================================================================
+
+    #[test]
+    fn json_ref_and_extends_emit_with_key_aliases() {
+        let src = r#"{
+  "openapi": "3.0.0",
+  "components": {
+    "schemas": {
+      "user": { "$ref": "./schemas/user.json", "extends": "base.json" }
+    }
+  },
+  "name": "./not-a-ref.json",
+  "version": 3
+}"#;
+        let imports = ast_doc(Language::Json, src);
+        assert_eq!(targets(&imports), vec!["./schemas/user.json", "base.json"]);
+        assert_eq!(aliases(&imports), vec![Some("$ref"), Some("extends")]);
+        assert!(imports.iter().all(|i| i.is_from && i.names.is_empty()));
+    }
+
+    #[test]
+    fn json_non_string_ref_values_ignored() {
+        let src = r#"{
+  "a": { "$ref": 42 },
+  "b": { "extends": null },
+  "c": { "$ref": {} },
+  "d": { "$ref": ["./x.json"] }
+}"#;
+        assert!(ast_doc(Language::Json, src).is_empty());
+    }
+
+    #[test]
+    fn json_internal_pointers_and_data_uris_suppressed() {
+        let src = r##"{
+  "ptr": { "$ref": "#/components/schemas/User" },
+  "inline": { "$ref": "data:application/json,{}" },
+  "blank": { "$ref": "" }
+}"##;
+        assert!(ast_doc(Language::Json, src).is_empty());
+    }
+
+    #[test]
+    fn json_external_url_still_emits() {
+        let src = r#"{ "allOf": { "$ref": "https://schemas.example.org/user.json" } }"#;
+        let imports = ast_doc(Language::Json, src);
+        assert_eq!(
+            targets(&imports),
+            vec!["https://schemas.example.org/user.json"]
+        );
+        assert_eq!(aliases(&imports), vec![Some("$ref")]);
+    }
+
+    // =========================================================================
+    // YAML — AST-keyed `$ref` / `extends`
+    // =========================================================================
+
+    #[test]
+    fn yaml_ref_and_extends_plain_quoted_and_flow() {
+        let src = "service:\n  $ref: ./config/base.yaml\n  '$ref': \"./other.yaml\"\n  extends: 'tpl.yaml'\nflow: {extends: \"flow-base.yaml\"}\n";
+        let imports = ast_doc(Language::Yaml, src);
+        assert_eq!(
+            targets(&imports),
+            vec![
+                "./config/base.yaml",
+                "./other.yaml",
+                "tpl.yaml",
+                "flow-base.yaml"
+            ]
+        );
+        assert_eq!(
+            aliases(&imports),
+            vec![Some("$ref"), Some("$ref"), Some("extends"), Some("extends")]
+        );
+    }
+
+    #[test]
+    fn yaml_actions_include_matrix_stays_inert() {
+        // GitHub Actions `strategy.matrix.include` expands PARAMETERS, not
+        // files — and even a path-looking string inside it must not emit
+        // (YAML is key-gated, deliberately unlike the TOML path scan).
+        let src = "name: deploy\non: push\njobs:\n  build:\n    strategy:\n      matrix:\n        include:\n          - os: ubuntu-latest\n            config: ./ci/linux.yaml\n    steps:\n      - run: ./build.sh\n";
+        assert!(ast_doc(Language::Yaml, src).is_empty());
+    }
+
+    #[test]
+    fn yaml_include_and_resources_keys_not_scanned() {
+        // Compose `include:`, kustomize `resources:` — suppress-only by
+        // policy (module docs: the value TYPE cannot disambiguate without
+        // per-tool schemas).
+        let src = "include:\n  - ./compose.db.yaml\nresources:\n  - ./deploy.yaml\nimport:\n  - ./x.yaml\n";
+        assert!(ast_doc(Language::Yaml, src).is_empty());
+    }
+
+    #[test]
+    fn yaml_non_scalar_ref_values_ignored() {
+        let src = "a:\n  $ref:\n    - ./x.yaml\nb:\n  $ref:\n    key: ./y.yaml\n";
+        assert!(ast_doc(Language::Yaml, src).is_empty());
+    }
+
+    #[test]
+    fn yaml_ref_with_inline_comment_keeps_clean_target() {
+        let src = "root:\n  $ref: ./base.yaml # the shared base\n";
+        let imports = ast_doc(Language::Yaml, src);
+        assert_eq!(targets(&imports), vec!["./base.yaml"]);
+    }
+
+    // =========================================================================
+    // TOML — string-value path scan
+    // =========================================================================
+
+    #[test]
+    fn toml_path_shaped_strings_emit_with_path_alias() {
+        let src = concat!(
+            "name = \"tldr\"\n",
+            "version = \"1.2.3\"\n",
+            "\n",
+            "[assets]\n",
+            "asset = \"./img/logo.svg\"\n",
+            "theme = \"config/dev.toml\"\n",
+            "parent = \"../shared.toml\"\n",
+            "abs = \"/etc/app/conf.toml\"\n",
+            "home = \"~/x.toml\"\n",
+            "remote = \"https://example.com/logo.png\"\n",
+            "\n",
+            "[style]\n",
+            "inline = { icon = \"assets/icon.svg\" }\n",
+        );
+        let imports = ast_doc(Language::Toml, src);
+        assert_eq!(
+            targets(&imports),
+            vec![
+                "./img/logo.svg",
+                "config/dev.toml",
+                "../shared.toml",
+                "/etc/app/conf.toml",
+                "~/x.toml",
+                "https://example.com/logo.png",
+                "assets/icon.svg",
+            ]
+        );
+        assert_eq!(
+            aliases(&imports),
+            vec![Some("path"); 7],
+            "alias = the heuristic's role label"
+        );
+    }
+
+    #[test]
+    fn toml_non_path_strings_emit_nothing() {
+        let src = concat!(
+            "name = \"tldr\"\n",
+            "version = \"1.2.3\"\n",
+            "code = \"foo_bar\"\n",
+            "frag = \"#/definitions/User\"\n",
+            "uri = \"data:image/png;base64,AAAA\"\n",
+            "mail = \"mailto:ops@example.com\"\n",
+            "spaced = \"my file.svg\"\n",
+            "braced = \"{var}/x.toml\"\n",
+            "angled = \"<x.svg>\"\n",
+            "nodir = \"logo.svg\"\n",
+            "dir = \"assets/\"\n",
+            "count = 3\n",
+            "tags = [\"./not-in-array.svg\"]\n",
+        );
+        assert!(ast_doc(Language::Toml, src).is_empty());
+    }
+
+    #[test]
+    fn looks_like_path_or_url_table() {
+        let yes = [
+            "https://example.com/a.png",
+            "http://example.com",
+            "./a.svg",
+            "../shared/dev.toml",
+            "/etc/app/conf.toml",
+            "~/x.toml",
+            "assets/logo.svg",
+            "config/dev.toml",
+        ];
+        let no = [
+            "",
+            "tldr",
+            "1.2.3",
+            "foo_bar",
+            "logo.svg",
+            "#fragment",
+            "data:image/png;base64,AA",
+            "mailto:ops@example.com",
+            "ftp://files.example.com/a.zip",
+            "my file.svg",
+            "{var}/x.toml",
+            "<x.svg>",
+            "assets/",
+            "assets/.hidden",
+        ];
+        for s in yes {
+            assert!(looks_like_path_or_url(s), "{s:?} must look like a path");
+        }
+        for s in no {
+            assert!(
+                !looks_like_path_or_url(s),
+                "{s:?} must NOT look like a path"
+            );
+        }
+    }
+
+    // =========================================================================
+    // Bash — `source` / `.`
+    // =========================================================================
+
+    #[test]
+    fn bash_source_forms_emit_in_line_order() {
+        let src = "#!/usr/bin/env bash\nset -euo pipefail\nsource ./env.sh\n  source vars.sh\n. /etc/profile\nfoo; source x.sh\nbar && source y.sh\nbaz || source z.sh\n";
+        let imports = extract_doc_links(Language::Bash, src);
+        assert_eq!(
+            targets(&imports),
+            vec![
+                "./env.sh",
+                "vars.sh",
+                "/etc/profile",
+                "x.sh",
+                "y.sh",
+                "z.sh"
+            ]
+        );
+        assert_eq!(
+            aliases(&imports),
+            vec![Some("source"); 6],
+            "the `.` form is the POSIX spelling of source"
+        );
+        assert!(imports.iter().all(|i| i.is_from && i.names.is_empty()));
+    }
+
+    #[test]
+    fn bash_dot_form_requires_a_path_separator() {
+        // `. ./env.sh` emits; `. hidden` (no `/`) stays inert — the
+        // whitespace-adjacent dot is textually ambiguous.
+        let src = ". ./env.sh\n. hidden\n  . ../lib/x.sh\n";
+        let imports = extract_doc_links(Language::Bash, src);
+        assert_eq!(targets(&imports), vec!["./env.sh", "../lib/x.sh"]);
+    }
+
+    #[test]
+    fn bash_negatives() {
+        let src = "echo .hidden\necho .foo\n#source comment\n  # . ./x.sh\nsource\nxsource y.sh\n.  \n./build.sh\n";
+        assert!(
+            extract_doc_links(Language::Bash, src).is_empty(),
+            "no source/. operator in any of these lines"
+        );
+    }
+
+    #[test]
+    fn bash_quoted_targets() {
+        let src = "source \"$CONF/env.sh\"\nsource './opt/run.sh'\nsource \"a b.sh\"\n";
+        let imports = extract_doc_links(Language::Bash, src);
+        // `"$CONF/env.sh"` and `'./opt/run.sh'` balance → quotes stripped;
+        // `"a b.sh"` captures unbalanced (`"a` — the token stops at the
+        // space) and is skipped.
+        assert_eq!(targets(&imports), vec!["$CONF/env.sh", "./opt/run.sh"]);
+    }
+
+    #[test]
+    fn bash_inline_comments_are_suppress_only() {
+        let src = "source ./env.sh # load the env\n. /etc/profile.d/lang.sh  # locale\n";
+        let imports = extract_doc_links(Language::Bash, src);
+        assert_eq!(
+            targets(&imports),
+            vec!["./env.sh", "/etc/profile.d/lang.sh"]
+        );
+    }
+
+    #[test]
+    fn balance_strip_quotes_rules() {
+        assert_eq!(balance_strip_quotes("\"a.sh\""), ("a.sh".into(), true));
+        assert_eq!(balance_strip_quotes("'a.sh'"), ("a.sh".into(), true));
+        assert_eq!(balance_strip_quotes("a.sh"), ("a.sh".into(), true));
+        assert_eq!(balance_strip_quotes("\"a"), ("\"a".into(), false));
+        assert_eq!(balance_strip_quotes("'"), ("'".into(), false));
     }
 }

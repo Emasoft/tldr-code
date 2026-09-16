@@ -20,7 +20,13 @@
 //! the html/xml field pins. `build_style_project` has the css/latex/md-fence
 //! batch: `styles.css` → `theme.css` via @import plus font/image url() loads,
 //! `main.tex` → chapter/graphic/bibliography targets, and `a.md` with a real
-//! link plus a fenced example block whose fake links must stay inert. No
+//! link plus a fenced example block whose fake links must stay inert.
+//! `build_config_project` has the config batch: `openapi.json` `$ref` →
+//! `schemas/user.json` (nested, so a `package.json` root marker resolves the
+//! impact doc-root), `deploy.yaml` `$ref` → `config/base.yaml` next to an
+//! inert Actions `include:` matrix and local-action `uses:`, `app.toml`'s
+//! path-shaped string value → `img/logo.svg`, and `main.sh` sourcing
+//! `lib/common.sh` via `source` and the POSIX `.` spelling. No
 //! daemon is started; every command takes the direct-compute path.
 
 use assert_cmd::Command;
@@ -130,6 +136,92 @@ tail
 "#,
     );
     write(root.join("real.md"), "# Real\n");
+    dir
+}
+
+/// Fixture for the config batch: `openapi.json` carries an external `$ref`
+/// to `schemas/user.json` (plus a non-string `extends` and an internal JSON
+/// Pointer that must both stay inert); `deploy.yaml` has a real `$ref` to
+/// `config/base.yaml` next to an Actions-style `strategy.matrix.include`
+/// that must NOT emit (and a local-action `uses:` — the key policy is
+/// deliberately strict: only `$ref`/`extends`); `app.toml` carries a
+/// path-shaped string value plus the classic non-path negatives; `main.sh`
+/// sources `lib/common.sh` with both `source` and the POSIX `.` spelling.
+/// A minimal `package.json` marks the project root so `explain_project_root`
+/// resolves the doc-root for NESTED impact targets (`schemas/user.json`).
+fn build_config_project() -> TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write(
+        root.join("package.json"),
+        r#"{ "name": "fixture", "private": true }"#,
+    );
+    write(
+        root.join("openapi.json"),
+        r##"{
+  "openapi": "3.0.0",
+  "info": { "title": "api", "version": "1.0.0" },
+  "components": {
+    "schemas": {
+      "user": { "$ref": "./schemas/user.json", "extends": 42 },
+      "pet": { "$ref": "#/components/schemas/user" }
+    }
+  }
+}"##,
+    );
+    write(root.join("schemas/user.json"), r#"{ "type": "object" }"#);
+
+    write(
+        root.join("deploy.yaml"),
+        concat!(
+            "name: deploy\n",
+            "on: push\n",
+            "jobs:\n",
+            "  deploy:\n",
+            "    strategy:\n",
+            "      matrix:\n",
+            "        include:\n",
+            "          - os: ubuntu-latest\n",
+            "            config: ./ci/linux.yaml\n",
+            "    steps:\n",
+            "      - run: ./build.sh\n",
+            "  publish:\n",
+            "    uses: ./.github/actions/publish\n",
+            "deploy:\n",
+            "  $ref: \"./config/base.yaml\"\n",
+        ),
+    );
+    write(root.join("config/base.yaml"), "shared: true\n");
+
+    write(
+        root.join("app.toml"),
+        concat!(
+            "name = \"tldr\"\n",
+            "version = \"1.2.3\"\n",
+            "code = \"foo_bar\"\n",
+            "\n",
+            "[assets]\n",
+            "asset = \"./img/logo.svg\"\n",
+        ),
+    );
+    write(
+        root.join("img/logo.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/> "#,
+    );
+
+    write(
+        root.join("main.sh"),
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "set -euo pipefail\n",
+            "source ./lib/common.sh\n",
+            ". /etc/profile\n",
+            "# source ./lib/decoy.sh\n",
+            "echo .hidden\n",
+        ),
+    );
+    write(root.join("lib/common.sh"), "log() { echo \"$*\"; }\n");
     dir
 }
 
@@ -723,4 +815,206 @@ fn impact_css_import_closure_finds_the_stylesheet() {
     let callers = tree["callers"].as_array().unwrap();
     assert_eq!(callers.len(), 1, "styles.css imports theme.css: {json}");
     assert!(callers[0]["file"].as_str().unwrap().ends_with("styles.css"));
+}
+
+// =============================================================================
+// (5) config batch (build_config_project): json / yaml / toml / bash
+// =============================================================================
+
+/// `tldr imports openapi.json` — the AST-keyed `$ref` key policy: the
+/// external `./schemas/user.json` emits with `alias: "$ref"`, the
+/// non-string `extends: 42` and the internal JSON Pointer stay inert.
+#[test]
+fn imports_json_emits_only_external_ref_keys() {
+    let dir = build_config_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(&["imports", "openapi.json", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+    assert_eq!(json["language"], "json");
+
+    let imports = json["imports"].as_array().unwrap();
+    assert_eq!(imports.len(), 1, "exactly the external $ref: {json}");
+    assert_eq!(imports[0]["module"], "./schemas/user.json");
+    assert_eq!(imports[0]["alias"], "$ref", "alias = the matched key");
+    assert_eq!(imports[0]["is_from"], true);
+}
+
+/// `tldr imports deploy.yaml` — `$ref` emits; the Actions
+/// `strategy.matrix.include` (whose entries carry a path-looking
+/// `config:` value) and the local-action `uses:` do NOT — YAML is
+/// key-gated on `$ref`/`extends` only.
+#[test]
+fn imports_yaml_ref_emits_include_matrix_and_uses_stay_inert() {
+    let dir = build_config_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(&["imports", "deploy.yaml", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+    assert_eq!(json["language"], "yaml");
+
+    let imports = json["imports"].as_array().unwrap();
+    let modules: Vec<&str> = imports
+        .iter()
+        .filter_map(|i| i["module"].as_str())
+        .collect();
+    assert_eq!(
+        modules,
+        vec!["./config/base.yaml"],
+        "exactly the $ref target: {modules:?}"
+    );
+    assert!(!modules.iter().any(|m| m.contains("linux.yaml")));
+    assert!(!modules.iter().any(|m| m.contains("actions/publish")));
+}
+
+/// `tldr imports app.toml` — the string-value path scan surfaces the
+/// path-shaped value with alias `path`; bare words (`tldr`), version
+/// strings (`1.2.3`) and `foo_bar` never emit.
+#[test]
+fn imports_toml_path_scan_with_non_path_negatives() {
+    let dir = build_config_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(&["imports", "app.toml", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+    assert_eq!(json["language"], "toml");
+
+    let imports = json["imports"].as_array().unwrap();
+    assert_eq!(imports.len(), 1, "exactly the path value: {json}");
+    assert_eq!(imports[0]["module"], "./img/logo.svg");
+    assert_eq!(imports[0]["alias"], "path");
+}
+
+/// `tldr imports main.sh` — `source ./lib/common.sh` and `. /etc/profile`
+/// both emit (alias `source`); the commented-out `source` decoy and
+/// `echo .hidden` stay inert.
+#[test]
+fn imports_bash_source_with_posix_dot_and_comment_negatives() {
+    let dir = build_config_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(&["imports", "main.sh", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+    assert_eq!(json["language"], "bash");
+
+    let imports = json["imports"].as_array().unwrap();
+    let modules: Vec<&str> = imports
+        .iter()
+        .filter_map(|i| i["module"].as_str())
+        .collect();
+    assert_eq!(
+        modules,
+        vec!["./lib/common.sh", "/etc/profile"],
+        "line-ordered source targets: {modules:?}"
+    );
+    for entry in imports {
+        assert_eq!(entry["alias"], "source");
+    }
+    assert!(!modules.iter().any(|m| m.contains("decoy")));
+    assert!(!modules.iter().any(|m| m.contains("hidden")));
+}
+
+/// `tldr importers` across the four new doc arms — path normalization is
+/// identical to the md/html/xml/css/latex arm (`./`-stripping, exact +
+/// path-suffix match).
+#[test]
+fn importers_finds_config_reference_sources() {
+    let dir = build_config_project();
+    let root = dir.path();
+
+    for (query, lang, expected_file) in [
+        ("schemas/user.json", "json", "openapi.json"),
+        ("lib/common.sh", "bash", "main.sh"),
+        ("img/logo.svg", "toml", "app.toml"),
+        ("config/base.yaml", "yaml", "deploy.yaml"),
+    ] {
+        let (code, json) = run_json(
+            &[
+                "importers",
+                query,
+                root.to_str().unwrap(),
+                "--lang",
+                lang,
+                "-f",
+                "json",
+                "-q",
+            ],
+            root,
+        );
+        assert_eq!(code, Some(0), "importers {query} --lang {lang}");
+        assert_eq!(json["total"], 1, "importers {query} --lang {lang}: {json}");
+        assert!(
+            json["importers"][0]["file"]
+                .as_str()
+                .unwrap()
+                .ends_with(expected_file),
+            "importers {query} --lang {lang}: {json}"
+        );
+    }
+}
+
+/// `tldr impact <root>/schemas/user.json` — a nested JSON config target's
+/// reverse-link closure reaches openapi.json (the `package.json` marker
+/// resolves the doc root for the nested file).
+#[test]
+fn impact_json_config_closure_finds_the_referring_schema() {
+    let dir = build_config_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(
+        &[
+            "impact",
+            root.join("schemas/user.json").to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0), "impact on a json config must succeed");
+    assert_eq!(json["total_targets"], 1);
+
+    let tree = json["targets"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    assert_eq!(tree["function"], "<doc>");
+    assert_eq!(tree["note"], "discovered via document link");
+
+    let mut files = Vec::new();
+    collect_files(&json, &mut files);
+    assert!(
+        files.iter().any(|f| f.ends_with("openapi.json")),
+        "closure must contain openapi.json: {files:?}"
+    );
+}
+
+/// The yaml arm closes the loop too: `tldr impact <root>/config/base.yaml`
+/// finds deploy.yaml through its `$ref`.
+#[test]
+fn impact_yaml_config_closure_finds_the_referring_workflow() {
+    let dir = build_config_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(
+        &[
+            "impact",
+            root.join("config/base.yaml").to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(json["total_targets"], 1);
+
+    let mut files = Vec::new();
+    collect_files(&json, &mut files);
+    assert!(
+        files.iter().any(|f| f.ends_with("deploy.yaml")),
+        "closure must contain deploy.yaml: {files:?}"
+    );
 }

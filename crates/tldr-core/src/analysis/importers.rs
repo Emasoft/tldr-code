@@ -203,9 +203,19 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
             false
         }
         // doclinks-v1: document languages (markdown/html/xml hyperlinks,
-        // css/latex loaded elements) reference each other by PATH — delegate
-        // to the doc matcher.
-        Language::Markdown | Language::Html | Language::Xml | Language::Css | Language::Latex => {
+        // css/latex loaded elements, and the config batch — json/yaml
+        // `$ref`/`extends` keys, toml path-shaped string values, bash
+        // `source`/`.` loads) reference each other by PATH — delegate to
+        // the doc matcher. Path normalization is identical for all nine.
+        Language::Markdown
+        | Language::Html
+        | Language::Xml
+        | Language::Css
+        | Language::Latex
+        | Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Bash => {
             if doc_module_matches(import_module, target) {
                 return true;
             }

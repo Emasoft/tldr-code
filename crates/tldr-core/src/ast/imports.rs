@@ -70,15 +70,26 @@ pub fn extract_imports_from_tree(
         // referenced by name at a point of use) and `alias` = provenance
         // label (link text / attribute name / PI or DOCTYPE role / CSS
         // `import`-`url` / LaTeX command name).
-        Language::Markdown | Language::Html | Language::Xml | Language::Css | Language::Latex => {
-            super::doclinks::extract_doc_links(language, source)
-        }
-        // Formats extension: the remaining formats have no link surface yet.
-        // Deferred (next batch): JSON/YAML/TOML path-strings and bash
-        // `source`; Log has no import statements in any sense.
-        Language::Json | Language::Yaml | Language::Toml | Language::Log | Language::Bash => {
-            Vec::new()
-        }
+        //
+        // doclinks-v1 config batch: JSON/YAML join with the AST-keyed
+        // `$ref`/`extends` key policy, TOML with the string-value path scan
+        // (alias `path`), and Bash with the line-anchored `source`/`.`
+        // scanner (alias `source`). The tree is handed over UNRE-PARSED —
+        // this function already holds it, so the AST-keyed extractors cost
+        // nothing extra (the regex-only extractors ignore it).
+        Language::Markdown
+        | Language::Html
+        | Language::Xml
+        | Language::Css
+        | Language::Latex
+        | Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Bash => super::doclinks::extract_doc_links(language, source, Some(tree)),
+        // Log has no reference surface in any sense: no grammar (its tree
+        // is a structural placeholder), no path convention — log files are
+        // consumed exclusively by the native scanner in `ast::logs`.
+        Language::Log => Vec::new(),
     };
 
     Ok(imports)

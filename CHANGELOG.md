@@ -73,6 +73,37 @@
   (markdown/html/xml imports fields, css/latex loaded-element fields, importers path matching
   in both markdown and latex, transitive closure with depth truncation, external-URL absence,
   fenced-block suppression, exit codes).
+  **Config batch:** JSON and YAML join as **AST-keyed** extractors — `extract_doc_links` now
+  takes the caller's parsed tree (no double parse; `get_imports` hands over the tree it already
+  built) and emits a mapping pair only when its KEY is exactly `$ref` or `extends` and its VALUE
+  is a string (`alias` = the matched key; internal JSON Pointers `#/…`, `data:` URIs, empty and
+  non-string values emit nothing). The key allow-list is the whole policy — JSON/YAML have no
+  general path-string convention, so a generic scan would fabricate edges out of descriptions,
+  IDs and versions. YAML deliberately does NOT scan `include:`/`resources:`/`import:`-style keys
+  even where those conventions load files: GitHub Actions `strategy.matrix.include` expands
+  matrix PARAMETERS (scanning it would fabricate a file edge per matrix parameter) and kustomize
+  `resources:` values are too loosely typed to tell paths from names without per-tool schemas —
+  suppress-only for ambiguous conventions, wired only where the key alone disambiguates the
+  value. TOML (no reference convention at all) joins with an honestly-heuristic **string-value
+  path scan**: every `pair` whose value is a string and passes `looks_like_path_or_url` emits
+  with `alias: "path"` — true for http(s) URLs, `./x`, `../x`, `/abs`, `~/x`, and relative
+  paths with a `/` plus a dot-extension on the last segment; false for bare words, bare
+  filenames without a directory, `#`-fragments, non-http schemes, whitespace, `{}`/`<>`
+  characters and directory-only values (accepted false-positive class documented: dotted
+  directory names like `assets/v1.2` read like extensions). Bash joins with a line-anchored
+  `source`/`.` scanner (`alias: "source"` for both spellings): the operator must sit after a
+  line start or `;`/`&&`/`||` separator, the POSIX `.` form additionally requires a `/` in the
+  target (`. TOKEN` is textually ambiguous), quoted targets are unwrapped only when the quotes
+  balance within the token, full-line comments are truncated before matching, and the
+  single-line `if …; then source x` form is a documented no-match (kept simple by design). The
+  reference graph expands accordingly: `is_doc_language`/`doc_language_extensions` and the
+  `module_matches` doc arm now include the four languages (same path normalization), so
+  `tldr impact <root>/config.json` computes the link closure and `tldr importers <file> <root>
+  --lang bash|json|yaml|toml` finds the referencing file. Unit tests: 89 in `ast::doclinks`
+  (19 new: JSON/YAML `$ref`-`extends` including the Actions-`include` negative, TOML path-scan
+  positives/negatives, bash source/dot/comment rules); `doclinks_v1` grows to 24 end-to-end
+  cases with a `build_config_project` fixture (openapi.json → schemas/user.json impact closure,
+  importers for all four new arms, include/uses/comment/decoy negatives).
 
 - **Markdown format support: `tldr structure README.md`.** Markdown joins the supported formats as
   language 28 (`Language::Markdown` for `.md`/`.markdown`, signal=false like every other format — a
