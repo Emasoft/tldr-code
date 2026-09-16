@@ -103,8 +103,7 @@ fn p19_bug03_ocaml_no_same_name_same_line_duplicates() {
     assert_eq!(rc, 0);
     let v = parse_json(&out);
     // Collect (name, line) pairs and verify NO duplicate.
-    let mut seen: std::collections::HashSet<(String, u64)> =
-        std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<(String, u64)> = std::collections::HashSet::new();
     let mut dupes = 0usize;
     for f in v["functions"].as_array().cloned().unwrap_or_default() {
         let name = f["name"].as_str().unwrap_or("").to_string();
@@ -229,8 +228,7 @@ fn p19_bug07_complexity_and_context_agree_on_cyclomatic() {
         return;
     }
     let func = "XMLDocument::Parse";
-    let (rc1, complexity_out) =
-        run_tldr(&["complexity", cpp_file, func, "--format", "json"]);
+    let (rc1, complexity_out) = run_tldr(&["complexity", cpp_file, func, "--format", "json"]);
     assert_eq!(rc1, 0);
     let v1 = parse_json(&complexity_out);
     let cyc_complexity = v1["cyclomatic"].as_u64();
@@ -238,13 +236,11 @@ fn p19_bug07_complexity_and_context_agree_on_cyclomatic() {
     let (rc2, context_out) = run_tldr(&["context", func, cpp_repo, "--format", "json"]);
     assert_eq!(rc2, 0);
     let v2 = parse_json(&context_out);
-    let cyc_context = v2["functions"]
-        .as_array()
-        .and_then(|a| {
-            a.iter()
-                .find(|f| f["name"].as_str() == Some(func))
-                .and_then(|f| f["cyclomatic"].as_u64())
-        });
+    let cyc_context = v2["functions"].as_array().and_then(|a| {
+        a.iter()
+            .find(|f| f["name"].as_str() == Some(func))
+            .and_then(|f| f["cyclomatic"].as_u64())
+    });
 
     assert!(
         cyc_complexity.is_some() && cyc_context.is_some(),

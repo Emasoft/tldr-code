@@ -643,10 +643,7 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
                 *counts.entry(lang).or_insert(0) += 1;
             }
         }
-        counts
-            .into_iter()
-            .max_by_key(|(_, n)| *n)
-            .map(|(l, _)| l)
+        counts.into_iter().max_by_key(|(_, n)| *n).map(|(l, _)| l)
     });
 
     // Build walker with options

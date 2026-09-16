@@ -94,10 +94,7 @@ fn test_r5_interface_csharp_classes_populated() {
 
 #[test]
 fn test_r6_interface_kotlin_classes_populated() {
-    assert_interface_classes_at_least(
-        "/tmp/repos/kotlin-datetime/core/common/src/UtcOffset.kt",
-        1,
-    );
+    assert_interface_classes_at_least("/tmp/repos/kotlin-datetime/core/common/src/UtcOffset.kt", 1);
 }
 
 #[test]
@@ -173,7 +170,10 @@ fn assert_self_diff_identical(file: &str) {
         return;
     }
     let v = run_tldr_json_strict(&["diff", file, file]);
-    let identical = v.get("identical").and_then(|b| b.as_bool()).unwrap_or(false);
+    let identical = v
+        .get("identical")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
     let total = v
         .get("summary")
         .and_then(|s| s.get("total_changes"))
@@ -214,4 +214,3 @@ fn test_r8_self_diff_kotlin_identical() {
 fn test_r8_self_diff_elixir_identical() {
     assert_self_diff_identical("/tmp/repos/elixir-plug/test/plug_test.exs");
 }
-

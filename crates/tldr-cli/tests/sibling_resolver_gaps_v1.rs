@@ -214,14 +214,7 @@ fn agg14_5_luau_api_check_honours_lang_flag() {
     if skip_if_missing(repo) {
         return;
     }
-    let report = run_json(&[
-        "api-check",
-        "--lang",
-        "luau",
-        repo,
-        "--format",
-        "json",
-    ]);
+    let report = run_json(&["api-check", "--lang", "luau", repo, "--format", "json"]);
     let findings = report
         .get("findings")
         .and_then(|v| v.as_array())
@@ -231,9 +224,7 @@ fn agg14_5_luau_api_check_honours_lang_flag() {
     let bad_ext_count = findings
         .iter()
         .filter_map(|f| f.get("file").and_then(|v| v.as_str()))
-        .filter(|p| {
-            !(p.ends_with(".lua") || p.ends_with(".luau"))
-        })
+        .filter(|p| !(p.ends_with(".lua") || p.ends_with(".luau")))
         .count();
     assert_eq!(
         bad_ext_count, 0,
@@ -309,8 +300,7 @@ fn agg14_6_definition_lua_col1_skips_function_keyword() {
     if skip_if_missing(path) {
         return;
     }
-    let (code, stdout, stderr) =
-        run_status(&["definition", path, "44", "1", "--format", "json"]);
+    let (code, stdout, stderr) = run_status(&["definition", path, "44", "1", "--format", "json"]);
     assert_eq!(
         code, 0,
         "lua col=1 keyword skip should succeed, got code {code}\nstdout: {stdout}\nstderr: {stderr}"
@@ -338,8 +328,7 @@ fn agg14_6_definition_go_col1_skips_func_keyword() {
     if skip_if_missing(path) {
         return;
     }
-    let (code, stdout, stderr) =
-        run_status(&["definition", path, "104", "1", "--format", "json"]);
+    let (code, stdout, stderr) = run_status(&["definition", path, "104", "1", "--format", "json"]);
     assert_eq!(
         code, 0,
         "go col=1 keyword skip should succeed, got code {code}\nstdout: {stdout}\nstderr: {stderr}"
@@ -362,8 +351,7 @@ fn agg14_6_definition_rust_col1_skips_fn_keyword() {
     if skip_if_missing(path) {
         return;
     }
-    let (code, stdout, stderr) =
-        run_status(&["definition", path, "43", "1", "--format", "json"]);
+    let (code, stdout, stderr) = run_status(&["definition", path, "43", "1", "--format", "json"]);
     assert_eq!(
         code, 0,
         "rust col=1 keyword skip should succeed, got code {code}\nstdout: {stdout}\nstderr: {stderr}"
@@ -387,8 +375,7 @@ fn agg14_6_definition_python_col1_skips_def_keyword() {
     if skip_if_missing(path) {
         return;
     }
-    let (code, stdout, stderr) =
-        run_status(&["definition", path, "73", "1", "--format", "json"]);
+    let (code, stdout, stderr) = run_status(&["definition", path, "73", "1", "--format", "json"]);
     assert_eq!(
         code, 0,
         "python col=1 keyword skip should succeed, got code {code}\nstdout: {stdout}\nstderr: {stderr}"
@@ -411,8 +398,7 @@ fn agg14_6_definition_ts_col1_skips_export_keyword() {
     if skip_if_missing(path) {
         return;
     }
-    let (code, stdout, stderr) =
-        run_status(&["definition", path, "137", "1", "--format", "json"]);
+    let (code, stdout, stderr) = run_status(&["definition", path, "137", "1", "--format", "json"]);
     assert_eq!(
         code, 0,
         "typescript col=1 keyword skip should succeed, got code {code}\nstdout: {stdout}\nstderr: {stderr}"
@@ -438,8 +424,7 @@ fn agg14_6_definition_col_not_1_still_works_lua() {
         return;
     }
     // Col 9 (1-indexed) sits on `m` in `function m.reset()`.
-    let (code, stdout, _stderr) =
-        run_status(&["definition", path, "44", "9", "--format", "json"]);
+    let (code, stdout, _stderr) = run_status(&["definition", path, "44", "9", "--format", "json"]);
     assert_eq!(code, 0, "col=9 should resolve cleanly");
     let report: Value = serde_json::from_str(&stdout).expect("valid JSON");
     assert!(
@@ -456,8 +441,7 @@ fn agg14_6_definition_col_not_1_still_works_python() {
     }
     // Col 5 (1-indexed) sits on the start of the function name in
     // `def _make_timedelta(...)` (after `def ` which is 4 chars).
-    let (code, _stdout, _stderr) =
-        run_status(&["definition", path, "73", "5", "--format", "json"]);
+    let (code, _stdout, _stderr) = run_status(&["definition", path, "73", "5", "--format", "json"]);
     assert_eq!(code, 0, "col=5 (on identifier) should resolve cleanly");
 }
 

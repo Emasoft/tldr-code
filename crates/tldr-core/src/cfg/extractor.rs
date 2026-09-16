@@ -598,7 +598,8 @@ impl<'a> CfgBuilder<'a> {
 
             // Connect to join (unless we returned)
             if !self.exit_blocks.contains(&self.current_block_id)
-                && !self.loop_exit_blocks.contains(&self.current_block_id) {
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
                 self.add_edge(
                     self.current_block_id,
                     join_block,
@@ -622,7 +623,8 @@ impl<'a> CfgBuilder<'a> {
             self.process_block(else_node, depth + 1)?;
 
             if !self.exit_blocks.contains(&self.current_block_id)
-                && !self.loop_exit_blocks.contains(&self.current_block_id) {
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
                 self.add_edge(
                     self.current_block_id,
                     join_block,
@@ -680,7 +682,8 @@ impl<'a> CfgBuilder<'a> {
 
             // Back edge to header
             if !self.exit_blocks.contains(&self.current_block_id)
-                && !self.loop_exit_blocks.contains(&self.current_block_id) {
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
                 self.add_edge(
                     self.current_block_id,
                     header_block,
@@ -742,7 +745,8 @@ impl<'a> CfgBuilder<'a> {
 
             // Back edge
             if !self.exit_blocks.contains(&self.current_block_id)
-                && !self.loop_exit_blocks.contains(&self.current_block_id) {
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
                 self.add_edge(
                     self.current_block_id,
                     header_block,
@@ -793,7 +797,8 @@ impl<'a> CfgBuilder<'a> {
 
             // Back edge to header
             if !self.exit_blocks.contains(&self.current_block_id)
-                && !self.loop_exit_blocks.contains(&self.current_block_id) {
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
                 self.add_edge(
                     self.current_block_id,
                     header_block,
@@ -913,7 +918,8 @@ impl<'a> CfgBuilder<'a> {
             self.current_block_id = try_block;
             self.process_statement(expr_body, depth + 1)?;
             if !self.exit_blocks.contains(&self.current_block_id)
-                && !self.loop_exit_blocks.contains(&self.current_block_id) {
+                && !self.loop_exit_blocks.contains(&self.current_block_id)
+            {
                 self.add_edge(
                     self.current_block_id,
                     exit_block,
@@ -944,7 +950,8 @@ impl<'a> CfgBuilder<'a> {
                         self.process_block(child, depth + 1)?;
 
                         if !self.exit_blocks.contains(&self.current_block_id)
-                && !self.loop_exit_blocks.contains(&self.current_block_id) {
+                            && !self.loop_exit_blocks.contains(&self.current_block_id)
+                        {
                             self.add_edge(
                                 self.current_block_id,
                                 exit_block,
@@ -970,7 +977,8 @@ impl<'a> CfgBuilder<'a> {
                             self.current_block_id = try_block;
                             self.process_block(child, depth + 1)?;
                             if !self.exit_blocks.contains(&self.current_block_id)
-                && !self.loop_exit_blocks.contains(&self.current_block_id) {
+                                && !self.loop_exit_blocks.contains(&self.current_block_id)
+                            {
                                 self.add_edge(
                                     self.current_block_id,
                                     exit_block,
@@ -997,7 +1005,8 @@ impl<'a> CfgBuilder<'a> {
                             self.process_block(child, depth + 1)?;
 
                             if !self.exit_blocks.contains(&self.current_block_id)
-                && !self.loop_exit_blocks.contains(&self.current_block_id) {
+                                && !self.loop_exit_blocks.contains(&self.current_block_id)
+                            {
                                 self.add_edge(
                                     self.current_block_id,
                                     exit_block,
@@ -1022,7 +1031,8 @@ impl<'a> CfgBuilder<'a> {
                             let new_exit =
                                 self.new_block(BlockType::Body, finally_end, finally_end);
                             if !self.exit_blocks.contains(&self.current_block_id)
-                && !self.loop_exit_blocks.contains(&self.current_block_id) {
+                                && !self.loop_exit_blocks.contains(&self.current_block_id)
+                            {
                                 self.add_edge(
                                     self.current_block_id,
                                     new_exit,
@@ -1103,7 +1113,8 @@ impl<'a> CfgBuilder<'a> {
                     self.process_block(child, depth + 1)?;
 
                     if !self.exit_blocks.contains(&self.current_block_id)
-                && !self.loop_exit_blocks.contains(&self.current_block_id) {
+                        && !self.loop_exit_blocks.contains(&self.current_block_id)
+                    {
                         self.add_edge(
                             self.current_block_id,
                             join_block,
@@ -1916,5 +1927,4 @@ fn walk(xs: &[i32]) -> i32 {
         let cfg = get_cfg_context(source, "walk", Language::Rust).unwrap();
         assert_continue_back_edges_to_loop_header(&cfg);
     }
-
 }

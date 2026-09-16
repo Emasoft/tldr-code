@@ -50,9 +50,8 @@ fn run_hubs_json(path: &std::path::Path) -> Value {
         String::from_utf8_lossy(&output.stderr),
     );
     let stdout = String::from_utf8(output.stdout).expect("non-utf8 stdout");
-    serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        panic!("invalid JSON from tldr hubs: {e}\n--- stdout ---\n{stdout}")
-    })
+    serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON from tldr hubs: {e}\n--- stdout ---\n{stdout}"))
 }
 
 /// Find the hub entry with the given `name` in the JSON report.
@@ -98,13 +97,17 @@ fn test_hubs_line_populated_python() {
     let json = run_hubs_json(temp.path());
 
     let hub = find_hub(&json, "helper").unwrap_or_else(|| {
-        panic!("`helper` not found in hubs report:\n{}", serde_json::to_string_pretty(&json).unwrap())
+        panic!(
+            "`helper` not found in hubs report:\n{}",
+            serde_json::to_string_pretty(&json).unwrap()
+        )
     });
     let line = hub["function_ref"]["line"]
         .as_u64()
         .expect("function_ref.line must be a number");
     assert_eq!(
-        line, 4,
+        line,
+        4,
         "expected `helper` at line 4, got line={line}, hub={}",
         serde_json::to_string_pretty(hub).unwrap()
     );
@@ -165,7 +168,10 @@ fn test_hubs_line_populated_rust() {
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
 
     let hub = find_hub(&json, "helper").unwrap_or_else(|| {
-        panic!("`helper` not found in hubs report:\n{}", serde_json::to_string_pretty(&json).unwrap())
+        panic!(
+            "`helper` not found in hubs report:\n{}",
+            serde_json::to_string_pretty(&json).unwrap()
+        )
     });
     let line = hub["function_ref"]["line"]
         .as_u64()
@@ -236,7 +242,10 @@ fn test_hubs_line_populated_javascript() {
     // population. Some node may match by qualified name vs bare; accept
     // either as long as the line is non-zero AND matches the source.
     let hub = find_hub(&json, "helper").unwrap_or_else(|| {
-        panic!("`helper` not found in hubs report:\n{}", serde_json::to_string_pretty(&json).unwrap())
+        panic!(
+            "`helper` not found in hubs report:\n{}",
+            serde_json::to_string_pretty(&json).unwrap()
+        )
     });
     let line = hub["function_ref"]["line"]
         .as_u64()
@@ -309,7 +318,8 @@ fn test_hubs_line_populated_python_class_method() {
         .as_u64()
         .expect("function_ref.line must be a number");
     assert_eq!(
-        line, 7,
+        line,
+        7,
         "expected `route` at line 7, got line={line}, hub={}",
         serde_json::to_string_pretty(route_hub).unwrap()
     );

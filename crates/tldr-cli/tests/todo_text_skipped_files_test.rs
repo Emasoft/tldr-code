@@ -48,7 +48,9 @@ fn todo_text_mode_names_every_skipped_file_in_stdout_report() {
 
     for name in UNREADABLE {
         assert!(
-            stdout.lines().any(|l| l.trim_start().starts_with("Skipped") && l.contains(name)),
+            stdout
+                .lines()
+                .any(|l| l.trim_start().starts_with("Skipped") && l.contains(name)),
             "expected stdout report to name skipped file {name}, stdout: {stdout}"
         );
     }
@@ -77,7 +79,14 @@ fn todo_text_mode_omits_skipped_line_when_nothing_was_skipped() {
         .expect("write clean fixture");
 
     let output = tldr_bin()
-        .args(["todo", dir.path().to_str().unwrap(), "-l", "python", "-f", "text"])
+        .args([
+            "todo",
+            dir.path().to_str().unwrap(),
+            "-l",
+            "python",
+            "-f",
+            "text",
+        ])
         .output()
         .expect("tldr todo failed to run");
 

@@ -1004,7 +1004,10 @@ pub fn format_cohesion_text(report: &CohesionReport) -> String {
         // multi-byte UTF-8 char (Python identifiers may be non-ASCII);
         // truncate by char count instead so this can never panic.
         let name = if class.class_name.chars().count() > 28 {
-            format!("{}...", class.class_name.chars().take(25).collect::<String>())
+            format!(
+                "{}...",
+                class.class_name.chars().take(25).collect::<String>()
+            )
         } else {
             class.class_name.clone()
         };

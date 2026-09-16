@@ -2499,8 +2499,7 @@ def safe_file_handling():
 
         assert!(output.status.success(), "Command should succeed");
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let value: serde_json::Value =
-            serde_json::from_str(&stdout).expect("Should be valid JSON");
+        let value: serde_json::Value = serde_json::from_str(&stdout).expect("Should be valid JSON");
 
         // Collect detail-side category strings (one per finding).
         let findings = value
@@ -2512,8 +2511,7 @@ def safe_file_handling():
             "fixture is expected to produce findings"
         );
 
-        let mut detail_cats: std::collections::BTreeSet<String> =
-            std::collections::BTreeSet::new();
+        let mut detail_cats: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for f in findings {
             let cat = f
                 .get("rule")
@@ -2615,8 +2613,8 @@ def _lazy_sha1(string: bytes = b\"\") -> object:
             .unwrap();
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let report: APICheckReport = serde_json::from_str(&stdout)
-            .expect("Should return valid JSON APICheckReport");
+        let report: APICheckReport =
+            serde_json::from_str(&stdout).expect("Should return valid JSON APICheckReport");
 
         let py004_lines: Vec<u32> = report
             .findings
@@ -3153,8 +3151,7 @@ def g(ctx):
 
         // vuln returns exit 2 (findings detected) - that's fine, parse stdout.
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let report: VulnReport =
-            serde_json::from_str(&stdout).expect("vuln must emit valid JSON");
+        let report: VulnReport = serde_json::from_str(&stdout).expect("vuln must emit valid JSON");
 
         // Fixture is calibrated to the canonical Python taint engine's
         // exec/eval sinks. We require >= 2 findings (one per file) so the
@@ -3453,7 +3450,8 @@ def taint_flow():
             .sum();
 
         assert_eq!(
-            summed, findings_len,
+            summed,
+            findings_len,
             "BUG-15: sum(secure.summary.*_count) ({}) must equal \
              findings.length ({}). Per-category breakdown: {:?}. \
              Findings categories: {:?}",

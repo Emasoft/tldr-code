@@ -412,16 +412,12 @@ mod tests {
 
         // Build for Python.
         let _py = state
-            .get_or_build_call_graph(Language::Python, || async {
-                ProjectCallGraph::new()
-            })
+            .get_or_build_call_graph(Language::Python, || async { ProjectCallGraph::new() })
             .await;
 
         // Build for TypeScript — must take a fresh slot in the cache map.
         let _ts = state
-            .get_or_build_call_graph(Language::TypeScript, || async {
-                ProjectCallGraph::new()
-            })
+            .get_or_build_call_graph(Language::TypeScript, || async { ProjectCallGraph::new() })
             .await;
 
         let cache = state.call_graph_cache.read().await;

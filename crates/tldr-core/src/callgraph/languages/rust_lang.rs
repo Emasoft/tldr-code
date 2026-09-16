@@ -308,9 +308,8 @@ impl RustLangHandler {
                     // For `impl Trait for Type { .. }` that first child is the
                     // TRAIT name, so methods were mis-qualified as "Trait::method"
                     // instead of "Type::method".
-                    let type_name: Option<String> = node
-                        .child_by_field_name("type")
-                        .and_then(|type_node| {
+                    let type_name: Option<String> =
+                        node.child_by_field_name("type").and_then(|type_node| {
                             self.extract_type_identifier_name(&type_node, source)
                         });
 
@@ -325,16 +324,13 @@ impl RustLangHandler {
                                                 item.child_by_field_name("name")
                                             {
                                                 let method_name =
-                                                    get_node_text(&name_node, source)
-                                                        .to_string();
+                                                    get_node_text(&name_node, source).to_string();
                                                 functions.insert(method_name.clone());
 
                                                 // Also add as Type::method
                                                 if let Some(ref tn) = type_name {
-                                                    functions.insert(format!(
-                                                        "{}::{}",
-                                                        tn, method_name
-                                                    ));
+                                                    functions
+                                                        .insert(format!("{}::{}", tn, method_name));
                                                 }
                                             }
                                         }
@@ -711,8 +707,7 @@ impl RustLangHandler {
                 let Some(body) = item.child_by_field_name("body") else {
                     continue;
                 };
-                let calls =
-                    self.extract_calls_from_node(&body, source, defined_funcs, &full_name);
+                let calls = self.extract_calls_from_node(&body, source, defined_funcs, &full_name);
                 insert_calls_if_any(calls_by_func, full_name, calls);
             }
         }
@@ -964,14 +959,14 @@ impl CallGraphLanguageSupport for RustLangHandler {
                                             // for `impl Trait for Type` that child is
                                             // the TRAIT name (see
                                             // extract_type_identifier_name doc comment).
-                                            method_owner = gp
-                                                .child_by_field_name("type")
-                                                .and_then(|type_node| {
+                                            method_owner = gp.child_by_field_name("type").and_then(
+                                                |type_node| {
                                                     self.extract_type_identifier_name(
                                                         &type_node,
                                                         source_bytes,
                                                     )
-                                                });
+                                                },
+                                            );
                                         }
                                         "trait_item" => {
                                             // Find the trait name. trait_item carries
@@ -1938,8 +1933,7 @@ trait Greeter {
             // trait method MUST be emitted as FuncDef::method so the qualified
             // key is generated; otherwise (FuncDef::function) the qualified key
             // never exists and the collision is irrecoverable.
-            let greet_entries: Vec<&FuncDef> =
-                funcs.iter().filter(|f| f.name == "greet").collect();
+            let greet_entries: Vec<&FuncDef> = funcs.iter().filter(|f| f.name == "greet").collect();
             assert_eq!(
                 greet_entries.len(),
                 2,

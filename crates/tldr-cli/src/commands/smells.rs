@@ -190,12 +190,11 @@ impl SmellsArgs {
         };
         let mut validated_files: Vec<PathBuf> = Vec::with_capacity(self.files.len());
         for f in &self.files {
-            let f_str = f.to_str().ok_or_else(|| {
-                anyhow::anyhow!("--files entry contains non-UTF8 bytes: {:?}", f)
-            })?;
-            let canonical =
-                tldr_core::validation::validate_file_path(f_str, Some(&project_root))
-                    .map_err(|e| anyhow::anyhow!("--files {}: {}", f.display(), e))?;
+            let f_str = f
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("--files entry contains non-UTF8 bytes: {:?}", f))?;
+            let canonical = tldr_core::validation::validate_file_path(f_str, Some(&project_root))
+                .map_err(|e| anyhow::anyhow!("--files {}: {}", f.display(), e))?;
             validated_files.push(canonical);
         }
 

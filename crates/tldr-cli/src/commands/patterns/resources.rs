@@ -3508,10 +3508,7 @@ fn find_function_recursive<'a>(
             if key_name == function_name
                 && matches!(
                     value.kind(),
-                    "arrow_function"
-                        | "function"
-                        | "function_expression"
-                        | "generator_function"
+                    "arrow_function" | "function" | "function_expression" | "generator_function"
                 )
             {
                 return Some(value);

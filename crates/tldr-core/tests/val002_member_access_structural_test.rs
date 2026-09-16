@@ -114,7 +114,12 @@ function handler(req, res) {
     eval(x);
 }
 ";
-    let result = analyze_with_ssa(src, Language::TypeScript, "handler", /* use_ssa */ false);
+    let result = analyze_with_ssa(
+        src,
+        Language::TypeScript,
+        "handler",
+        /* use_ssa */ false,
+    );
     assert!(
         !result.sources.is_empty(),
         "regression: real req.body member-access not detected post-M2; sources={:?}",

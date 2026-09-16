@@ -94,9 +94,7 @@ fn visit_node_with_lang(
         // to the macro name and inheritance edges vanish entirely.
         // real-repo-fixes-v1 (P9.BUG-R4).
         "function_definition" | "declaration" => {
-            if let Some(class) =
-                extract_macro_prefixed_class(node, source, file_path, lang)
-            {
+            if let Some(class) = extract_macro_prefixed_class(node, source, file_path, lang) {
                 classes.push(class);
                 // review-followup-v1 (Concern 2): when the misparse path
                 // recovered the real class, do NOT recurse into the
@@ -156,8 +154,7 @@ fn extract_macro_prefixed_class(
     }
 
     let line = node.start_position().row as u32 + 1;
-    let mut class_node =
-        InheritanceNode::new(class_name, file_path.to_path_buf(), line, lang);
+    let mut class_node = InheritanceNode::new(class_name, file_path.to_path_buf(), line, lang);
 
     // Look for a sibling ERROR node that holds the base clause `: public Foo`.
     // The ERROR node lives as a direct child of the misparsed
@@ -190,10 +187,7 @@ fn extract_macro_error_base_clause(node: &Node, source: &str) -> Vec<String> {
                 if let Ok(text) = sub.utf8_text(source.as_bytes()) {
                     let text = text.trim();
                     if !text.is_empty()
-                        && !matches!(
-                            text,
-                            "public" | "protected" | "private" | "virtual"
-                        )
+                        && !matches!(text, "public" | "protected" | "private" | "virtual")
                     {
                         bases.push(text.to_string());
                     }
@@ -294,8 +288,7 @@ fn extract_base_name(node: &Node, source: &str) -> Option<String> {
                     if let Ok(text) = child.utf8_text(source.as_bytes()) {
                         last_simple = Some(text.trim().to_string());
                     }
-                } else if child.kind() == "qualified_identifier"
-                    || child.kind() == "template_type"
+                } else if child.kind() == "qualified_identifier" || child.kind() == "template_type"
                 {
                     if let Some(nested) = extract_base_name(&child, source) {
                         last_simple = Some(nested);
@@ -356,8 +349,7 @@ mod tests {
 
     #[test]
     fn test_multiple_inheritance() {
-        let source =
-            "class A {}; class B {}; class C : public A, public B {};";
+        let source = "class A {}; class B {}; class C : public A, public B {};";
         let nodes = parse_and_extract(source);
         let c = nodes.iter().find(|n| n.name == "C").unwrap();
         assert_eq!(c.bases, vec!["A", "B"]);
@@ -387,14 +379,12 @@ mod tests {
         assert_eq!(iv.bases, vec!["Vec"]);
     }
 
-
     #[test]
     fn test_macro_prefixed_class_inheritance() {
         // Real-world cpp headers use `class TINYXML2_LIB Name : public Base`
         // where the macro confuses tree-sitter into a function_definition
         // wrapper. Verify our walker recovers the inheritance edge.
-        let source =
-            "class MACRO XMLText : public XMLNode {\npublic:\n    int x;\n};";
+        let source = "class MACRO XMLText : public XMLNode {\npublic:\n    int x;\n};";
         let nodes = parse_and_extract(source);
         let xt = nodes.iter().find(|n| n.name == "XMLText");
         assert!(

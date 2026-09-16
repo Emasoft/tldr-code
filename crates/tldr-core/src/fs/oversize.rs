@@ -284,10 +284,7 @@ mod tests {
             max_size_for(&PathBuf::from("dom.d.ts")),
             MAX_AUTOGEN_FILE_SIZE_BYTES
         );
-        assert_eq!(
-            max_size_for(&PathBuf::from("dom.ts")),
-            MAX_FILE_SIZE_BYTES
-        );
+        assert_eq!(max_size_for(&PathBuf::from("dom.ts")), MAX_FILE_SIZE_BYTES);
     }
 
     #[test]

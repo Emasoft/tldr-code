@@ -73,12 +73,8 @@ fn test_api_check_skips_js_rules_on_cpp_files() {
         "const data = JSON.parse(input);\nconst n = parseInt(s);\n",
     );
 
-    let (stdout, _stderr, ok) = run_tldr(&[
-        "api-check",
-        root.to_str().unwrap(),
-        "--format",
-        "json",
-    ]);
+    let (stdout, _stderr, ok) =
+        run_tldr(&["api-check", root.to_str().unwrap(), "--format", "json"]);
     assert!(ok, "tldr api-check should exit 0, stdout={stdout}");
 
     let report: Value = serde_json::from_str(&stdout).expect("valid JSON");
@@ -143,12 +139,8 @@ int safe_format(char *buf, int n) {
 ";
     write(&root.join("src/sds.c"), src);
 
-    let (stdout, _stderr, ok) = run_tldr(&[
-        "api-check",
-        root.to_str().unwrap(),
-        "--format",
-        "json",
-    ]);
+    let (stdout, _stderr, ok) =
+        run_tldr(&["api-check", root.to_str().unwrap(), "--format", "json"]);
     assert!(ok, "tldr api-check should exit 0, stdout={stdout}");
 
     let report: Value = serde_json::from_str(&stdout).expect("valid JSON");
@@ -190,12 +182,8 @@ int format_num(char *buf, int n) {
 ";
     write(&root.join("src/format.c"), src);
 
-    let (stdout, _stderr, ok) = run_tldr(&[
-        "api-check",
-        root.to_str().unwrap(),
-        "--format",
-        "json",
-    ]);
+    let (stdout, _stderr, ok) =
+        run_tldr(&["api-check", root.to_str().unwrap(), "--format", "json"]);
     assert!(ok, "tldr api-check should exit 0, stdout={stdout}");
 
     let report: Value = serde_json::from_str(&stdout).expect("valid JSON");
@@ -237,18 +225,16 @@ fn test_patterns_skips_default_ignore_dirs() {
     write(&root.join("dox/foo.js"), "const x = 1;\n");
     write(&root.join("dox/bar.js"), "const y = 2;\n");
     // - node_modules/ with JS files
-    write(&root.join("node_modules/lib/baz.js"), "module.exports = {};\n");
+    write(
+        &root.join("node_modules/lib/baz.js"),
+        "module.exports = {};\n",
+    );
     // - docs/ with doxygen sentinel + JS files (sentinel-detection path)
     write(&root.join("docs/doxygen.css"), "/* doxygen */\n");
     write(&root.join("docs/menu.js"), "var menu = [];\n");
     write(&root.join("docs/search/search.js"), "var idx = [];\n");
 
-    let (stdout, _stderr, ok) = run_tldr(&[
-        "patterns",
-        root.to_str().unwrap(),
-        "--format",
-        "json",
-    ]);
+    let (stdout, _stderr, ok) = run_tldr(&["patterns", root.to_str().unwrap(), "--format", "json"]);
     assert!(ok, "tldr patterns should exit 0, stdout={stdout}");
 
     let report: Value = serde_json::from_str(&stdout).expect("valid JSON");
@@ -291,12 +277,8 @@ fn test_patterns_real_repo_cpp_tinyxml2() {
         return;
     }
 
-    let (stdout, _stderr, ok) = run_tldr(&[
-        "patterns",
-        real_repo.to_str().unwrap(),
-        "--format",
-        "json",
-    ]);
+    let (stdout, _stderr, ok) =
+        run_tldr(&["patterns", real_repo.to_str().unwrap(), "--format", "json"]);
     assert!(ok, "tldr patterns should exit 0, stdout={stdout}");
 
     let report: Value = serde_json::from_str(&stdout).expect("valid JSON");

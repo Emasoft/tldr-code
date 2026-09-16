@@ -358,15 +358,18 @@ fn check_imports(lang: &str) {
             &stderr,
         );
     }
-    let arr = obj.get("imports").and_then(Value::as_array).unwrap_or_else(|| {
-        fail_cell(
-            "imports",
-            lang,
-            "envelope `imports` is not an array",
-            &stdout,
-            &stderr,
-        )
-    });
+    let arr = obj
+        .get("imports")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| {
+            fail_cell(
+                "imports",
+                lang,
+                "envelope `imports` is not an array",
+                &stdout,
+                &stderr,
+            )
+        });
     if arr.len() != expected {
         fail_cell(
             "imports",
@@ -1840,7 +1843,13 @@ fn check_importers(lang: &str) {
         fail_cell("importers", lang, "non-zero exit", &stdout, &stderr);
     }
     if !json.is_object() {
-        fail_cell("importers", lang, "output is not a JSON object", &stdout, &stderr);
+        fail_cell(
+            "importers",
+            lang,
+            "output is not a JSON object",
+            &stdout,
+            &stderr,
+        );
     }
     if json.get("importers").and_then(Value::as_array).is_none() {
         fail_cell(
@@ -1853,7 +1862,13 @@ fn check_importers(lang: &str) {
     }
     // Total field must be present.
     if json.get("total").and_then(Value::as_u64).is_none() {
-        fail_cell("importers", lang, ".total missing or not a number", &stdout, &stderr);
+        fail_cell(
+            "importers",
+            lang,
+            ".total missing or not a number",
+            &stdout,
+            &stderr,
+        );
     }
 }
 
@@ -1918,7 +1933,11 @@ fn check_change_impact(lang: &str) {
     if !status.success() {
         fail_cell("change-impact", lang, "non-zero exit", &stdout, &stderr);
     }
-    if json.get("changed_files").and_then(Value::as_array).is_none() {
+    if json
+        .get("changed_files")
+        .and_then(Value::as_array)
+        .is_none()
+    {
         fail_cell(
             "change-impact",
             lang,
@@ -1927,7 +1946,11 @@ fn check_change_impact(lang: &str) {
             &stderr,
         );
     }
-    if json.get("affected_functions").and_then(Value::as_array).is_none() {
+    if json
+        .get("affected_functions")
+        .and_then(Value::as_array)
+        .is_none()
+    {
         fail_cell(
             "change-impact",
             lang,
@@ -1949,13 +1972,7 @@ fn check_reaching_defs(lang: &str) {
     }
     if json.get("function").and_then(Value::as_str) != Some("helper") {
         let s = serde_json::to_string(&json).unwrap_or_default();
-        fail_cell(
-            "reaching-defs",
-            lang,
-            ".function != \"helper\"",
-            &s,
-            "",
-        );
+        fail_cell("reaching-defs", lang, ".function != \"helper\"", &s, "");
     }
 }
 
@@ -1969,13 +1986,7 @@ fn check_available(lang: &str) {
     for key in ["avail_in", "avail_out", "all_exprs"] {
         if json.get(key).is_none() {
             let s = serde_json::to_string(&json).unwrap_or_default();
-            fail_cell(
-                "available",
-                lang,
-                &format!(".{key} missing"),
-                &s,
-                "",
-            );
+            fail_cell("available", lang, &format!(".{key} missing"), &s, "");
         }
     }
 }
@@ -1991,7 +2002,13 @@ fn check_dead_stores(lang: &str) {
     }
     if json.get("count").and_then(Value::as_u64).is_none() {
         let s = serde_json::to_string(&json).unwrap_or_default();
-        fail_cell("dead-stores", lang, ".count missing or not a number", &s, "");
+        fail_cell(
+            "dead-stores",
+            lang,
+            ".count missing or not a number",
+            &s,
+            "",
+        );
     }
 }
 
@@ -2140,13 +2157,7 @@ fn check_taint(lang: &str) {
     for key in ["sources", "sinks", "flows"] {
         if json.get(key).and_then(Value::as_array).is_none() {
             let s = serde_json::to_string(&json).unwrap_or_default();
-            fail_cell(
-                "taint",
-                lang,
-                &format!(".{key} is not an array"),
-                &s,
-                "",
-            );
+            fail_cell("taint", lang, &format!(".{key} is not an array"), &s, "");
         }
     }
 }
@@ -2270,13 +2281,7 @@ fn check_health(lang: &str) {
         .unwrap_or(0);
     if files == 0 {
         let s = serde_json::to_string(&json).unwrap_or_default();
-        fail_cell(
-            "health",
-            lang,
-            ".summary.files_analyzed = 0",
-            &s,
-            "",
-        );
+        fail_cell("health", lang, ".summary.files_analyzed = 0", &s, "");
     }
 }
 
@@ -2297,7 +2302,13 @@ fn check_hotspots(lang: &str) {
         fail_cell("hotspots", lang, "non-zero exit", &stdout, &stderr);
     }
     if json.get("hotspots").and_then(Value::as_array).is_none() {
-        fail_cell("hotspots", lang, ".hotspots is not an array", &stdout, &stderr);
+        fail_cell(
+            "hotspots",
+            lang,
+            ".hotspots is not an array",
+            &stdout,
+            &stderr,
+        );
     }
     if json.get("summary").is_none() {
         fail_cell("hotspots", lang, ".summary missing", &stdout, &stderr);
@@ -2335,7 +2346,13 @@ fn check_clones(lang: &str) {
     }
     let pairs = json.get("clone_pairs").and_then(Value::as_array);
     if pairs.is_none() {
-        fail_cell("clones", lang, ".clone_pairs is not an array", &stdout, &stderr);
+        fail_cell(
+            "clones",
+            lang,
+            ".clone_pairs is not an array",
+            &stdout,
+            &stderr,
+        );
     }
     if json.get("stats").is_none() {
         fail_cell("clones", lang, ".stats missing", &stdout, &stderr);
@@ -2587,26 +2604,14 @@ fn write_minimal_test_dir(lang: &str, root: &std::path::Path) -> std::path::Path
             "audit_test.rb",
             "def test_audit; raise unless 1 + 1 == 2; end\n",
         ),
-        "kotlin" => (
-            "AuditTest.kt",
-            "fun testAudit() {}\n",
-        ),
-        "swift" => (
-            "AuditTests.swift",
-            "func testAudit() {}\n",
-        ),
-        "csharp" => (
-            "AuditTest.cs",
-            "class AuditTest { void TestAudit() {} }\n",
-        ),
+        "kotlin" => ("AuditTest.kt", "fun testAudit() {}\n"),
+        "swift" => ("AuditTests.swift", "func testAudit() {}\n"),
+        "csharp" => ("AuditTest.cs", "class AuditTest { void TestAudit() {} }\n"),
         "scala" => (
             "AuditTest.scala",
             "object AuditTest { def testAudit(): Unit = () }\n",
         ),
-        "php" => (
-            "AuditTest.php",
-            "<?php\nfunction test_audit() {}\n",
-        ),
+        "php" => ("AuditTest.php", "<?php\nfunction test_audit() {}\n"),
         "lua" => (
             "audit_test.lua",
             "local function test_audit() end\nreturn { test_audit = test_audit }\n",
@@ -2619,10 +2624,7 @@ fn write_minimal_test_dir(lang: &str, root: &std::path::Path) -> std::path::Path
             "audit_test.exs",
             "defmodule AuditTest do\n  def test_audit, do: :ok\nend\n",
         ),
-        "ocaml" => (
-            "audit_test.ml",
-            "let test_audit () = ()\n",
-        ),
+        "ocaml" => ("audit_test.ml", "let test_audit () = ()\n"),
         _ => panic!("unknown"),
     };
     fixtures::write_file(&tdir.join(rel), body);
@@ -2645,7 +2647,13 @@ fn check_specs(lang: &str) {
         fail_cell("specs", lang, "non-zero exit", &stdout, &stderr);
     }
     if json.get("functions").and_then(Value::as_array).is_none() {
-        fail_cell("specs", lang, ".functions is not an array", &stdout, &stderr);
+        fail_cell(
+            "specs",
+            lang,
+            ".functions is not an array",
+            &stdout,
+            &stderr,
+        );
     }
     if json.get("summary").is_none() {
         fail_cell("specs", lang, ".summary missing", &stdout, &stderr);
@@ -2679,7 +2687,13 @@ fn check_invariants(lang: &str) {
         fail_cell("invariants", lang, "non-zero exit", &stdout, &stderr);
     }
     if json.get("functions").and_then(Value::as_array).is_none() {
-        fail_cell("invariants", lang, ".functions is not an array", &stdout, &stderr);
+        fail_cell(
+            "invariants",
+            lang,
+            ".functions is not an array",
+            &stdout,
+            &stderr,
+        );
     }
     if json.get("summary").is_none() {
         fail_cell("invariants", lang, ".summary missing", &stdout, &stderr);
@@ -2806,7 +2820,13 @@ fn check_semantic(lang: &str) {
     }
     let results = json.get("results").and_then(Value::as_array);
     if results.is_none() {
-        fail_cell("semantic", lang, ".results is not an array", &stdout, &stderr);
+        fail_cell(
+            "semantic",
+            lang,
+            ".results is not an array",
+            &stdout,
+            &stderr,
+        );
     }
     // Strengthened invariant (language-command-matrix-strengthen-v1): the
     // canonical fixture defines `helper` (returns constant 1) and
@@ -2889,13 +2909,7 @@ fn check_embed(lang: &str) {
             .unwrap_or(0);
     if total == 0 {
         let s = serde_json::to_string(&json).unwrap_or_default();
-        fail_cell(
-            "embed",
-            lang,
-            "chunks_embedded + chunks_cached = 0",
-            &s,
-            "",
-        );
+        fail_cell("embed", lang, "chunks_embedded + chunks_cached = 0", &s, "");
     }
 }
 
@@ -2927,7 +2941,13 @@ fn check_context(lang: &str) {
         );
     }
     if json.get("functions").and_then(Value::as_array).is_none() {
-        fail_cell("context", lang, ".functions is not an array", &stdout, &stderr);
+        fail_cell(
+            "context",
+            lang,
+            ".functions is not an array",
+            &stdout,
+            &stderr,
+        );
     }
 }
 
@@ -2977,7 +2997,13 @@ fn check_definition(lang: &str) {
         }
     }
     if !last_status.map(|s| s.success()).unwrap_or(false) {
-        fail_cell("definition", lang, "non-zero exit on all probed columns", &last_stdout, &last_stderr);
+        fail_cell(
+            "definition",
+            lang,
+            "non-zero exit on all probed columns",
+            &last_stdout,
+            &last_stderr,
+        );
     }
     if last_json.get("symbol").is_none() && last_json.get("error").is_none() {
         fail_cell(

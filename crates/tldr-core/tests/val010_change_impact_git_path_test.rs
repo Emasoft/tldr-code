@@ -21,9 +21,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use tldr_core::analysis::{
-    change_impact_extended, ChangeImpactStatus, DetectionMethod,
-};
+use tldr_core::analysis::{change_impact_extended, ChangeImpactStatus, DetectionMethod};
 use tldr_core::types::Language;
 
 /// Serialize tests that mutate process-global PATH so they don't trample

@@ -45,12 +45,7 @@ fn smells_default_excludes_test_files() {
     write(&dir, "tests/test_thing.py", &god_class_py("TestThing"));
 
     let out = Command::new(tldr_bin())
-        .args([
-            "smells",
-            dir.path().to_str().unwrap(),
-            "--format",
-            "json",
-        ])
+        .args(["smells", dir.path().to_str().unwrap(), "--format", "json"])
         .output()
         .expect("tldr smells");
     assert!(
@@ -167,7 +162,8 @@ fn smells_files_filter_includes_tests_by_default() {
     );
     // No test exclusion when --files is set.
     assert!(
-        stdout.contains("\"excluded_test_smells\":0") || stdout.contains("\"excluded_test_smells\": 0"),
+        stdout.contains("\"excluded_test_smells\":0")
+            || stdout.contains("\"excluded_test_smells\": 0"),
         "expected excluded_test_smells == 0 (--files implies --include-tests); stdout={}",
         stdout
     );

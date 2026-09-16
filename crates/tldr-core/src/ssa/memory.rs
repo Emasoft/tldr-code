@@ -504,7 +504,11 @@ fn is_allocation(source: &str) -> bool {
         .unwrap_or(before_paren);
     !callee.starts_with("def ")
         && !callee.starts_with("fn ")
-        && callee.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+        && callee
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false)
 }
 
 /// Parse attribute assignment to determine access and direction

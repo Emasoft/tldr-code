@@ -21,7 +21,6 @@ fn tldr_cmd() -> Command {
 // Help and Version Tests
 // =============================================================================
 
-
 #[test]
 fn test_version() {
     let mut cmd = tldr_cmd();
@@ -256,8 +255,6 @@ fn test_calls_alias() {
 // CFG/DFG/Slice Tests (require actual Python files with functions)
 // =============================================================================
 
-
-
 #[test]
 fn test_slice_command_help() {
     let mut cmd = tldr_cmd();
@@ -282,7 +279,6 @@ fn test_smells_command() {
         .success()
         .stdout(predicate::str::contains("smells"));
 }
-
 
 // =============================================================================
 // Cold Start Performance Test (M15 Mitigation)

@@ -97,11 +97,7 @@ fn test_n1_extract_cpp_h_uses_cpp_parser() {
     let cpp_path = tmp.path().join("foo.cpp");
     let h_path = tmp.path().join("foo.h");
     std::fs::write(&cpp_path, "class Foo {};\n").expect("write foo.cpp");
-    std::fs::write(
-        &h_path,
-        "class Bar {\npublic:\n    void method();\n};\n",
-    )
-    .expect("write foo.h");
+    std::fs::write(&h_path, "class Bar {\npublic:\n    void method();\n};\n").expect("write foo.h");
 
     let v = run_json(&["extract", h_path.to_str().unwrap()]);
     let lang = v
@@ -192,11 +188,7 @@ fn test_n1_extract_lang_flag_honored() {
     // Synthetic path — always runs.
     let tmp = TempDir::new().expect("tempdir");
     let h_path = tmp.path().join("bar.h");
-    std::fs::write(
-        &h_path,
-        "class Bar {\npublic:\n    void method();\n};\n",
-    )
-    .expect("write bar.h");
+    std::fs::write(&h_path, "class Bar {\npublic:\n    void method();\n};\n").expect("write bar.h");
     let v = run_json(&["extract", "--lang", "cpp", h_path.to_str().unwrap()]);
     let lang = v
         .get("language")
@@ -212,7 +204,12 @@ fn test_n1_extract_lang_flag_honored() {
     if !Path::new("/tmp/repos/cpp-tinyxml2/tinyxml2.h").exists() {
         return;
     }
-    let v = run_json(&["extract", "--lang", "cpp", "/tmp/repos/cpp-tinyxml2/tinyxml2.h"]);
+    let v = run_json(&[
+        "extract",
+        "--lang",
+        "cpp",
+        "/tmp/repos/cpp-tinyxml2/tinyxml2.h",
+    ]);
     let lang = v
         .get("language")
         .and_then(|l| l.as_str())
@@ -347,10 +344,7 @@ fn test_n3_impact_accepts_qualified_names() {
 
     let any_run = targets.iter().any(|(key, val)| {
         let key_has_run = key.contains("run");
-        let func_field = val
-            .get("function")
-            .and_then(|f| f.as_str())
-            .unwrap_or("");
+        let func_field = val.get("function").and_then(|f| f.as_str()).unwrap_or("");
         key_has_run
             && (func_field == "run" || func_field == "Flask.run" || func_field.ends_with(".run"))
     });

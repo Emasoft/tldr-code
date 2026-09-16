@@ -90,8 +90,7 @@ impl CognitiveArgs {
             // caller typed (no `/private/tmp/...` rewrite on macOS).
             // `validate_file_path` is still called for existence / traversal
             // checks, but its canonicalised return value is discarded.
-            let _validated_path =
-                validate_file_path(self.path.to_str().unwrap_or_default(), None)?;
+            let _validated_path = validate_file_path(self.path.to_str().unwrap_or_default(), None)?;
 
             writer.progress(&format!(
                 "Calculating cognitive complexity for {}...",

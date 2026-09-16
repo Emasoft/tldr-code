@@ -128,11 +128,7 @@ fn test_subcommands_exit_nonzero_on_missing_path() {
 fn test_complexity_exit_nonzero_on_missing_function() {
     let temp = TempDir::new().unwrap();
     let test_file = temp.path().join("only_one.py");
-    fs::write(
-        &test_file,
-        "def the_only_function(x):\n    return x + 1\n",
-    )
-    .unwrap();
+    fs::write(&test_file, "def the_only_function(x):\n    return x + 1\n").unwrap();
 
     let mut cmd = tldr_cmd();
     cmd.args([
@@ -150,8 +146,7 @@ fn test_complexity_exit_nonzero_on_missing_function() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.to_lowercase().contains("not found")
-            || stderr.to_lowercase().contains("function"),
+        stderr.to_lowercase().contains("not found") || stderr.to_lowercase().contains("function"),
         "expected 'not found' or 'function' in stderr; got: {stderr}"
     );
 }

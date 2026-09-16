@@ -431,10 +431,7 @@ fn extract_classes(root: tree_sitter::Node, source: &str, language: Language) ->
 /// Mirrors the (class_specifier | struct_specifier) handling in
 /// `ast::extractor::extract_cpp_classes` including the macro-prefixed
 /// misparse recovery (e.g. `class TINYXML2_LIB XMLDocument`).
-fn extract_cpp_classes_cohesion(
-    root: tree_sitter::Node,
-    source: &str,
-) -> Vec<ClassInfo> {
+fn extract_cpp_classes_cohesion(root: tree_sitter::Node, source: &str) -> Vec<ClassInfo> {
     let mut classes = Vec::new();
     extract_cpp_classes_cohesion_recursive(root, source, &mut classes);
     classes
@@ -469,10 +466,7 @@ fn extract_cpp_classes_cohesion_recursive(
     }
 }
 
-fn extract_cpp_class_info(
-    node: &tree_sitter::Node,
-    source: &str,
-) -> Option<ClassInfo> {
+fn extract_cpp_class_info(node: &tree_sitter::Node, source: &str) -> Option<ClassInfo> {
     let mut name: Option<String> = None;
     if let Some(name_node) = node.child_by_field_name("name") {
         let n = name_node.utf8_text(source.as_bytes()).ok()?.to_string();
@@ -498,13 +492,14 @@ fn extract_cpp_class_info(
     let methods = body
         .map(|b| extract_cpp_methods(&b, source))
         .unwrap_or_default();
-    Some(ClassInfo { name, line, methods })
+    Some(ClassInfo {
+        name,
+        line,
+        methods,
+    })
 }
 
-fn extract_cpp_macro_prefixed_class(
-    node: &tree_sitter::Node,
-    source: &str,
-) -> Option<ClassInfo> {
+fn extract_cpp_macro_prefixed_class(node: &tree_sitter::Node, source: &str) -> Option<ClassInfo> {
     let type_node = node.child_by_field_name("type")?;
     if type_node.kind() != "class_specifier" && type_node.kind() != "struct_specifier" {
         return None;
@@ -529,13 +524,14 @@ fn extract_cpp_macro_prefixed_class(
             break;
         }
     }
-    Some(ClassInfo { name, line, methods: body_methods })
+    Some(ClassInfo {
+        name,
+        line,
+        methods: body_methods,
+    })
 }
 
-fn extract_cpp_methods(
-    body: &tree_sitter::Node,
-    source: &str,
-) -> Vec<MethodInfo> {
+fn extract_cpp_methods(body: &tree_sitter::Node, source: &str) -> Vec<MethodInfo> {
     let mut methods = Vec::new();
     let mut cursor = body.walk();
     for child in body.children(&mut cursor) {
@@ -561,7 +557,9 @@ fn extract_cpp_method_name(node: &tree_sitter::Node, source: &str) -> Option<Str
         "identifier" | "field_identifier" | "destructor_name" => {
             Some(node.utf8_text(source.as_bytes()).ok()?.to_string())
         }
-        "function_declarator" | "pointer_declarator" | "reference_declarator"
+        "function_declarator"
+        | "pointer_declarator"
+        | "reference_declarator"
         | "parenthesized_declarator" => {
             let inner = node.child_by_field_name("declarator")?;
             extract_cpp_method_name(&inner, source)

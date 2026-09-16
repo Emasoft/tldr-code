@@ -199,10 +199,7 @@ fn test_definition_cross_file_java_import() {
     let kind = result["symbol"]["kind"].as_str().unwrap();
     let file = result["definition"]["file"].as_str().unwrap();
 
-    assert_eq!(
-        kind, "class",
-        "expected kind=class, got {kind}: {result}"
-    );
+    assert_eq!(kind, "class", "expected kind=class, got {kind}: {result}");
     assert!(
         file.ends_with("Foo.java"),
         "expected definition in com/example/Foo.java, got {file}"

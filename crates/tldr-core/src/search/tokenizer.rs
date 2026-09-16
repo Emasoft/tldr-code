@@ -353,8 +353,7 @@ mod tests {
         let tokenizer = Tokenizer::new();
         let tokens = tokenizer.tokenize("HTTPRequest");
         assert!(
-            tokens.contains(&"http".to_string())
-                && tokens.contains(&"request".to_string()),
+            tokens.contains(&"http".to_string()) && tokens.contains(&"request".to_string()),
             "HTTPRequest must still split into ['http','request']; got: {:?}",
             tokens
         );

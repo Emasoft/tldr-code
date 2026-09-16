@@ -424,7 +424,11 @@ fn p18_pattern_b_java_structure_constant_not_emitted_as_field() {
         "Java `private static final String VIEWS_...` must emit once (was kind:constant + kind:field pre-fix); got {:?}",
         hits
     );
-    assert_eq!(hits[0].1, "constant", "expected kind=constant; got {:?}", hits);
+    assert_eq!(
+        hits[0].1, "constant",
+        "expected kind=constant; got {:?}",
+        hits
+    );
 }
 
 // ============================================================================
@@ -455,9 +459,18 @@ fn p18_kot_3_kotlin_specs_per_function_emitter_populated() {
         "first kotlin specs entry must have a non-empty function_name; got {:?}",
         first
     );
-    let total_specs = first["input_output_specs"].as_array().map(|a| a.len()).unwrap_or(0)
-        + first["exception_specs"].as_array().map(|a| a.len()).unwrap_or(0)
-        + first["property_specs"].as_array().map(|a| a.len()).unwrap_or(0);
+    let total_specs = first["input_output_specs"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0)
+        + first["exception_specs"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0)
+        + first["property_specs"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
     assert!(
         total_specs >= 1,
         "first kotlin specs entry must have at least one spec; got 0"
@@ -596,12 +609,7 @@ fn p18_nonreg_walker_node_modules_excluded() {
         "module.exports = 1;\n",
     )
     .expect("write");
-    let (rc, out) = run_tldr(&[
-        "loc",
-        tmp.join("src").to_str().unwrap(),
-        "--format",
-        "json",
-    ]);
+    let (rc, out) = run_tldr(&["loc", tmp.join("src").to_str().unwrap(), "--format", "json"]);
     assert_eq!(rc, 0, "tldr loc rc != 0");
     let v = parse_json(&out);
     let n = v["total_files"].as_u64().unwrap_or(0);

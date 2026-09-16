@@ -20,12 +20,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::Result;
-use clap::Args;
-use serde_json::Value;
 use super::ast_cache::AstCache;
 use super::error::{RemainingError, RemainingResult};
 use super::types::{TodoItem, TodoReport, TodoSummary};
+use anyhow::Result;
+use clap::Args;
+use serde_json::Value;
 
 use crate::output::OutputWriter;
 
@@ -263,9 +263,8 @@ impl TodoArgs {
         {
             use std::collections::HashSet;
             let mut seen: HashSet<(String, String, u32)> = HashSet::new();
-            all_items.retain(|item| {
-                seen.insert((item.category.clone(), item.file.clone(), item.line))
-            });
+            all_items
+                .retain(|item| seen.insert((item.category.clone(), item.file.clone(), item.line)));
         }
 
         // Sort items by priority
@@ -587,8 +586,9 @@ fn run_complexity_analysis(
         ..Default::default()
     };
 
-    let report = analyze_complexity(path, Some(language), Some(options))
-        .map_err(|e| RemainingError::analysis_error(format!("Complexity analysis failed: {}", e)))?;
+    let report = analyze_complexity(path, Some(language), Some(options)).map_err(|e| {
+        RemainingError::analysis_error(format!("Complexity analysis failed: {}", e))
+    })?;
 
     let items: Vec<TodoItem> = report
         .hotspots

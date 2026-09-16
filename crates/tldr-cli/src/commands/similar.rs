@@ -134,12 +134,7 @@ impl SimilarArgs {
         // granularity made `tldr similar lib/application.js` (~600
         // LOC) return five unrelated 4-9 line helpers — useless.
         if self.function.is_none() && !self.by_chunk {
-            let report = aggregate_similar_by_file(
-                &index,
-                &file_str,
-                self.top,
-                self.threshold,
-            )?;
+            let report = aggregate_similar_by_file(&index, &file_str, self.top, self.threshold)?;
             if writer.is_text() {
                 let text = format_aggregated_similar_text(&report);
                 writer.write_text(&text)?;
@@ -232,8 +227,7 @@ fn aggregate_similar_by_file(
             total_compared += 1;
             // Use core's similarity helper to stay consistent with the
             // rest of the semantic stack.
-            let score =
-                tldr_core::semantic::cosine_similarity(&src.embedding, &dest.embedding);
+            let score = tldr_core::semantic::cosine_similarity(&src.embedding, &dest.embedding);
             if score < threshold {
                 continue;
             }

@@ -43,10 +43,12 @@ impl PhpSemantics {
         if let Some(name_node) = node.child_by_field_name("name") {
             let name = node_text(name_node, source);
             let case = detect_naming_case(&name);
-            signals
-                .naming
-                .class_names
-                .push((name, case, file_path.display().to_string(), node.start_position().row as u32 + 1));
+            signals.naming.class_names.push((
+                name,
+                case,
+                file_path.display().to_string(),
+                node.start_position().row as u32 + 1,
+            ));
         }
     }
 
@@ -60,10 +62,12 @@ impl PhpSemantics {
         if let Some(name_node) = node.child_by_field_name("name") {
             let name = node_text(name_node, source);
             let case = detect_naming_case(&name);
-            signals
-                .naming
-                .function_names
-                .push((name, case, file_path.display().to_string(), node.start_position().row as u32 + 1));
+            signals.naming.function_names.push((
+                name,
+                case,
+                file_path.display().to_string(),
+                node.start_position().row as u32 + 1,
+            ));
         }
     }
 

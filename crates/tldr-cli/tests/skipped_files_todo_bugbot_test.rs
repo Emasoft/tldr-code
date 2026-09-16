@@ -302,10 +302,8 @@ fn bugbot_check_reports_a_scoped_unreadable_file_as_a_skipped_file_finding() {
     // repo). It is a "changed file" per `git ls-files --others`, so
     // `compose_born_dead_scoped`'s tier-1 scan hits it and must record the
     // skip instead of silently swallowing the `parse_file` error.
-    let unreadable_bytes = std::fs::read(
-        Path::new(FIXTURE).join("u16be.py"),
-    )
-    .expect("read u16be.py fixture bytes");
+    let unreadable_bytes =
+        std::fs::read(Path::new(FIXTURE).join("u16be.py")).expect("read u16be.py fixture bytes");
     std::fs::write(path.join("weird.rs"), &unreadable_bytes).unwrap();
 
     let output = tldr_bin()
@@ -323,7 +321,9 @@ fn bugbot_check_reports_a_scoped_unreadable_file_as_a_skipped_file_finding() {
 
     let json: Value =
         serde_json::from_slice(&output.stdout).expect("bugbot check stdout should be valid JSON");
-    let findings = json["findings"].as_array().expect("findings should be array");
+    let findings = json["findings"]
+        .as_array()
+        .expect("findings should be array");
 
     // Control: the born-dead scan actually ran and found the real dead
     // function. Checked BEFORE the skip assertion below -- a pipeline that

@@ -79,15 +79,19 @@ impl ImportsArgs {
                 // vuln, dead, etc.) instead of a bare array.
                 let envelope = ImportsEnvelope {
                     file: self.file.display().to_string(),
-                    language: self.lang.as_ref().map(|l| l.as_str().to_string()).unwrap_or_else(|| {
-                        // Daemon path: language not directly known; best-effort
-                        // detect from extension. If detection fails, fall back
-                        // to "unknown" rather than failing — the imports still
-                        // got parsed.
-                        detect_or_parse_language(None, &self.file)
-                            .map(|l| l.as_str().to_string())
-                            .unwrap_or_else(|_| "unknown".to_string())
-                    }),
+                    language: self
+                        .lang
+                        .as_ref()
+                        .map(|l| l.as_str().to_string())
+                        .unwrap_or_else(|| {
+                            // Daemon path: language not directly known; best-effort
+                            // detect from extension. If detection fails, fall back
+                            // to "unknown" rather than failing — the imports still
+                            // got parsed.
+                            detect_or_parse_language(None, &self.file)
+                                .map(|l| l.as_str().to_string())
+                                .unwrap_or_else(|_| "unknown".to_string())
+                        }),
                     imports: result,
                 };
                 writer.write(&envelope)?;

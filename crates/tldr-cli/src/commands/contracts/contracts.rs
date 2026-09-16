@@ -1028,12 +1028,8 @@ fn find_function_node<'a>(
             let class_name = parts[0];
             let remainder = parts[1..].join(".");
             if let Some(class_node) = find_class_node_contracts(root, class_name, source) {
-                let scope = class_node
-                    .child_by_field_name("body")
-                    .unwrap_or(class_node);
-                if let Some(found) =
-                    find_function_recursive(scope, &remainder, source, config, 0)
-                {
+                let scope = class_node.child_by_field_name("body").unwrap_or(class_node);
+                if let Some(found) = find_function_recursive(scope, &remainder, source, config, 0) {
                     return Some(found);
                 }
             }
@@ -1054,12 +1050,8 @@ fn find_function_node<'a>(
             let class_name = parts[0];
             let remainder = parts[1..].join("::");
             if let Some(class_node) = find_class_node_contracts(root, class_name, source) {
-                let scope = class_node
-                    .child_by_field_name("body")
-                    .unwrap_or(class_node);
-                if let Some(found) =
-                    find_function_recursive(scope, &remainder, source, config, 0)
-                {
+                let scope = class_node.child_by_field_name("body").unwrap_or(class_node);
+                if let Some(found) = find_function_recursive(scope, &remainder, source, config, 0) {
                     return Some(found);
                 }
             }
@@ -1106,18 +1098,15 @@ fn find_class_node_contracts<'a>(
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if CLASS_KINDS.contains(&node.kind()) {
-            let name_match = node.child_by_field_name("name").is_some_and(|n| {
-                get_node_text(n, source) == class_name
-            });
+            let name_match = node
+                .child_by_field_name("name")
+                .is_some_and(|n| get_node_text(n, source) == class_name);
             if name_match {
                 return Some(node);
             }
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if matches!(
-                    child.kind(),
-                    "identifier" | "type_identifier" | "constant"
-                ) {
+                if matches!(child.kind(), "identifier" | "type_identifier" | "constant") {
                     if get_node_text(child, source) == class_name {
                         return Some(node);
                     }
@@ -1287,9 +1276,7 @@ fn find_function_recursive<'a>(
                 child.child_by_field_name("value"),
             ) {
                 let key_name = match key.kind() {
-                    "property_identifier" | "identifier" => {
-                        get_node_text(key, source).to_string()
-                    }
+                    "property_identifier" | "identifier" => get_node_text(key, source).to_string(),
                     "string" => get_node_text(key, source)
                         .trim_matches(|c| c == '"' || c == '\'' || c == '`')
                         .to_string(),

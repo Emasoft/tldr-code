@@ -98,10 +98,7 @@ class Other:
 
     let path_str = py_path.to_str().unwrap();
     let v = run_json(&["diff", path_str, path_str]);
-    let identical = v
-        .get("identical")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let identical = v.get("identical").and_then(Value::as_bool).unwrap_or(false);
     let total = v
         .get("summary")
         .and_then(|s| s.get("total_changes"))
@@ -198,11 +195,7 @@ fn test_concern5_n1_extract_h_synthetic_fallback() {
     let cpp_path = tmp.path().join("foo.cpp");
     let h_path = tmp.path().join("foo.h");
     std::fs::write(&cpp_path, "class Foo {};\n").expect("write foo.cpp");
-    std::fs::write(
-        &h_path,
-        "class Bar {\npublic:\n    void method();\n};\n",
-    )
-    .expect("write foo.h");
+    std::fs::write(&h_path, "class Bar {\npublic:\n    void method();\n};\n").expect("write foo.h");
 
     let v = run_json(&["extract", h_path.to_str().unwrap()]);
     let lang = v
@@ -234,11 +227,7 @@ fn test_concern5_n1_extract_h_synthetic_fallback() {
 fn test_concern5_n1_extract_lang_flag_synthetic() {
     let tmp = TempDir::new().expect("tempdir");
     let h_path = tmp.path().join("bar.h");
-    std::fs::write(
-        &h_path,
-        "class Bar {\npublic:\n    void method();\n};\n",
-    )
-    .expect("write bar.h");
+    std::fs::write(&h_path, "class Bar {\npublic:\n    void method();\n};\n").expect("write bar.h");
 
     let v = run_json(&["extract", "--lang", "cpp", h_path.to_str().unwrap()]);
     let lang = v

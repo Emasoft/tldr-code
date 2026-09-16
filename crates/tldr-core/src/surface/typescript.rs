@@ -1532,8 +1532,7 @@ mod tests {
             public_names: None,
         };
 
-        extract_typescript_api_surface(&resolved, false, None)
-            .expect("extraction should succeed")
+        extract_typescript_api_surface(&resolved, false, None).expect("extraction should succeed")
     }
 
     #[test]

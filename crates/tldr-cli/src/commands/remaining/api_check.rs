@@ -1836,11 +1836,10 @@ pub(crate) fn analyze_file(
     // compiler dominated the wall clock (~186 s). Compiling once per
     // file collapses this to N_rules per file. We then drive the
     // per-line check with the cached `Regex` instead of re-compiling.
-    let regex_specs: Vec<(&'static RegexRuleSpec, Regex)> =
-        regex_rule_specs_for_language(language)
-            .iter()
-            .filter_map(|spec| Regex::new(spec.pattern).ok().map(|re| (spec, re)))
-            .collect();
+    let regex_specs: Vec<(&'static RegexRuleSpec, Regex)> = regex_rule_specs_for_language(language)
+        .iter()
+        .filter_map(|spec| Regex::new(spec.pattern).ok().map(|re| (spec, re)))
+        .collect();
 
     // analysis-precision-v1, BUG-07: for Python, mark lines that are
     // function/class signatures or live inside a triple-quoted docstring
@@ -1875,11 +1874,7 @@ pub(crate) fn analyze_file(
         let trimmed = line.trim();
         // Skip lines that live inside a `/* ... */` block (BUG-AGG-10).
         // Indices align with `content.lines()` ordering.
-        if block_comment_ctx
-            .get(line_num)
-            .copied()
-            .unwrap_or(false)
-        {
+        if block_comment_ctx.get(line_num).copied().unwrap_or(false) {
             // Still update prev_trimmed so the Rust `previous_is_loop`
             // context isn't disrupted by the comment skip.
             prev_trimmed = trimmed.to_string();
@@ -1891,10 +1886,7 @@ pub(crate) fn analyze_file(
             previous_is_loop: prev_trimmed.starts_with("for ")
                 || prev_trimmed.starts_with("while "),
         };
-        let py_ctx = py_line_ctx
-            .get(line_num)
-            .copied()
-            .unwrap_or_default();
+        let py_ctx = py_line_ctx.get(line_num).copied().unwrap_or_default();
 
         // Check each rule
         for rule in rules {
@@ -2217,11 +2209,10 @@ fn find_standalone_call(line_text: &str, name: &str) -> Option<usize> {
     let mut start = 0usize;
     while let Some(rel) = line_text[start..].find(&needle) {
         let abs = start + rel;
-        let prev_ok = abs == 0
-            || {
-                let p = bytes[abs - 1];
-                !(p.is_ascii_alphanumeric() || p == b'_')
-            };
+        let prev_ok = abs == 0 || {
+            let p = bytes[abs - 1];
+            !(p.is_ascii_alphanumeric() || p == b'_')
+        };
         if prev_ok {
             return Some(abs);
         }
@@ -2352,8 +2343,7 @@ fn has_word_null(s: &str) -> bool {
     let mut i = 0usize;
     while i + 4 <= bytes.len() {
         if &bytes[i..i + 4] == b"null" {
-            let before_ok = i == 0
-                || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
+            let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
             let after_ok = i + 4 == bytes.len()
                 || !bytes[i + 4].is_ascii_alphanumeric() && bytes[i + 4] != b'_';
             if before_ok && after_ok {
@@ -3330,11 +3320,7 @@ mod tests {
             "package main\nimport \"io/ioutil\"\nfunc f() { _, _ = ioutil.ReadFile(\"/etc/passwd\") }\n",
         )
         .unwrap();
-        fs::write(
-            root.join("js_hits.js"),
-            "function f(s) { eval(s); }\n",
-        )
-        .unwrap();
+        fs::write(root.join("js_hits.js"), "function f(s) { eval(s); }\n").unwrap();
         // File with no rule needles — cleanly skipped by the fast-path.
         fs::write(
             root.join("py_no_hits.py"),
@@ -3368,7 +3354,10 @@ mod tests {
                     findings.is_empty(),
                     "expected no findings for {:?}, got {:?}",
                     path.file_name(),
-                    findings.iter().map(|f| f.rule.id.clone()).collect::<Vec<_>>()
+                    findings
+                        .iter()
+                        .map(|f| f.rule.id.clone())
+                        .collect::<Vec<_>>()
                 );
             }
         }
@@ -3392,7 +3381,11 @@ mod tests {
         // Cases: (regex_pattern, expected_literal_substring_or_empty,
         //         positive_sample_that_must_contain_the_literal)
         let cases: &[(&str, &str, &str)] = &[
-            (r"\bioutil\.ReadFile\s*\(", "ioutil.ReadFile", "x := ioutil.ReadFile(p)"),
+            (
+                r"\bioutil\.ReadFile\s*\(",
+                "ioutil.ReadFile",
+                "x := ioutil.ReadFile(p)",
+            ),
             (r"\bunserialize\s*\(", "unserialize", "unserialize($x);"),
             (r"\beval\s*\(", "eval", "eval(s)"),
             (

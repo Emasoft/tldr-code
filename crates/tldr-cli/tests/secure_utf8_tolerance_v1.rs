@@ -75,8 +75,12 @@ fn test_smells_continues_after_bad_file_in_dir() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let _: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("smells stdout must be valid JSON; err: {}; stdout: {}", e, stdout));
+    let _: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "smells stdout must be valid JSON; err: {}; stdout: {}",
+            e, stdout
+        )
+    });
 }
 
 /// `tldr structure` MUST complete and emit valid JSON when a directory
@@ -105,8 +109,12 @@ fn test_structure_continues_after_bad_file_in_dir() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let _: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("structure stdout must be valid JSON; err: {}; stdout: {}", e, stdout));
+    let _: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "structure stdout must be valid JSON; err: {}; stdout: {}",
+            e, stdout
+        )
+    });
 }
 
 /// `tldr vuln` MUST complete and surface skipped non-UTF-8 files in
@@ -138,8 +146,12 @@ fn test_vuln_continues_after_bad_file_in_dir() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let report: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("vuln stdout must be valid JSON; err: {}; stdout: {}", e, stdout));
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "vuln stdout must be valid JSON; err: {}; stdout: {}",
+            e, stdout
+        )
+    });
 
     let files_skipped = report
         .get("files_skipped")

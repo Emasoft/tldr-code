@@ -711,10 +711,7 @@ fn detect_git_changes_base(project: &Path, base: &str) -> TldrResult<Vec<PathBuf
             // remediation hint pointing the user at the qualified ref.
             let mut message = format!("Branch '{}' not found. {}", base, stderr.trim());
             if origin_branch_exists(project, base) {
-                message.push_str(&format!(
-                    " (hint: try --base origin/{base})",
-                    base = base
-                ));
+                message.push_str(&format!(" (hint: try --base origin/{base})", base = base));
             }
             return Err(crate::error::TldrError::InvalidArgs {
                 arg: "base".to_string(),
@@ -1007,13 +1004,14 @@ fn is_test_file(path: &Path, language: Language) -> bool {
     // callers passing filesystem paths) can hand us native-separator
     // PathBufs, so this must not assume '/'.
     let in_tests_dir = || {
-        path.components().any(|c| {
-            matches!(c.as_os_str().to_str(), Some("tests") | Some("test"))
-        })
+        path.components()
+            .any(|c| matches!(c.as_os_str().to_str(), Some("tests") | Some("test")))
     };
 
-    let in_dunder_tests =
-        || path.components().any(|c| c.as_os_str().to_str() == Some("__tests__"));
+    let in_dunder_tests = || {
+        path.components()
+            .any(|c| c.as_os_str().to_str() == Some("__tests__"))
+    };
 
     match language {
         Language::Python => {

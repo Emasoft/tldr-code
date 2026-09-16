@@ -45,11 +45,7 @@ fn write(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
 #[test]
 fn test_invariants_lang_flag_no_panic() {
     let tmp = TempDir::new().unwrap();
-    let src = write(
-        tmp.path(),
-        "src/m.py",
-        "def add(a, b):\n    return a + b\n",
-    );
+    let src = write(tmp.path(), "src/m.py", "def add(a, b):\n    return a + b\n");
     let test = write(
         tmp.path(),
         "tests/test_m.py",

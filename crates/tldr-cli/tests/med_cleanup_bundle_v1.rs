@@ -243,8 +243,8 @@ fn m18_verify_coverage_has_scope() {
         .unwrap();
     assert!(out.status.success(), "verify failed: {:?}", out);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let v: serde_json::Value =
-        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("non-JSON output: {}\n{}", e, stdout));
+    let v: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("non-JSON output: {}\n{}", e, stdout));
     let scope = v
         .get("summary")
         .and_then(|s| s.get("coverage"))

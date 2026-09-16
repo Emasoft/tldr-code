@@ -94,7 +94,8 @@ fn assert_names_exactly_the_skipped_files(command: &str, json: &serde_json::Valu
 #[test]
 fn dead_json_names_every_skipped_file() {
     let scratch_tmp = TempDir::new().unwrap();
-    let json = json_of(tldr(&scratch_tmp).args(["dead", fixtures().to_str().unwrap(), "-f", "json"]));
+    let json =
+        json_of(tldr(&scratch_tmp).args(["dead", fixtures().to_str().unwrap(), "-f", "json"]));
     assert_names_exactly_the_skipped_files("dead", &json);
     // The readable files still contribute their definitions.
     assert!(
@@ -124,8 +125,7 @@ fn dead_text_prints_every_skipped_file() {
         assert!(
             text.lines().any(|l| {
                 let l = l.trim();
-                l.starts_with("Skipped ")
-                    && l.split(':').next().unwrap_or_default().ends_with(file)
+                l.starts_with("Skipped ") && l.split(':').next().unwrap_or_default().ends_with(file)
             }),
             "text output must carry a `Skipped …/{file}: …` line:\n{text}"
         );
@@ -135,7 +135,8 @@ fn dead_text_prints_every_skipped_file() {
 #[test]
 fn calls_json_names_every_skipped_file() {
     let scratch_tmp = TempDir::new().unwrap();
-    let json = json_of(tldr(&scratch_tmp).args(["calls", fixtures().to_str().unwrap(), "-f", "json"]));
+    let json =
+        json_of(tldr(&scratch_tmp).args(["calls", fixtures().to_str().unwrap(), "-f", "json"]));
     assert_names_exactly_the_skipped_files("calls", &json);
     // Pre-fix an unreadable file was kept in the graph as an EMPTY file, so
     // `nodes` is where the analysed-as-empty shape would still leak through:

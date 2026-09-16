@@ -81,15 +81,25 @@ let add (x : int) (y : int) : int = x + y\n";
 
     let empty = names.iter().filter(|n| n.is_empty()).count();
     assert_eq!(
-        empty,
-        0,
+        empty, 0,
         "expected 0 empty names, got {} (names={:?})",
-        empty,
-        names,
+        empty, names,
     );
-    assert!(names.contains(&"create".to_string()), "missing `create`: {:?}", names);
-    assert!(names.contains(&"length".to_string()), "missing `length`: {:?}", names);
-    assert!(names.contains(&"add".to_string()), "missing `add`: {:?}", names);
+    assert!(
+        names.contains(&"create".to_string()),
+        "missing `create`: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"length".to_string()),
+        "missing `length`: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"add".to_string()),
+        "missing `add`: {:?}",
+        names
+    );
 }
 
 #[test]
@@ -117,7 +127,12 @@ fn test_interface_ocaml_real_repo() {
     );
     let empty = funcs
         .iter()
-        .filter(|f| f.get("name").and_then(|n| n.as_str()).unwrap_or("").is_empty())
+        .filter(|f| {
+            f.get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .is_empty()
+        })
         .count();
     assert_eq!(empty, 0, "expected 0 empty OCaml names, got {}", empty);
 }
@@ -252,7 +267,11 @@ def _bar(y):\n\
         .filter_map(|f| f.get("name").and_then(|n| n.as_str()).map(String::from))
         .collect();
 
-    assert!(names.contains(&"foo".to_string()), "missing `foo`: {:?}", names);
+    assert!(
+        names.contains(&"foo".to_string()),
+        "missing `foo`: {:?}",
+        names
+    );
     assert!(
         !names.contains(&"_bar".to_string()),
         "_bar must not be exported (names={:?})",
@@ -267,7 +286,11 @@ def _bar(y):\n\
         .into_iter()
         .filter_map(|n| n.as_str().map(String::from))
         .collect();
-    assert!(exports.contains(&"foo".to_string()), "exports missing foo: {:?}", exports);
+    assert!(
+        exports.contains(&"foo".to_string()),
+        "exports missing foo: {:?}",
+        exports
+    );
     assert!(
         !exports.contains(&"_bar".to_string()),
         "exports must not contain _bar: {:?}",

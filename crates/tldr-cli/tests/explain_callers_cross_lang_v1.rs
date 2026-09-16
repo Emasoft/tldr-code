@@ -73,7 +73,13 @@ fn js_explain_render_relative_path_callers_present() {
     }
     let (rc, out) = run_tldr_in(
         repo,
-        &["explain", "lib/application.js", "render", "--format", "json"],
+        &[
+            "explain",
+            "lib/application.js",
+            "render",
+            "--format",
+            "json",
+        ],
     );
     assert_eq!(rc, 0, "tldr explain rc != 0; stdout={}", out);
     let v = parse_json(&out);
@@ -265,9 +271,7 @@ fn java_explain_caller_line_populated() {
         !callers.is_empty(),
         "java explain findPaginatedForOwnersLastName: callers should be non-empty"
     );
-    let any_line_gt_zero = callers
-        .iter()
-        .any(|c| c["line"].as_u64().unwrap_or(0) > 0);
+    let any_line_gt_zero = callers.iter().any(|c| c["line"].as_u64().unwrap_or(0) > 0);
     assert!(
         any_line_gt_zero,
         "java explain: at least one caller must have line > 0 \

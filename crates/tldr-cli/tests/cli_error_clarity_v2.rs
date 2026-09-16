@@ -165,9 +165,7 @@ fn format_help_body(cmd: &str) -> String {
     let s = String::from_utf8(out).unwrap();
     // Take everything from `--format` to the next double-newline-section
     // break. We use a generous slice since the body may span multiple lines.
-    let start = s
-        .find("--format")
-        .expect("--format present in help");
+    let start = s.find("--format").expect("--format present in help");
     s[start..].to_string()
 }
 
@@ -297,10 +295,7 @@ fn context_works_from_repo_root() {
         .stdout
         .clone();
     let v: Value = serde_json::from_slice(&out_root).expect("context returns JSON");
-    let n_root = v["functions"]
-        .as_array()
-        .map(|a| a.len())
-        .unwrap_or(0);
+    let n_root = v["functions"].as_array().map(|a| a.len()).unwrap_or(0);
     assert!(
         n_root >= 1,
         "context Foo.bar from repo root should find >= 1 function, got {}; output: {}",
@@ -325,10 +320,7 @@ fn context_works_from_repo_root() {
         .stdout
         .clone();
     let v_src: Value = serde_json::from_slice(&out_src).unwrap();
-    let n_src = v_src["functions"]
-        .as_array()
-        .map(|a| a.len())
-        .unwrap_or(0);
+    let n_src = v_src["functions"].as_array().map(|a| a.len()).unwrap_or(0);
 
     assert!(
         n_root >= n_src,

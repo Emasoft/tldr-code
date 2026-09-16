@@ -74,9 +74,7 @@ pub fn find_function_node<'a>(
             if let Some(class_node) = find_class_node(root, class_name, language, source) {
                 // Search inside the class body (or the class node itself if
                 // the body field isn't present for this language).
-                let scope = class_node
-                    .child_by_field_name("body")
-                    .unwrap_or(class_node);
+                let scope = class_node.child_by_field_name("body").unwrap_or(class_node);
                 if let Some(found) =
                     find_function_node_in_subtree(scope, &remainder, language, source)
                 {
@@ -104,13 +102,10 @@ pub fn find_function_node<'a>(
     // class body), and finally fall back to the bare last segment so a
     // call like `XMLDocument::Parse` still resolves to the out-of-class
     // `void XMLDocument::Parse(...)` definition.
-    if function_name.contains("::")
-        && matches!(language, Language::C | Language::Cpp)
-    {
+    if function_name.contains("::") && matches!(language, Language::C | Language::Cpp) {
         // Try the full qualified form first — handles the (rare) case
         // where the extractor returned the qualified text verbatim.
-        if let Some(found) = find_function_node_in_subtree(root, function_name, language, source)
-        {
+        if let Some(found) = find_function_node_in_subtree(root, function_name, language, source) {
             return Some(found);
         }
 
@@ -123,9 +118,7 @@ pub fn find_function_node<'a>(
         // nodes and match by full qualified-identifier text BEFORE
         // falling back to the bare-name search. This disambiguates the
         // 7 ParseDeep overloads in tinyxml2.cpp.
-        if let Some(found) =
-            find_cpp_qualified_function_definition(root, function_name, source)
-        {
+        if let Some(found) = find_cpp_qualified_function_definition(root, function_name, source) {
             return Some(found);
         }
 
@@ -135,9 +128,7 @@ pub fn find_function_node<'a>(
             let class_name = parts[0];
             let remainder = parts[1..].join("::");
             if let Some(class_node) = find_class_node(root, class_name, language, source) {
-                let scope = class_node
-                    .child_by_field_name("body")
-                    .unwrap_or(class_node);
+                let scope = class_node.child_by_field_name("body").unwrap_or(class_node);
                 if let Some(found) =
                     find_function_node_in_subtree(scope, &remainder, language, source)
                 {
@@ -190,10 +181,7 @@ fn find_cpp_qualified_function_definition<'a>(
                 if let Some(inner) = peel_to_function_declarator(declarator) {
                     if let Some(decl_name) = inner.child_by_field_name("declarator") {
                         if decl_name.kind() == "qualified_identifier" {
-                            let text = decl_name
-                                .utf8_text(source.as_bytes())
-                                .unwrap_or("")
-                                .trim();
+                            let text = decl_name.utf8_text(source.as_bytes()).unwrap_or("").trim();
                             if text == qualified_name {
                                 return Some(node);
                             }
@@ -494,11 +482,7 @@ pub fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
             "enum_declaration",
             "record_declaration",
         ],
-        Language::Cpp => &[
-            "class_specifier",
-            "struct_specifier",
-            "union_specifier",
-        ],
+        Language::Cpp => &["class_specifier", "struct_specifier", "union_specifier"],
         Language::C => &[],
         Language::Ruby => &["class", "module"],
         Language::Php => &[
@@ -515,11 +499,7 @@ pub fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
             "enum_declaration",
         ],
         Language::Kotlin => &["class_declaration", "object_declaration"],
-        Language::Scala => &[
-            "class_definition",
-            "object_definition",
-            "trait_definition",
-        ],
+        Language::Scala => &["class_definition", "object_definition", "trait_definition"],
         // No class container in these languages (Elixir uses defmodule but
         // the resolver here doesn't model it; Lua/Luau dotted names are
         // handled directly in the bare-name branch).
@@ -576,10 +556,7 @@ pub fn find_class_node<'a>(
                 for child in node.children(&mut cursor) {
                     if matches!(
                         child.kind(),
-                        "identifier"
-                            | "type_identifier"
-                            | "constant"
-                            | "scoped_type_identifier"
+                        "identifier" | "type_identifier" | "constant" | "scoped_type_identifier"
                     ) {
                         let name = child.utf8_text(source.as_bytes()).unwrap_or("");
                         // For Rust impl_item the type_identifier IS the

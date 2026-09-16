@@ -278,9 +278,7 @@ mod tests {
     fn with_registry_dir<F: FnOnce(&Path)>(prefix: &str, f: F) {
         // Hold the lock for the entire body so set_var / f / remove_var
         // run atomically with respect to other tests in this module.
-        let _guard = REGISTRY_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = REGISTRY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("tempdir");
         std::env::set_var("TLDR_DAEMON_REGISTRY_DIR", tmp.path());
         let _prefix = prefix;

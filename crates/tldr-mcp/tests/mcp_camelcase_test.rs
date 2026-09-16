@@ -132,10 +132,7 @@ fn dispatch_request(frame: &str, registry: &ToolRegistry) -> Value {
 /// gate: "RED stdout MUST contain the substring 'protocol_version' OR
 /// 'server_info' OR a snake_case key name from the tools/list audit").
 fn snake_case_violations(keys: &BTreeSet<String>) -> Vec<String> {
-    keys.iter()
-        .filter(|k| is_snake_case(k))
-        .cloned()
-        .collect()
+    keys.iter().filter(|k| is_snake_case(k)).cloned().collect()
 }
 
 /// Sanity unit tests for the detector and walker (so a failure in
@@ -216,9 +213,12 @@ fn initialize_response_uses_camel_case() {
     let registry = ToolRegistry::new();
     let response = dispatch_request(FRAME_INITIALIZE, &registry);
 
-    let result = response
-        .get("result")
-        .unwrap_or_else(|| panic!("initialize response must have a `result` field; got: {}", response));
+    let result = response.get("result").unwrap_or_else(|| {
+        panic!(
+            "initialize response must have a `result` field; got: {}",
+            response
+        )
+    });
 
     let mut keys = BTreeSet::new();
     collect_keys(result, &[], &mut keys);
@@ -261,9 +261,12 @@ fn tools_list_response_uses_camel_case() {
     let registry = ToolRegistry::new();
     let response = dispatch_request(FRAME_TOOLS_LIST, &registry);
 
-    let result = response
-        .get("result")
-        .unwrap_or_else(|| panic!("tools/list response must have a `result` field; got: {}", response));
+    let result = response.get("result").unwrap_or_else(|| {
+        panic!(
+            "tools/list response must have a `result` field; got: {}",
+            response
+        )
+    });
 
     let mut keys = BTreeSet::new();
     collect_keys(result, &[], &mut keys);
@@ -293,9 +296,12 @@ fn day_one_handshake_responses_have_zero_snake_case_keys() {
         ("tools/list", FRAME_TOOLS_LIST),
     ] {
         let response = dispatch_request(frame, &registry);
-        let result = response
-            .get("result")
-            .unwrap_or_else(|| panic!("{} response must have a `result` field; got: {}", label, response));
+        let result = response.get("result").unwrap_or_else(|| {
+            panic!(
+                "{} response must have a `result` field; got: {}",
+                label, response
+            )
+        });
 
         let mut keys = BTreeSet::new();
         collect_keys(result, &[], &mut keys);

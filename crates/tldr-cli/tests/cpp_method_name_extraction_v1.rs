@@ -55,8 +55,7 @@ fn test_cpp_overload_method_names_extracted() {
         "-q",
     ]);
     let out = cmd.assert().success().get_output().stdout.clone();
-    let v: Value =
-        serde_json::from_slice(&out).expect("structure output is not valid JSON");
+    let v: Value = serde_json::from_slice(&out).expect("structure output is not valid JSON");
 
     let files = v
         .get("files")
@@ -96,11 +95,7 @@ fn test_cpp_overload_method_names_extracted() {
         .collect();
     lines.sort();
     lines.dedup();
-    assert_eq!(
-        lines.len(),
-        3,
-        "expected 3 distinct lines, got {lines:?}"
-    );
+    assert_eq!(lines.len(), 3, "expected 3 distinct lines, got {lines:?}");
 }
 
 /// Out-of-class definition: `void Foo::bar() {}`. The cpp grammar produces
@@ -134,8 +129,7 @@ void Foo::bar() {}
         "-q",
     ]);
     let out = cmd.assert().success().get_output().stdout.clone();
-    let v: Value =
-        serde_json::from_slice(&out).expect("structure output is not valid JSON");
+    let v: Value = serde_json::from_slice(&out).expect("structure output is not valid JSON");
 
     let files = v
         .get("files")

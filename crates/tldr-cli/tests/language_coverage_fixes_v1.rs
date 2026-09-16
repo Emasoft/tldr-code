@@ -141,12 +141,7 @@ fn test_n1_cpp_h_files_included_in_dir_scan() {
             &dir.path().join("bar.h"),
             "#pragma once\nclass Bar { public: int x; };\nclass Baz { public: int y; };\n",
         );
-        let v = run_json(&[
-            "structure",
-            dir.path().to_str().unwrap(),
-            "--lang",
-            "cpp",
-        ]);
+        let v = run_json(&["structure", dir.path().to_str().unwrap(), "--lang", "cpp"]);
         let files = v
             .pointer("/files")
             .and_then(|f| f.as_array())
@@ -395,10 +390,7 @@ fn test_n5_tsx_included_in_mixed_js_ts_dir() {
         &dir.path().join("a.tsx"),
         "export const X: React.FC = () => null;\n",
     );
-    write(
-        &dir.path().join("a.jsx"),
-        "export const X = () => null;\n",
-    );
+    write(&dir.path().join("a.jsx"), "export const X = () => null;\n");
 
     let v = run_json(&["structure", dir.path().to_str().unwrap()]);
     let files = v

@@ -679,8 +679,7 @@ fn code_chars_excluding_strings_and_comments(source: &str) -> Vec<char> {
                         // the attribute's closing `}` is tag-close syntax,
                         // not a regex open. See the ponytail note above.
                         None | Some(
-                            '(' | ',' | '=' | ':' | '[' | '!' | '&' | '|' | '?' | '{' | ';'
-                                | '>'
+                            '(' | ',' | '=' | ':' | '[' | '!' | '&' | '|' | '?' | '{' | ';' | '>'
                         )
                     ) =>
                 {

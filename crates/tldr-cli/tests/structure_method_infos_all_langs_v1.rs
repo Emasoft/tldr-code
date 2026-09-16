@@ -81,7 +81,11 @@ fn fixture_per_language() -> Vec<(&'static str, &'static str, &'static str)> {
             "f.kt",
             "class A { fun m() {} fun m(x: Int) {} }\n",
         ),
-        ("lua", "f.lua", "local function add(a, b) return a + b end\n"),
+        (
+            "lua",
+            "f.lua",
+            "local function add(a, b) return a + b end\n",
+        ),
         (
             "luau",
             "f.luau",
@@ -302,7 +306,8 @@ public:
             lines.len(),
             3,
             "[{}] overload lines must be distinct, got {:?}",
-            case.lang, lines
+            case.lang,
+            lines
         );
 
         // All three signatures must be distinct (additional disambiguation axis).
@@ -314,7 +319,8 @@ public:
             sigs.len(),
             3,
             "[{}] overload signatures must be distinct, got {:?}",
-            case.lang, sigs
+            case.lang,
+            sigs
         );
     }
 }
@@ -420,13 +426,7 @@ fn test_structure_method_infos_emitted_on_project_fixtures() {
         }
 
         let mut cmd = tldr_cmd();
-        cmd.args([
-            "structure",
-            dir.to_str().unwrap(),
-            "--lang",
-            lang,
-            "-q",
-        ]);
+        cmd.args(["structure", dir.to_str().unwrap(), "--lang", lang, "-q"]);
         let out = cmd.assert().success().get_output().stdout.clone();
         let v: Value = serde_json::from_slice(&out)
             .unwrap_or_else(|e| panic!("[{}] structure output is not JSON: {}", lang, e));

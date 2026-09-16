@@ -185,10 +185,7 @@ fn rust_test_attribute_excluded_from_dead() {
 
     // Cross-check: every reported entry must have is_test == false.
     for f in all_dead {
-        let is_test = f
-            .get("is_test")
-            .and_then(|b| b.as_bool())
-            .unwrap_or(false);
+        let is_test = f.get("is_test").and_then(|b| b.as_bool()).unwrap_or(false);
         let name = f.get("name").and_then(|n| n.as_str()).unwrap_or("?");
         assert!(
             !is_test,
@@ -250,14 +247,12 @@ fn js_redirect_classified_as_open_redirect() {
     // engine may emit a secondary sql_injection finding on the same line
     // (the `dest` variable name happens to overlap with SQL keywords); we
     // scope the assertion to the redirect-bound entry.
-    let redirect_finding = findings.iter().find(|f| {
-        f.get("vuln_type").and_then(|x| x.as_str()) == Some("open_redirect")
-    });
+    let redirect_finding = findings
+        .iter()
+        .find(|f| f.get("vuln_type").and_then(|x| x.as_str()) == Some("open_redirect"));
 
     let f = redirect_finding.unwrap_or_else(|| {
-        panic!(
-            "expected an `open_redirect` finding in vuln report; got: {v:#?}"
-        )
+        panic!("expected an `open_redirect` finding in vuln report; got: {v:#?}")
     });
 
     // vuln_type must be open_redirect (NOT path_traversal). This is the
@@ -407,14 +402,8 @@ fn build_python_multi_definition_project() -> TempDir {
     // Two distinct top-level definitions of `_make_timedelta` across two
     // files — mirrors the flask `sansio/app.py` + `app.py` pattern from
     // BUG-20's empirical repro.
-    write(
-        &root.join("pkg/__init__.py"),
-        "",
-    );
-    write(
-        &root.join("pkg/sansio/__init__.py"),
-        "",
-    );
+    write(&root.join("pkg/__init__.py"), "");
+    write(&root.join("pkg/sansio/__init__.py"), "");
     write(
         &root.join("pkg/sansio/app.py"),
         r#"

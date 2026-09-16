@@ -2651,15 +2651,10 @@ pub fn is_test_file_path(path: &Path) -> bool {
     }
 
     // JS/TS: foo.test.ext / foo.spec.ext / foo.e2e.ext
-    let js_exts = [
-        ".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs", ".cts", ".mts",
-    ];
+    let js_exts = [".js", ".jsx", ".ts", ".tsx", ".cjs", ".mjs", ".cts", ".mts"];
     for ext in &js_exts {
         if let Some(stem) = filename.strip_suffix(ext) {
-            if stem.ends_with(".test")
-                || stem.ends_with(".spec")
-                || stem.ends_with(".e2e")
-            {
+            if stem.ends_with(".test") || stem.ends_with(".spec") || stem.ends_with(".e2e") {
                 return true;
             }
         }
@@ -4328,9 +4323,7 @@ let _ = print_string (greet "Alice")
         )));
 
         // Negative: src/main/ is source
-        assert!(!is_test_file_path(Path::new(
-            "src/main/java/com/Foo.java"
-        )));
+        assert!(!is_test_file_path(Path::new("src/main/java/com/Foo.java")));
         assert!(!is_test_file_path(Path::new(
             "module/src/main/kotlin/Bar.kt"
         )));
@@ -4364,10 +4357,7 @@ let _ = print_string (greet "Alice")
         assert_eq!(canonical_def_tier(Path::new("scripts/build.py")), 2);
 
         // Tier 3: test files
-        assert_eq!(
-            canonical_def_tier(Path::new("tests/test_config.py")),
-            3
-        );
+        assert_eq!(canonical_def_tier(Path::new("tests/test_config.py")), 3);
         assert_eq!(
             canonical_def_tier(Path::new("src/test/java/com/Foo.java")),
             3

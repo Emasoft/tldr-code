@@ -513,8 +513,7 @@ pub fn enrich_impact_with_references(
     // definitions through references' qualified path, so impact's caller
     // list comes back empty even though explain reports the same callers
     // via this exact mechanism.
-    let mut all_refs: Vec<crate::analysis::references::Reference> =
-        refs_report.references.clone();
+    let mut all_refs: Vec<crate::analysis::references::Reference> = refs_report.references.clone();
     if matches!(language, Language::Lua | Language::Luau) {
         if let Some(bare) = target_func.split('.').next_back() {
             if bare != target_func && !bare.is_empty() {
@@ -594,8 +593,7 @@ pub fn enrich_impact_with_references(
 
         let is_self = report.targets.values().any(|tree| {
             paths_equivalent_root(&tree.file, project_root, &caller_file)
-                && (enclosing == target_func
-                    || last_segment_eq_pub(&enclosing, target_func))
+                && (enclosing == target_func || last_segment_eq_pub(&enclosing, target_func))
         });
         if is_self {
             continue;

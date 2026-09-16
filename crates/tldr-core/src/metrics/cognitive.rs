@@ -433,8 +433,7 @@ fn find_all_functions(
     // matches both and emits the same function twice with identical
     // (name, line). Dedup by (name, line) preserving first-seen entry.
     if matches!(language, Language::Ocaml) {
-        let mut seen: std::collections::HashSet<(String, u32)> =
-            std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<(String, u32)> = std::collections::HashSet::new();
         functions.retain(|f| seen.insert((f.name.clone(), f.line)));
     }
 
@@ -783,10 +782,7 @@ impl<'a> CognitiveCalculator<'a> {
             Language::Kotlin => {
                 if matches!(
                     kind,
-                    "if_expression"
-                        | "when_expression"
-                        | "try_expression"
-                        | "do_while_statement"
+                    "if_expression" | "when_expression" | "try_expression" | "do_while_statement"
                 ) {
                     return true;
                 }
@@ -899,9 +895,7 @@ impl<'a> CognitiveCalculator<'a> {
                 Some((1, "for"))
             }
             // Kotlin do-while
-            "do_while_statement" if matches!(self.language, Language::Kotlin) => {
-                Some((1, "while"))
-            }
+            "do_while_statement" if matches!(self.language, Language::Kotlin) => Some((1, "while")),
             // catch/except add +1 base + nesting
             "except_clause" | "catch_clause" | "except_handler" => Some((1, "catch")),
             // try_expression (scala/kotlin/ocaml) — credited so the catch
@@ -931,9 +925,7 @@ impl<'a> CognitiveCalculator<'a> {
                 // OCaml `function | ...` form. Same dispatch as `match`.
                 Some((1, "match"))
             }
-            "when_expression" if matches!(self.language, Language::Kotlin) => {
-                Some((1, "when"))
-            }
+            "when_expression" if matches!(self.language, Language::Kotlin) => Some((1, "when")),
             // ternary adds +1 (no nesting penalty per SonarQube - chains are flat)
             "conditional_expression" | "ternary_expression" => Some((1, "?:")),
             // P12.AGG12-10 + cognitive-else-counting-fix-v1: Ruby AST kinds.
@@ -1021,12 +1013,12 @@ impl<'a> CognitiveCalculator<'a> {
                     .map(|p| p.kind() == "else_clause")
                     .unwrap_or(false);
 
-            let nesting_increment =
-                if construct != "?:" && !is_else_if && self.current_nesting > 1 {
-                    self.current_nesting.saturating_sub(1)
-                } else {
-                    0
-                };
+            let nesting_increment = if construct != "?:" && !is_else_if && self.current_nesting > 1
+            {
+                self.current_nesting.saturating_sub(1)
+            } else {
+                0
+            };
 
             let total = base + nesting_increment;
             self.cognitive += total;
@@ -1169,9 +1161,7 @@ impl<'a> CognitiveCalculator<'a> {
             {
                 self.cyclomatic += 1
             }
-            "when_expression" if matches!(self.language, Language::Kotlin) => {
-                self.cyclomatic += 1
-            }
+            "when_expression" if matches!(self.language, Language::Kotlin) => self.cyclomatic += 1,
             "do_while_statement" if matches!(self.language, Language::Kotlin) => {
                 self.cyclomatic += 1
             }
@@ -1188,9 +1178,10 @@ impl<'a> CognitiveCalculator<'a> {
             "while_modifier" | "until_modifier" => self.cyclomatic += 1,
             "when" if matches!(self.language, Language::Ruby) => self.cyclomatic += 1, // case-arm cognate
             "boolean_operator" | "binary_expression"
-                if self.get_logical_operator(node).is_some() => {
-                    self.cyclomatic += 1;
-                }
+                if self.get_logical_operator(node).is_some() =>
+            {
+                self.cyclomatic += 1;
+            }
             _ => {}
         }
     }

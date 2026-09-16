@@ -273,8 +273,7 @@ fn collect_python_value_refs(
         // Skip the identifier-form of a call's `function` field — that
         // is the regular "Direct" / "Method" call path handled by
         // parse_python_call.
-        if parent.kind() == "call"
-            && parent.child_by_field_name("function").as_ref() == Some(&node)
+        if parent.kind() == "call" && parent.child_by_field_name("function").as_ref() == Some(&node)
         {
             continue;
         }
@@ -452,7 +451,11 @@ pub(crate) fn extract_python_var_types(tree: &tree_sitter::Tree, source: &[u8]) 
                                 if inner.kind() == "identifier" {
                                     let type_name = get_node_text(&inner, source).to_string();
                                     var_types.push(VarType::new_with_scope(
-                                        var_name, type_name, "annotation", line, scope,
+                                        var_name,
+                                        type_name,
+                                        "annotation",
+                                        line,
+                                        scope,
                                     ));
                                 }
                             }

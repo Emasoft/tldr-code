@@ -79,10 +79,7 @@ fn run_json(args: &[&str]) -> Value {
 fn run_text(args: &[&str]) -> String {
     let mut argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     argv.extend(["--format".into(), "text".into()]);
-    let output = tldr_cmd()
-        .args(&argv)
-        .output()
-        .expect("run tldr (text)");
+    let output = tldr_cmd().args(&argv).output().expect("run tldr (text)");
     String::from_utf8(output.stdout).expect("utf8 stdout")
 }
 
@@ -165,9 +162,7 @@ class AnotherClass:
     let violations = v
         .pointer("/naming/violations")
         .and_then(|x| x.as_array())
-        .unwrap_or_else(|| {
-            panic!("patterns: missing .naming.violations array; got {v}")
-        });
+        .unwrap_or_else(|| panic!("patterns: missing .naming.violations array; got {v}"));
     assert!(
         !violations.is_empty(),
         "synthetic fixture (snake_case majority + one camelCase fn) \
@@ -209,7 +204,8 @@ fn bug11_deps_root_populated() {
     let text = run_text(&["deps", path.to_str().unwrap()]);
     let first_line = text.lines().next().unwrap_or("");
     assert!(
-        first_line.starts_with("Dependency Analysis: ") && first_line.len() > "Dependency Analysis: ".len(),
+        first_line.starts_with("Dependency Analysis: ")
+            && first_line.len() > "Dependency Analysis: ".len(),
         "BUG-11 regression: text header has empty root: {first_line:?}"
     );
 }
@@ -225,9 +221,7 @@ fn bug12_churn_most_churned_file_populated() {
     let mcf = v
         .pointer("/summary/most_churned_file")
         .and_then(|x| x.as_str())
-        .unwrap_or_else(|| {
-            panic!("churn: missing .summary.most_churned_file string; got {v}")
-        });
+        .unwrap_or_else(|| panic!("churn: missing .summary.most_churned_file string; got {v}"));
     // /tmp/repos/flask happens to be a shallow clone (1 commit) — the
     // pre-fix behavior blanked this field; post-fix we refill it from
     // the file with the highest lines_changed.
@@ -252,7 +246,10 @@ fn bug12_churn_most_churned_file_populated() {
 fn bug13_structure_no_redundant_string_arrays() {
     let path = flask_repo();
     let v = run_json(&["structure", path.to_str().unwrap()]);
-    let files = v.pointer("/files").and_then(|x| x.as_array()).expect("files");
+    let files = v
+        .pointer("/files")
+        .and_then(|x| x.as_array())
+        .expect("files");
     assert!(!files.is_empty(), "no files in structure output");
     let f0 = &files[0];
     let keys: Vec<&str> = f0
@@ -282,7 +279,10 @@ fn bug13_method_infos_have_line_end() {
     let path = flask_repo();
     let v = run_json(&["structure", path.to_str().unwrap()]);
     // Find any file that has a non-empty method_infos array.
-    let files = v.pointer("/files").and_then(|x| x.as_array()).expect("files");
+    let files = v
+        .pointer("/files")
+        .and_then(|x| x.as_array())
+        .expect("files");
     let mi = files
         .iter()
         .filter_map(|f| f.get("method_infos").and_then(|x| x.as_array()))
@@ -312,11 +312,7 @@ fn bug13_method_infos_have_line_end() {
 #[test]
 fn bug15_semantic_total_results_populated() {
     let path = flask_repo();
-    let v = run_json(&[
-        "semantic",
-        "create flask app",
-        path.to_str().unwrap(),
-    ]);
+    let v = run_json(&["semantic", "create flask app", path.to_str().unwrap()]);
     let total = v.get("total_results").and_then(|x| x.as_u64());
     assert!(
         total.is_some(),

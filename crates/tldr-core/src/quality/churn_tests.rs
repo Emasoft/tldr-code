@@ -13,8 +13,8 @@ use std::path::PathBuf;
 
 // Import the types that will be implemented
 use super::churn::{
-    build_summary, check_shallow_clone, count_unique_commits, format_text_output,
-    get_author_stats, get_file_churn, get_file_churn_detailed, get_recommendation, is_bot_author,
+    build_summary, check_shallow_clone, count_unique_commits, format_text_output, get_author_stats,
+    get_file_churn, get_file_churn_detailed, get_recommendation, is_bot_author,
     is_degenerate_shallow, is_git_repository, matches_exclude_pattern, AuthorStats, ChurnError,
     ChurnReport, ChurnSummary, FileChurn, Hotspot,
 };
@@ -840,8 +840,8 @@ mod integration_tests {
             check_shallow_clone(shallow_dir.path()).expect("check_shallow_clone");
         assert!(is_shallow, "fixture sanity: clone must be shallow");
 
-        let unique = count_unique_commits(shallow_dir.path(), 365)
-            .expect("count_unique_commits on shallow");
+        let unique =
+            count_unique_commits(shallow_dir.path(), 365).expect("count_unique_commits on shallow");
         assert!(
             unique <= 1,
             "fixture sanity: depth-1 clone must have at most 1 commit, got {}",
@@ -865,7 +865,10 @@ mod integration_tests {
 
         let (full_is_shallow, _) = check_shallow_clone(full.path()).expect("check_shallow_clone");
         let full_unique = count_unique_commits(full.path(), 365).expect("count_unique_commits");
-        assert!(!full_is_shallow, "fixture sanity: full clone is not shallow");
+        assert!(
+            !full_is_shallow,
+            "fixture sanity: full clone is not shallow"
+        );
         assert_eq!(full_unique, 1);
         assert!(
             !is_degenerate_shallow(full_is_shallow, full_unique),

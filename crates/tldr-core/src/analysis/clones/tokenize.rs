@@ -82,14 +82,13 @@ fn extract_tokens_v2(
                 return;
             }
         }
-        "typescript" | "javascript"
-            if kind == "template_substitution" => {
-                let mut cursor = node.walk();
-                for child in node.children(&mut cursor) {
-                    extract_tokens_v2(&child, source, language, tokens);
-                }
-                return;
+        "typescript" | "javascript" if kind == "template_substitution" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                extract_tokens_v2(&child, source, language, tokens);
             }
+            return;
+        }
         _ => {}
     }
 

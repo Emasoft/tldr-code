@@ -992,8 +992,8 @@ impl LuaHandler {
                                             if let Some(var) = subchild.child(k) {
                                                 match var.kind() {
                                                     "identifier" => {
-                                                        let name = get_node_text(&var, source)
-                                                            .to_string();
+                                                        let name =
+                                                            get_node_text(&var, source).to_string();
                                                         simple_name = Some(name.clone());
                                                         qualified_name = Some(name);
                                                         break;
@@ -1006,8 +1006,7 @@ impl LuaHandler {
                                                             simple_name = Some(name);
                                                         }
                                                         qualified_name = Some(
-                                                            get_node_text(&var, source)
-                                                                .to_string(),
+                                                            get_node_text(&var, source).to_string(),
                                                         );
                                                         break;
                                                     }
@@ -1019,8 +1018,7 @@ impl LuaHandler {
                                                             simple_name = Some(name);
                                                         }
                                                         qualified_name = Some(
-                                                            get_node_text(&var, source)
-                                                                .to_string(),
+                                                            get_node_text(&var, source).to_string(),
                                                         );
                                                         break;
                                                     }
@@ -1095,9 +1093,7 @@ impl LuaHandler {
                         // target regardless of which slot actually held the function.
                         let candidate_count = (0..child.child_count())
                             .filter_map(|k| child.child(k))
-                            .filter(|v| {
-                                matches!(v.kind(), "identifier" | "dot_index_expression")
-                            })
+                            .filter(|v| matches!(v.kind(), "identifier" | "dot_index_expression"))
                             .count();
                         if candidate_count == 1 {
                             for k in 0..child.child_count() {

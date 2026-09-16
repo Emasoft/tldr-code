@@ -174,7 +174,12 @@ from collections import OrderedDict as OD
 
         // Legacy: --legacy-array preserves the historical bare-array shape.
         let mut cmd_legacy = tldr_cmd();
-        cmd_legacy.args(["imports", test_file.to_str().unwrap(), "--legacy-array", "-q"]);
+        cmd_legacy.args([
+            "imports",
+            test_file.to_str().unwrap(),
+            "--legacy-array",
+            "-q",
+        ]);
         cmd_legacy
             .assert()
             .success()

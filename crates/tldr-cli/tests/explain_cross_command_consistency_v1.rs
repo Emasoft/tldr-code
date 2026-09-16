@@ -240,10 +240,22 @@ fn test_change_impact_metadata_populated() {
     }
     // Configure committer for the test commit so `git commit` does not fail.
     let _ = std::process::Command::new("git")
-        .args(["-C", &root.display().to_string(), "config", "user.email", "x@y"])
+        .args([
+            "-C",
+            &root.display().to_string(),
+            "config",
+            "user.email",
+            "x@y",
+        ])
         .status();
     let _ = std::process::Command::new("git")
-        .args(["-C", &root.display().to_string(), "config", "user.name", "x"])
+        .args([
+            "-C",
+            &root.display().to_string(),
+            "config",
+            "user.name",
+            "x",
+        ])
         .status();
     let _ = std::process::Command::new("git")
         .args(["-C", &root.display().to_string(), "add", "-A"])
@@ -283,7 +295,8 @@ fn test_change_impact_metadata_populated() {
         .and_then(|k| k.as_str())
         .unwrap_or("");
     assert_eq!(
-        status_kind, "NoChanges",
+        status_kind,
+        "NoChanges",
         "expected NoChanges status on a clean tree; got status={:?}",
         v.get("status")
     );

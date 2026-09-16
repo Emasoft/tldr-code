@@ -48,13 +48,7 @@ fn skip_if_missing(path: &str) -> bool {
 
 fn explain_json(file: &str, function: &str) -> Value {
     let out = tldr_cmd()
-        .args([
-            "explain",
-            file,
-            function,
-            "--format",
-            "json",
-        ])
+        .args(["explain", file, function, "--format", "json"])
         .output()
         .expect("spawn tldr");
     let stdout = String::from_utf8_lossy(&out.stdout);

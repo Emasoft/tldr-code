@@ -902,7 +902,6 @@ where
         );
     }
 
-
     #[test]
     fn test_parse_params_closure_bound_with_tuple_return_not_split() {
         // Catches a pre-fix bug: `find_top_level_open_paren` used a naive

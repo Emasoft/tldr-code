@@ -456,9 +456,7 @@ pub fn detect_smells_with_walker_opts(
         // sometimes lives there too — ts-dom-gen has `src/build/emitter.ts`
         // as its sole source file). Without the hint, the walker skips
         // `build/` and smells reports 0 results.
-        let lang_filter = walker_opts
-            .lang
-            .or_else(|| Language::from_directory(path));
+        let lang_filter = walker_opts.lang.or_else(|| Language::from_directory(path));
         let mut walker = crate::walker::ProjectWalker::new(path);
         if walker_opts.no_default_ignore {
             walker = walker.no_default_ignore();

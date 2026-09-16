@@ -107,13 +107,7 @@ fn vuln_format_sarif_still_works() {
     let dir = fixture();
     let mut cmd = tldr_cmd();
     cmd.current_dir(dir.path()).args([
-        "vuln",
-        ".",
-        "--lang",
-        "python",
-        "--format",
-        "sarif",
-        "--quiet",
+        "vuln", ".", "--lang", "python", "--format", "sarif", "--quiet",
     ]);
     let output = cmd.output().expect("run tldr vuln");
     // vuln exits non-zero when it finds findings, but we don't care about
@@ -184,7 +178,11 @@ fn json_works_universally() {
 #[test]
 fn validator_unit_universal_formats() {
     use tldr_cli::output::{validate_format_for_command, OutputFormat};
-    for fmt in [OutputFormat::Json, OutputFormat::Text, OutputFormat::Compact] {
+    for fmt in [
+        OutputFormat::Json,
+        OutputFormat::Text,
+        OutputFormat::Compact,
+    ] {
         for cmd in ["smells", "vuln", "tree", "calls", "structure"] {
             assert!(
                 validate_format_for_command(cmd, fmt).is_ok(),

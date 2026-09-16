@@ -90,8 +90,7 @@ pub struct JsonlStreamReport {
 ///
 /// Memory is bounded by the longest row, never by the file size.
 pub fn stream_jsonl(path: &Path) -> TldrResult<JsonlStreamReport> {
-    let file =
-        std::fs::File::open(path).map_err(crate::error::TldrError::IoError)?;
+    let file = std::fs::File::open(path).map_err(crate::error::TldrError::IoError)?;
     let mut reader = std::io::BufReader::with_capacity(1024 * 1024, file);
 
     let started = Instant::now();
@@ -128,8 +127,7 @@ pub fn stream_jsonl(path: &Path) -> TldrResult<JsonlStreamReport> {
                     rows_invalid += 1;
                     if first_invalid_row.is_none() {
                         first_invalid_row = Some(rows_total);
-                        first_error =
-                            Some("row is not a valid JSON document".to_string());
+                        first_error = Some("row is not a valid JSON document".to_string());
                     }
                 } else {
                     rows_valid += 1;
@@ -220,7 +218,10 @@ mod tests {
         assert_eq!(report.summary.rows_valid, 3);
         assert_eq!(report.summary.rows_invalid, 0);
         assert_eq!(report.summary.rows_blank, 0);
-        assert_eq!(report.summary.bytes_processed, path.metadata().unwrap().len());
+        assert_eq!(
+            report.summary.bytes_processed,
+            path.metadata().unwrap().len()
+        );
         assert!(report.summary.first_invalid_row.is_none());
         assert!(report.summary.parse_ms < 10_000);
     }
@@ -248,11 +249,7 @@ mod tests {
     #[test]
     fn blank_rows_are_counted_and_skipped() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_jsonl(
-            &dir,
-            "blanks.jsonl",
-            &["", r#"{"a": 1}"#, "   ", ""],
-        );
+        let path = write_jsonl(&dir, "blanks.jsonl", &["", r#"{"a": 1}"#, "   ", ""]);
         // join("\n") => "\n{\"a\": 1}\n   \n": one blank row, one data row,
         // one whitespace row (the trailing "" element is EOF, not a row).
         let report = stream_jsonl(&path).unwrap();
@@ -284,7 +281,11 @@ mod tests {
     #[test]
     fn first_row_tree_returns_first_document() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_jsonl(&dir, "first.jsonl", &["", r#"{"first": true}"#, r#"{"second": 2}"#]);
+        let path = write_jsonl(
+            &dir,
+            "first.jsonl",
+            &["", r#"{"first": true}"#, r#"{"second": 2}"#],
+        );
         let (tree, text) = first_row_tree(&path).unwrap().expect("row exists");
         assert!(!tree.root_node().has_error());
         assert_eq!(text, r#"{"first": true}"#);

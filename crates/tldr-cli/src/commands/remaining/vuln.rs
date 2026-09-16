@@ -403,10 +403,7 @@ fn enrich_with_enclosing_function(findings: &mut [VulnFinding]) {
 /// line_end]` window contains `line`. Returns None when no function
 /// brackets the line (module-level finding) or when the AST extractor
 /// produced 0-valued ranges (legacy extractors that skipped `line_end`).
-fn lookup_enclosing_function(
-    module: &tldr_core::types::ModuleInfo,
-    line: u32,
-) -> Option<String> {
+fn lookup_enclosing_function(module: &tldr_core::types::ModuleInfo, line: u32) -> Option<String> {
     let mut best: Option<(u32, String)> = None; // (range_size, name)
 
     let mut consider = |start: u32, end: u32, name: &str| {
@@ -1222,7 +1219,6 @@ fn is_smell_finding(f: &VulnFinding) -> bool {
     f.vuln_type == VulnType::Panic && f.title.starts_with("Potential Panic")
 }
 
-
 // =============================================================================
 // Helper Functions
 // =============================================================================
@@ -1619,11 +1615,7 @@ pub fn from_raw(bytes: &[u8]) -> &str {
     /// controlled by the caller. All other flags default to their CLI
     /// defaults (no severity filter, no vuln-type filter, informational
     /// findings excluded — same as a flag-less `tldr vuln <path>`).
-    fn make_vuln_args_for_test(
-        path: PathBuf,
-        output: PathBuf,
-        include_smells: bool,
-    ) -> VulnArgs {
+    fn make_vuln_args_for_test(path: PathBuf, output: PathBuf, include_smells: bool) -> VulnArgs {
         VulnArgs {
             path,
             lang: Some(Language::Rust),
@@ -1837,8 +1829,7 @@ pub fn from_raw(bytes: &[u8]) -> &str {
         // Mirror the production aggregation step in `VulnArgs::run` post-
         // filter: collect unique file paths from the post-filter findings
         // slice, then hand the count to `build_summary`.
-        let unique_files: HashSet<&str> =
-            findings.iter().map(|f| f.file.as_str()).collect();
+        let unique_files: HashSet<&str> = findings.iter().map(|f| f.file.as_str()).collect();
         let summary = build_summary(&findings, unique_files.len() as u32);
 
         assert_eq!(
@@ -1870,8 +1861,7 @@ pub fn from_raw(bytes: &[u8]) -> &str {
         // anti-product surface "0 findings, 1 file with vulns" on
         // express.
         let findings: Vec<VulnFinding> = vec![];
-        let unique_files: HashSet<&str> =
-            findings.iter().map(|f| f.file.as_str()).collect();
+        let unique_files: HashSet<&str> = findings.iter().map(|f| f.file.as_str()).collect();
         let summary = build_summary(&findings, unique_files.len() as u32);
 
         assert_eq!(summary.total_findings, 0);

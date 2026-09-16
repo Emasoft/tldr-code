@@ -342,10 +342,7 @@ const JS_TS_PRESERVED_DIRS: &[&str] = &["build", "dist", "out", "bin", "obj"];
 /// SKIP_DIRS is preserved (deferred to `.gitignore`).
 ///
 /// cross-cutting-and-clear-fix-bugs-v1 (P18.X4).
-pub fn should_skip_path_with_lang(
-    path: &Path,
-    lang: Option<crate::types::Language>,
-) -> bool {
+pub fn should_skip_path_with_lang(path: &Path, lang: Option<crate::types::Language>) -> bool {
     let preserve_js_ts = matches!(
         lang,
         Some(crate::types::Language::JavaScript) | Some(crate::types::Language::TypeScript)

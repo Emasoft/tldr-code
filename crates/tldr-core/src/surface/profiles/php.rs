@@ -17,8 +17,7 @@ const NOISE_DIRS: &[&str] = &[
 // why: missing leading separator matched any file whose name merely ended in
 // these letters (e.g. "latest.php", "manifest.php", "workbench.php"); every
 // other language profile uses a `_`/`.` delimited suffix, so match that here.
-const NOISE_FILE_SUFFIXES: &[&str] =
-    &["_benchmark.php", "_bench.php", "_test.php", "_tests.php"];
+const NOISE_FILE_SUFFIXES: &[&str] = &["_benchmark.php", "_bench.php", "_test.php", "_tests.php"];
 const DROP_SEGMENTS: &[&str] = &["lib", "src"];
 const PREFIX_SRC: &[&str] = &["src"];
 const PREFIX_LIB: &[&str] = &["lib"];

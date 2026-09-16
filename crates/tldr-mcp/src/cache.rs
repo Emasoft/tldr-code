@@ -364,7 +364,10 @@ mod tests {
     // pass/fail moves with machine load cannot gate anything — a contributor
     // sees red unrelated to their change and learns to ignore the suite.
     // Ignored in debug, still enforced by `cargo test --release`.
-    #[cfg_attr(debug_assertions, ignore = "wall-clock threshold; release-only (TRDD-YJALU4Y2)")]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "wall-clock threshold; release-only (TRDD-YJALU4Y2)"
+    )]
     #[test]
     fn bench_cache_hit_latency() {
         let mut cache = L1Cache::new(Duration::from_secs(60), 200);
@@ -411,7 +414,10 @@ mod tests {
     // test builds". That allowance is simply wrong for a debug build on this
     // class of machine, so in debug the assertion was a guaranteed red, not a
     // guard. Do NOT "fix" this by raising the number — that is what produced it.
-    #[cfg_attr(debug_assertions, ignore = "wall-clock threshold; release-only (TRDD-YJALU4Y2)")]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "wall-clock threshold; release-only (TRDD-YJALU4Y2)"
+    )]
     #[test]
     fn bench_cache_key_construction() {
         let args = json!({

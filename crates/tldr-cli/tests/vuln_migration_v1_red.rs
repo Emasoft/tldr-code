@@ -78,7 +78,6 @@ fn all_findings(report: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-
 #[test]
 fn c_sql_injection_positive() {
     let report = run_tldr_vuln("c/sql_injection_positive.c", "c");
@@ -230,7 +229,10 @@ fn javascript_sql_injection_positive() {
 
 #[test]
 fn javascript_sql_injection_string_literal_fp() {
-    let report = run_tldr_vuln("javascript/sql_injection_string_literal_fp.js", "javascript");
+    let report = run_tldr_vuln(
+        "javascript/sql_injection_string_literal_fp.js",
+        "javascript",
+    );
     let all = all_findings(&report);
     assert!(
         all.is_empty(),
@@ -460,7 +462,10 @@ fn typescript_sql_injection_positive() {
 
 #[test]
 fn typescript_sql_injection_string_literal_fp() {
-    let report = run_tldr_vuln("typescript/sql_injection_string_literal_fp.ts", "typescript");
+    let report = run_tldr_vuln(
+        "typescript/sql_injection_string_literal_fp.ts",
+        "typescript",
+    );
     let all = all_findings(&report);
     assert!(
         all.is_empty(),
@@ -828,7 +833,10 @@ fn javascript_command_injection_positive() {
 
 #[test]
 fn javascript_command_injection_string_literal_fp() {
-    let report = run_tldr_vuln("javascript/command_injection_string_literal_fp.js", "javascript");
+    let report = run_tldr_vuln(
+        "javascript/command_injection_string_literal_fp.js",
+        "javascript",
+    );
     let all = all_findings(&report);
     assert!(
         all.is_empty(),
@@ -1012,7 +1020,10 @@ fn ruby_command_injection_percent_x_positive() {
 
 #[test]
 fn ruby_command_injection_percent_x_string_literal_fp() {
-    let report = run_tldr_vuln("ruby/command_injection_percent_x_string_literal_fp.rb", "ruby");
+    let report = run_tldr_vuln(
+        "ruby/command_injection_percent_x_string_literal_fp.rb",
+        "ruby",
+    );
     let all = all_findings(&report);
     assert!(
         all.is_empty(),
@@ -1104,7 +1115,10 @@ fn typescript_command_injection_positive() {
 
 #[test]
 fn typescript_command_injection_string_literal_fp() {
-    let report = run_tldr_vuln("typescript/command_injection_string_literal_fp.ts", "typescript");
+    let report = run_tldr_vuln(
+        "typescript/command_injection_string_literal_fp.ts",
+        "typescript",
+    );
     let all = all_findings(&report);
     assert!(
         all.is_empty(),
@@ -1265,7 +1279,10 @@ fn javascript_path_traversal_positive() {
 
 #[test]
 fn javascript_path_traversal_string_literal_fp() {
-    let report = run_tldr_vuln("javascript/path_traversal_string_literal_fp.js", "javascript");
+    let report = run_tldr_vuln(
+        "javascript/path_traversal_string_literal_fp.js",
+        "javascript",
+    );
     let all = all_findings(&report);
     assert!(
         all.is_empty(),
@@ -1518,7 +1535,10 @@ fn typescript_path_traversal_positive() {
 
 #[test]
 fn typescript_path_traversal_string_literal_fp() {
-    let report = run_tldr_vuln("typescript/path_traversal_string_literal_fp.ts", "typescript");
+    let report = run_tldr_vuln(
+        "typescript/path_traversal_string_literal_fp.ts",
+        "typescript",
+    );
     let all = all_findings(&report);
     assert!(
         all.is_empty(),
@@ -1817,7 +1837,10 @@ fn javascript_deserialization_positive() {
 
 #[test]
 fn javascript_deserialization_string_literal_fp() {
-    let report = run_tldr_vuln("javascript/deserialization_string_literal_fp.js", "javascript");
+    let report = run_tldr_vuln(
+        "javascript/deserialization_string_literal_fp.js",
+        "javascript",
+    );
     let all = all_findings(&report);
     assert!(
         all.is_empty(),
@@ -2001,7 +2024,10 @@ fn typescript_deserialization_positive() {
 
 #[test]
 fn typescript_deserialization_string_literal_fp() {
-    let report = run_tldr_vuln("typescript/deserialization_string_literal_fp.ts", "typescript");
+    let report = run_tldr_vuln(
+        "typescript/deserialization_string_literal_fp.ts",
+        "typescript",
+    );
     let all = all_findings(&report);
     assert!(
         all.is_empty(),

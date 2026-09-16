@@ -798,8 +798,16 @@ mod tests {
 
         // Create and populate cache
         let cache = QueryCache::new(100);
-        cache.insert(QueryKey::new("test", 12345, Language::Python), &"hello world", vec![1, 2, 3]);
-        cache.insert(QueryKey::new("test2", 67890, Language::Python), &vec![1, 2, 3], vec![]);
+        cache.insert(
+            QueryKey::new("test", 12345, Language::Python),
+            &"hello world",
+            vec![1, 2, 3],
+        );
+        cache.insert(
+            QueryKey::new("test2", 67890, Language::Python),
+            &vec![1, 2, 3],
+            vec![],
+        );
 
         // Save to file
         cache.save_to_file(&cache_path).unwrap();
@@ -931,9 +939,21 @@ mod tests {
         let shared_input = 12345u64;
 
         // Multiple queries depend on the same input
-        cache.insert(QueryKey::new("q1", 1, Language::Python), &"v1", vec![shared_input]);
-        cache.insert(QueryKey::new("q2", 2, Language::Python), &"v2", vec![shared_input]);
-        cache.insert(QueryKey::new("q3", 3, Language::Python), &"v3", vec![shared_input]);
+        cache.insert(
+            QueryKey::new("q1", 1, Language::Python),
+            &"v1",
+            vec![shared_input],
+        );
+        cache.insert(
+            QueryKey::new("q2", 2, Language::Python),
+            &"v2",
+            vec![shared_input],
+        );
+        cache.insert(
+            QueryKey::new("q3", 3, Language::Python),
+            &"v3",
+            vec![shared_input],
+        );
 
         assert_eq!(cache.len(), 3);
 
@@ -950,7 +970,11 @@ mod tests {
         let input2 = 222u64;
 
         // Entry depends on multiple inputs
-        cache.insert(QueryKey::new("q1", 1, Language::Python), &"v1", vec![input1, input2]);
+        cache.insert(
+            QueryKey::new("q1", 1, Language::Python),
+            &"v1",
+            vec![input1, input2],
+        );
 
         // Invalidating either input should remove the entry
         assert_eq!(cache.len(), 1);
@@ -1008,8 +1032,16 @@ mod tests {
         let cache = QueryCache::new(100);
         let input_hash = 42u64;
 
-        cache.insert(QueryKey::new("q1", 1, Language::Python), &"value1", vec![input_hash]);
-        cache.insert(QueryKey::new("q2", 2, Language::Python), &"value2", vec![input_hash]);
+        cache.insert(
+            QueryKey::new("q1", 1, Language::Python),
+            &"value1",
+            vec![input_hash],
+        );
+        cache.insert(
+            QueryKey::new("q2", 2, Language::Python),
+            &"value2",
+            vec![input_hash],
+        );
         let bytes_before = cache.total_bytes();
         assert!(bytes_before > 0);
 
@@ -1060,7 +1092,11 @@ mod tests {
 
         // Insert one large entry (~1500 bytes)
         let big_payload = "x".repeat(1500);
-        cache.insert(QueryKey::new("big", 0, Language::Python), &big_payload, vec![]);
+        cache.insert(
+            QueryKey::new("big", 0, Language::Python),
+            &big_payload,
+            vec![],
+        );
 
         // Should have evicted some small entries to make room
         assert!(
@@ -1102,7 +1138,11 @@ mod tests {
         for i in 0..1000u64 {
             let size = ((i % 10) + 1) as usize * 100; // 100 to 1000 bytes
             let payload = "x".repeat(size);
-            cache.insert(QueryKey::new("stress", i, Language::Python), &payload, vec![]);
+            cache.insert(
+                QueryKey::new("stress", i, Language::Python),
+                &payload,
+                vec![],
+            );
         }
 
         // Cache must respect byte limit

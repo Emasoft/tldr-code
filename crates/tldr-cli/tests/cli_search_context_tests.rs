@@ -110,12 +110,7 @@ fn create_empty_project() -> TempDir {
 fn test_search_basic_json() {
     let temp_dir = create_test_project();
     let output = tldr_cmd()
-        .args([
-            "search",
-            "helper",
-            temp_dir.path().to_str().unwrap(),
-            "-q",
-        ])
+        .args(["search", "helper", temp_dir.path().to_str().unwrap(), "-q"])
         .output()
         .expect("Failed to execute tldr search");
 
@@ -322,7 +317,9 @@ fn test_search_nonexistent_path() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !output.status.success() || stdout.contains("\"results\":[]") || stdout.contains("\"results\": []"),
+        !output.status.success()
+            || stdout.contains("\"results\":[]")
+            || stdout.contains("\"results\": []"),
         "search on nonexistent path should fail OR produce empty results; got status={}, stdout={}",
         output.status,
         stdout

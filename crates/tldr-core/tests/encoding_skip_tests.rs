@@ -139,7 +139,10 @@ fn every_bom_variant_is_skipped_with_its_own_marker() {
             .iter()
             .find(|w| w.contains(file))
             .unwrap_or_else(|| {
-                panic!("{file} produced no warning; warnings were {:?}", structure.warnings)
+                panic!(
+                    "{file} produced no warning; warnings were {:?}",
+                    structure.warnings
+                )
             });
         assert!(
             warning.contains(expected),

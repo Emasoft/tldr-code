@@ -181,7 +181,10 @@ fn n7_structure_empty_dir_emits_null_language_and_warning() {
         ])
         .output()
         .expect("run structure");
-    assert!(out.status.success(), "structure on empty dir should succeed");
+    assert!(
+        out.status.success(),
+        "structure on empty dir should succeed"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let v: Value = serde_json::from_str(&stdout).expect("valid JSON");
 
@@ -223,7 +226,10 @@ fn n7_structure_real_project_keeps_language() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     let v: Value = serde_json::from_str(&stdout).expect("valid JSON");
-    assert!(!v["language"].is_null(), "language must NOT be null when files exist");
+    assert!(
+        !v["language"].is_null(),
+        "language must NOT be null when files exist"
+    );
 }
 
 // =============================================================================

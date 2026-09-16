@@ -48,9 +48,9 @@
 pub mod cache_clear;
 pub mod cache_stats;
 pub mod daemon_active;
-pub mod daemon_registry;
 #[path = "daemon.rs"]
 pub mod daemon_impl;
+pub mod daemon_registry;
 pub mod error;
 pub mod ipc;
 pub mod list;

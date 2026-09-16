@@ -197,11 +197,8 @@ def foo(x):
 
     let ssa = construct_minimal_ssa(&cfg, &dfg).expect("SSA construction must succeed");
 
-    let x_names: Vec<&tldr_core::ssa::SsaName> = ssa
-        .ssa_names
-        .iter()
-        .filter(|n| n.variable == "x")
-        .collect();
+    let x_names: Vec<&tldr_core::ssa::SsaName> =
+        ssa.ssa_names.iter().filter(|n| n.variable == "x").collect();
     assert!(
         !x_names.is_empty(),
         "expected parameter `x` to appear in SSA names; got names: {:?}",

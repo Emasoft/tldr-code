@@ -22,7 +22,9 @@ use tldr_cli::commands::daemon::ipc::{compute_socket_path, IpcListener, MAX_MESS
 
 async fn start_listener(tmp: &TempDir) -> (IpcListener, std::path::PathBuf) {
     let project = tmp.path();
-    let listener = IpcListener::bind(project).await.expect("bind should succeed");
+    let listener = IpcListener::bind(project)
+        .await
+        .expect("bind should succeed");
     let socket_path = compute_socket_path(project);
     (listener, socket_path)
 }

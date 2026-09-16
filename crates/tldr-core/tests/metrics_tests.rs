@@ -711,7 +711,10 @@ def calc(x, y):
     let report = result.unwrap();
     // why: without this, an empty `report.functions` makes the loop below
     // vacuously pass without ever checking the invariant it claims to test.
-    assert!(!report.functions.is_empty(), "Should find at least 1 function");
+    assert!(
+        !report.functions.is_empty(),
+        "Should find at least 1 function"
+    );
 
     for func in &report.functions {
         assert_eq!(
@@ -743,7 +746,10 @@ def complex_calc(a, b, c):
     let report = result.unwrap();
     // why: an empty `report.functions` would make the loop below vacuously
     // pass without ever checking the derived-metric invariants it claims to test.
-    assert!(!report.functions.is_empty(), "Should find at least 1 function");
+    assert!(
+        !report.functions.is_empty(),
+        "Should find at least 1 function"
+    );
 
     for func in &report.functions {
         let m = &func.metrics;

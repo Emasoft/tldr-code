@@ -311,8 +311,7 @@ impl Language {
             Err(_) => return Self::from_path(path),
         };
 
-        const CPP_SIBLING_EXTS: &[&str] =
-            &["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++"];
+        const CPP_SIBLING_EXTS: &[&str] = &["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++"];
 
         for entry in read_dir.flatten() {
             let p = entry.path();
@@ -455,16 +454,12 @@ impl Language {
             }
             // Skip files whose relative path traverses a noise dir.
             if let Ok(rel) = p.strip_prefix(path) {
-                if rel
-                    .components()
-                    .any(|c| match c {
-                        std::path::Component::Normal(s) => s
-                            .to_str()
-                            .map(|n| NOISE_DIRS.contains(&n))
-                            .unwrap_or(false),
-                        _ => false,
-                    })
-                {
+                if rel.components().any(|c| match c {
+                    std::path::Component::Normal(s) => {
+                        s.to_str().map(|n| NOISE_DIRS.contains(&n)).unwrap_or(false)
+                    }
+                    _ => false,
+                }) {
                     continue;
                 }
             }
@@ -493,16 +488,12 @@ impl Language {
                     continue;
                 }
                 if let Ok(rel) = p.strip_prefix(path) {
-                    if rel
-                        .components()
-                        .any(|c| match c {
-                            std::path::Component::Normal(s) => s
-                                .to_str()
-                                .map(|n| NOISE_DIRS.contains(&n))
-                                .unwrap_or(false),
-                            _ => false,
-                        })
-                    {
+                    if rel.components().any(|c| match c {
+                        std::path::Component::Normal(s) => {
+                            s.to_str().map(|n| NOISE_DIRS.contains(&n)).unwrap_or(false)
+                        }
+                        _ => false,
+                    }) {
                         continue;
                     }
                 }
@@ -523,7 +514,10 @@ impl Language {
         // Sort descending by count, stable on language enum order for
         // deterministic tie-breaks (avoids HashMap-iteration nondeterminism
         // when two langs are exactly tied).
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(format!("{:?}", a.0).cmp(&format!("{:?}", b.0))));
+        ranked.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then(format!("{:?}", a.0).cmp(&format!("{:?}", b.0)))
+        });
         let (dominant_lang_raw, _dominant_count_raw) = ranked[0];
 
         // --- Stage 3: C-vs-Cpp disambiguation ------------------------------
@@ -547,20 +541,24 @@ impl Language {
         // dominated by .h headers would always trigger the close-call
         // tiebreaker and let a stray `tools/fuzz/requirements.txt` flip
         // the answer to Python (the luau-luau bug).
-        let consolidated: Vec<(Language, usize)> = if matches!(dominant_lang, Language::C | Language::Cpp) {
-            let c_total = counts.get(&Language::C).copied().unwrap_or(0)
-                + counts.get(&Language::Cpp).copied().unwrap_or(0);
-            let mut v: Vec<(Language, usize)> = counts
-                .iter()
-                .filter(|(l, _)| !matches!(l, Language::C | Language::Cpp))
-                .map(|(l, c)| (*l, *c))
-                .collect();
-            v.push((dominant_lang, c_total));
-            v.sort_by(|a, b| b.1.cmp(&a.1).then(format!("{:?}", a.0).cmp(&format!("{:?}", b.0))));
-            v
-        } else {
-            ranked.clone()
-        };
+        let consolidated: Vec<(Language, usize)> =
+            if matches!(dominant_lang, Language::C | Language::Cpp) {
+                let c_total = counts.get(&Language::C).copied().unwrap_or(0)
+                    + counts.get(&Language::Cpp).copied().unwrap_or(0);
+                let mut v: Vec<(Language, usize)> = counts
+                    .iter()
+                    .filter(|(l, _)| !matches!(l, Language::C | Language::Cpp))
+                    .map(|(l, c)| (*l, *c))
+                    .collect();
+                v.push((dominant_lang, c_total));
+                v.sort_by(|a, b| {
+                    b.1.cmp(&a.1)
+                        .then(format!("{:?}", a.0).cmp(&format!("{:?}", b.0)))
+                });
+                v
+            } else {
+                ranked.clone()
+            };
         let dominant_count = consolidated[0].1;
         let runner_up_count = consolidated.get(1).map(|(_, c)| *c).unwrap_or(0);
 
@@ -4700,11 +4698,7 @@ mod tests {
             std::fs::write(dir.path().join(format!("doc/script_{}.py", i)), "").unwrap();
         }
         for i in 0..30 {
-            std::fs::write(
-                dir.path().join(format!("lib_{}.ml", i)),
-                "let x () = ()\n",
-            )
-            .unwrap();
+            std::fs::write(dir.path().join(format!("lib_{}.ml", i)), "let x () = ()\n").unwrap();
         }
         assert_eq!(
             Language::from_directory(dir.path()),
@@ -4755,11 +4749,7 @@ mod tests {
             std::fs::write(dir.path().join(format!("A_{}.kt", i)), "fun x(){}\n").unwrap();
         }
         for i in 0..2 {
-            std::fs::write(
-                dir.path().join(format!("B_{}.java", i)),
-                "class B{}\n",
-            )
-            .unwrap();
+            std::fs::write(dir.path().join(format!("B_{}.java", i)), "class B{}\n").unwrap();
         }
         assert_eq!(Language::from_directory(dir.path()), Some(Language::Kotlin));
     }
@@ -4769,11 +4759,7 @@ mod tests {
         // 8 .java vs 2 .kt -> strict majority -> Java.
         let dir = tempfile::tempdir().unwrap();
         for i in 0..8 {
-            std::fs::write(
-                dir.path().join(format!("A_{}.java", i)),
-                "class A{}\n",
-            )
-            .unwrap();
+            std::fs::write(dir.path().join(format!("A_{}.java", i)), "class A{}\n").unwrap();
         }
         for i in 0..2 {
             std::fs::write(dir.path().join(format!("B_{}.kt", i)), "fun x(){}\n").unwrap();

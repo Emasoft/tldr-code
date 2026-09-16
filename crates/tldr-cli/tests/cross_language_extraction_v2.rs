@@ -257,7 +257,9 @@ fn kotlin_imports_extracted() {
         .filter_map(|i| i["module"].as_str())
         .collect();
     assert!(
-        modules.iter().any(|m| m.contains("kotlin.collections.List")),
+        modules
+            .iter()
+            .any(|m| m.contains("kotlin.collections.List")),
         "expected kotlin.collections.List in Kotlin imports, got: {:?}",
         modules
     );
@@ -314,8 +316,7 @@ fn todo_autodetect_returns_items(
         .get_output()
         .stdout
         .clone();
-    let v_auto: Value =
-        serde_json::from_slice(&out_auto).expect("todo (auto) output is JSON");
+    let v_auto: Value = serde_json::from_slice(&out_auto).expect("todo (auto) output is JSON");
 
     // With explicit --lang.
     let out_explicit = tldr_cmd()
@@ -335,10 +336,7 @@ fn todo_autodetect_returns_items(
         serde_json::from_slice(&out_explicit).expect("todo (--lang) output is JSON");
 
     let auto = v_auto["items"].as_array().map(|a| a.len()).unwrap_or(0);
-    let explicit = v_explicit["items"]
-        .as_array()
-        .map(|a| a.len())
-        .unwrap_or(0);
+    let explicit = v_explicit["items"].as_array().map(|a| a.len()).unwrap_or(0);
     (auto, explicit, expected_lang.to_string())
 }
 
@@ -354,8 +352,7 @@ public class Foo {
     private int _dead() { return 2; }
 }
 "#;
-    let (auto, _explicit, _) =
-        todo_autodetect_returns_items(&[("Foo.java", body)], "java");
+    let (auto, _explicit, _) = todo_autodetect_returns_items(&[("Foo.java", body)], "java");
     assert!(
         auto > 0,
         "Java todo autodetect must return items, got {} items",
@@ -371,8 +368,7 @@ fn todo_autodetect_works_for_kotlin() {
     private fun _dead(): Int { return 2 }
 }
 "#;
-    let (auto, _explicit, _) =
-        todo_autodetect_returns_items(&[("Foo.kt", body)], "kotlin");
+    let (auto, _explicit, _) = todo_autodetect_returns_items(&[("Foo.kt", body)], "kotlin");
     assert!(
         auto > 0,
         "Kotlin todo autodetect must return items, got {} items",

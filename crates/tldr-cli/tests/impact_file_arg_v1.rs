@@ -65,8 +65,7 @@ fn run_impact_json(args: &[&str]) -> (bool, String) {
 /// The JSON must parse, `targets` must contain the queried callee, and the
 /// callee's caller_count must be >= 1 (the caller lives in the other file).
 fn assert_callee_with_callers(stdout: &str, callee: &str) {
-    let v: Value =
-        serde_json::from_str(stdout).expect("impact --format json must emit valid JSON");
+    let v: Value = serde_json::from_str(stdout).expect("impact --format json must emit valid JSON");
     let targets = v["targets"]
         .as_object()
         .expect("impact JSON must contain a 'targets' object");

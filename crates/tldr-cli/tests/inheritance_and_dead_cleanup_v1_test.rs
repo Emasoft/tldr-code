@@ -77,10 +77,7 @@ export type Alias = number;
     for key in &["dead_functions", "possibly_dead"] {
         if let Some(arr) = v.get(*key).and_then(|x| x.as_array()) {
             for item in arr {
-                let file = item
-                    .get("file")
-                    .and_then(|f| f.as_str())
-                    .unwrap_or("");
+                let file = item.get("file").and_then(|f| f.as_str()).unwrap_or("");
                 if file.ends_with(".d.ts") {
                     dts_findings.push(format!("{}::{}", key, item));
                 }

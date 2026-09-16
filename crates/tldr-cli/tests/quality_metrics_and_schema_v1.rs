@@ -319,9 +319,9 @@ fn agg13_14_references_definitions_populated_java() {
         })
         .collect();
     for (f, l) in &ref_def_locs {
-        let promoted = defs.iter().any(|d| {
-            d["file"].as_str() == Some(f.as_str()) && d["line"].as_u64() == Some(*l)
-        });
+        let promoted = defs
+            .iter()
+            .any(|d| d["file"].as_str() == Some(f.as_str()) && d["line"].as_u64() == Some(*l));
         assert!(
             promoted,
             "definition at {}:{} present in references[] but missing from definitions[]",

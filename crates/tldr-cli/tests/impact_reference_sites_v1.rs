@@ -122,9 +122,7 @@ fn find_target<'a>(v: &'a Value, func: &str) -> &'a Value {
     }
     let suffix = format!(":{func}");
     for (key, t) in targets {
-        if key.ends_with(&suffix)
-            || t.get("function").and_then(|f| f.as_str()) == Some(func)
-        {
+        if key.ends_with(&suffix) || t.get("function").and_then(|f| f.as_str()) == Some(func) {
             return t;
         }
     }
@@ -219,7 +217,10 @@ fn impact_call_edge_target_transitively_shows_caller() {
     );
     // Dedup: collectBtnClick must appear exactly once even though references
     // also reports the call site inside it.
-    let dupes = names.iter().filter(|n| n.contains("collectBtnClick")).count();
+    let dupes = names
+        .iter()
+        .filter(|n| n.contains("collectBtnClick"))
+        .count();
     assert_eq!(
         dupes, 1,
         "references enrichment must not duplicate an existing call-graph caller: {names:?}"

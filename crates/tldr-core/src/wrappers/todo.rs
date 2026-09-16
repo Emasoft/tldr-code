@@ -299,10 +299,7 @@ fn run_equivalence_sweep(path: &str) -> TldrResult<Vec<serde_json::Value>> {
         // a non-Python single file was fed straight into the Python
         // tree-sitter parser, producing bogus/empty reports instead of
         // skipping the file as the doc comment above promises.
-        let is_python = target
-            .extension()
-            .map(|ext| ext == "py")
-            .unwrap_or(false);
+        let is_python = target.extension().map(|ext| ext == "py").unwrap_or(false);
         if is_python {
             if let Ok(source) = fs::read_to_string(target) {
                 let reports = compute_gvn(&source, None);
@@ -511,9 +508,7 @@ fn build_todo_items(report: &TodoReport) -> Vec<TodoItem> {
     {
         use std::collections::HashSet;
         let mut seen: HashSet<(String, String, usize)> = HashSet::new();
-        items.retain(|item| {
-            seen.insert((item.category.clone(), item.file.clone(), item.line))
-        });
+        items.retain(|item| seen.insert((item.category.clone(), item.file.clone(), item.line)));
     }
 
     // Sort by priority

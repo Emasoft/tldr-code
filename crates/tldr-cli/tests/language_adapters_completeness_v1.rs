@@ -95,9 +95,7 @@ fn test_calls_ocaml_functor_baseline_consistent() {
         .and_then(Value::as_array)
         .map(|defs| {
             defs.iter()
-                .filter(|d| {
-                    d.get("kind").and_then(Value::as_str) == Some("function")
-                })
+                .filter(|d| d.get("kind").and_then(Value::as_str) == Some("function"))
                 .count()
         })
         .unwrap_or(0);
@@ -146,9 +144,7 @@ fn test_impact_js_commonjs_method_assignment() {
             Some(v) => v,
             None => continue,
         };
-        let targets = v
-            .get("targets")
-            .and_then(Value::as_object);
+        let targets = v.get("targets").and_then(Value::as_object);
         if let Some(map) = targets {
             for (_, t) in map {
                 if let Some(callers) = t.get("callers").and_then(Value::as_array) {
@@ -198,11 +194,7 @@ fn test_explain_js_commonjs_callers() {
             .and_then(|ci| ci.get("callers"))
             .and_then(Value::as_array)
             .map(|a| a.len())
-            .or_else(|| {
-                v.get("callers")
-                    .and_then(Value::as_array)
-                    .map(|a| a.len())
-            })
+            .or_else(|| v.get("callers").and_then(Value::as_array).map(|a| a.len()))
             .unwrap_or(0);
         if caller_count > 0 {
             found_caller = true;

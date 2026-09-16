@@ -378,8 +378,7 @@ impl PythonHandler {
                             let is_call_function = parent.kind() == "call"
                                 && parent.child_by_field_name("function").as_ref() == Some(&child);
                             let is_attribute_name = parent.kind() == "attribute"
-                                && parent.child_by_field_name("attribute").as_ref()
-                                    == Some(&child);
+                                && parent.child_by_field_name("attribute").as_ref() == Some(&child);
                             if !is_call_function && !is_attribute_name {
                                 let line = child.start_position().row as u32 + 1 + line_offset;
                                 refs.entry(name.to_string()).or_insert(line);
@@ -1295,8 +1294,9 @@ class App:
                 .get("App")
                 .expect("App class body should have calls (ConfigAttribute, _make_timedelta)");
             assert!(
-                app_calls.iter().any(|c| c.target == "_make_timedelta"
-                    && c.call_type == CallType::Ref),
+                app_calls
+                    .iter()
+                    .any(|c| c.target == "_make_timedelta" && c.call_type == CallType::Ref),
                 "Expected Ref to _make_timedelta from App class body. Got: {:?}",
                 app_calls
             );
@@ -1313,9 +1313,7 @@ def caller():
     return list(map(transform, [1, 2, 3]))
 "#;
             let calls = extract_calls(source);
-            let caller_calls = calls
-                .get("caller")
-                .expect("caller should have calls");
+            let caller_calls = calls.get("caller").expect("caller should have calls");
             assert!(
                 caller_calls
                     .iter()

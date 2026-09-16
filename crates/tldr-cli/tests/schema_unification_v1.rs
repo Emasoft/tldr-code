@@ -270,7 +270,13 @@ public class Owner {
     .unwrap();
 
     let mut cmd = tldr_cmd();
-    cmd.args(["structure", temp.path().to_str().unwrap(), "--lang", "java", "-q"]);
+    cmd.args([
+        "structure",
+        temp.path().to_str().unwrap(),
+        "--lang",
+        "java",
+        "-q",
+    ]);
     let out = cmd.assert().success().get_output().stdout.clone();
     let v: Value = serde_json::from_slice(&out).expect("structure output is JSON");
 

@@ -116,7 +116,12 @@ export async function action(formData) {
     redirect(url);
 }
 ";
-    let result = analyze_with_ssa(src, Language::TypeScript, "action", /* use_ssa */ false);
+    let result = analyze_with_ssa(
+        src,
+        Language::TypeScript,
+        "action",
+        /* use_ssa */ false,
+    );
     let sink_lines: Vec<_> = result
         .sinks
         .iter()
@@ -222,7 +227,12 @@ async function setHeader(request, reply) {
     reply.header('X-Echo', v);
 }
 ";
-    let result = analyze_with_ssa(src, Language::TypeScript, "setHeader", /* use_ssa */ false);
+    let result = analyze_with_ssa(
+        src,
+        Language::TypeScript,
+        "setHeader",
+        /* use_ssa */ false,
+    );
     let sink_lines: Vec<_> = result
         .sinks
         .iter()
@@ -252,7 +262,12 @@ async function handler(req, res) {
     res.send(v);
 }
 ";
-    let result = analyze_with_ssa(src, Language::TypeScript, "handler", /* use_ssa */ false);
+    let result = analyze_with_ssa(
+        src,
+        Language::TypeScript,
+        "handler",
+        /* use_ssa */ false,
+    );
     let sink_lines: Vec<_> = result
         .sinks
         .iter()
@@ -277,7 +292,12 @@ async function handler(req, res) {
     res.redirect(next);
 }
 ";
-    let result = analyze_with_ssa(src, Language::TypeScript, "handler", /* use_ssa */ false);
+    let result = analyze_with_ssa(
+        src,
+        Language::TypeScript,
+        "handler",
+        /* use_ssa */ false,
+    );
     let sink_lines: Vec<_> = result
         .sinks
         .iter()
@@ -305,7 +325,12 @@ async function handler(req, response) {
     response.send(v);
 }
 ";
-    let result = analyze_with_ssa(src, Language::TypeScript, "handler", /* use_ssa */ false);
+    let result = analyze_with_ssa(
+        src,
+        Language::TypeScript,
+        "handler",
+        /* use_ssa */ false,
+    );
     let sink_lines: Vec<_> = result
         .sinks
         .iter()
@@ -334,7 +359,12 @@ async function handler(req, Response) {
     Response.redirect(next);
 }
 ";
-    let result = analyze_with_ssa(src, Language::TypeScript, "handler", /* use_ssa */ false);
+    let result = analyze_with_ssa(
+        src,
+        Language::TypeScript,
+        "handler",
+        /* use_ssa */ false,
+    );
     let sink_lines: Vec<_> = result
         .sinks
         .iter()
@@ -470,7 +500,12 @@ async function handler(request, reply) {
     eval(q);
 }
 ";
-    let result = analyze_with_ssa(src, Language::TypeScript, "handler", /* use_ssa */ false);
+    let result = analyze_with_ssa(
+        src,
+        Language::TypeScript,
+        "handler",
+        /* use_ssa */ false,
+    );
     assert_source_to_eval_flow(&result, TaintSourceType::HttpParam);
 }
 

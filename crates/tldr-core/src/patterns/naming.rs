@@ -233,9 +233,7 @@ fn find_violations(
         // so single-word `LowerAlpha` / `UpperAlpha` identifiers
         // aren't flagged as violations against camelCase/PascalCase
         // expectations they degenerate into.
-        .filter(|(_, case, _, _)| {
-            *case != NamingCase::Unknown && !is_compatible(*case, *expected)
-        })
+        .filter(|(_, case, _, _)| *case != NamingCase::Unknown && !is_compatible(*case, *expected))
         // AGG13-18 (quality-metrics-and-schema-v1): PHP magic methods
         // (`__construct`, `__invoke`, `__toString`, `__call`, etc.)
         // are language-mandated dunders that start with exactly `__`
@@ -270,10 +268,7 @@ fn find_violations(
 /// plain leading-underscore privates (`_helper`, `__helper_local`).
 fn is_magic_dunder(name: &str) -> bool {
     let bytes = name.as_bytes();
-    bytes.len() > 2
-        && bytes[0] == b'_'
-        && bytes[1] == b'_'
-        && bytes[2].is_ascii_alphabetic()
+    bytes.len() > 2 && bytes[0] == b'_' && bytes[1] == b'_' && bytes[2].is_ascii_alphabetic()
 }
 
 /// Convert internal NamingCase to public NamingConvention

@@ -36,14 +36,23 @@ fn l1_structure_text_richer_than_before() {
     .unwrap();
 
     let out = tldr_cmd()
-        .args(["structure", temp.path().to_str().unwrap(), "--format", "text"])
+        .args([
+            "structure",
+            temp.path().to_str().unwrap(),
+            "--format",
+            "text",
+        ])
         .output()
         .expect("tldr structure should run");
     assert!(out.status.success(), "structure should succeed");
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     // Class is shown.
-    assert!(stdout.contains("Service"), "should list class Service: {}", stdout);
+    assert!(
+        stdout.contains("Service"),
+        "should list class Service: {}",
+        stdout
+    );
     // At least one method appears (signature or name) under the class.
     assert!(
         stdout.contains("fetch") || stdout.contains("save"),
@@ -51,7 +60,11 @@ fn l1_structure_text_richer_than_before() {
         stdout
     );
     // The free function is shown.
-    assert!(stdout.contains("helper"), "should list free function: {}", stdout);
+    assert!(
+        stdout.contains("helper"),
+        "should list free function: {}",
+        stdout
+    );
     // Line numbers appear somewhere (we tag every richer line with `(L<n>)`
     // or with the `L<n>` marker — at minimum the function should have a
     // line annotation).
@@ -79,7 +92,11 @@ fn l2_stats_empty_payload_includes_next_steps() {
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     let v: Value = serde_json::from_str(&stdout).expect("stats should emit valid JSON");
-    assert!(v.get("message").is_some(), "must include message: {}", stdout);
+    assert!(
+        v.get("message").is_some(),
+        "must include message: {}",
+        stdout
+    );
     let next_steps = v
         .get("next_steps")
         .expect("must include next_steps hint")
@@ -97,7 +114,11 @@ fn l2_stats_empty_payload_includes_next_steps() {
         joined
     );
 
-    let requires = v.get("requires").expect("must include requires").as_array().unwrap();
+    let requires = v
+        .get("requires")
+        .expect("must include requires")
+        .as_array()
+        .unwrap();
     assert!(!requires.is_empty(), "requires should be non-empty");
 }
 
@@ -170,7 +191,11 @@ fn l5_dead_json_has_no_redundant_count_fields() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let v: Value = serde_json::from_str(&stdout).expect("dead should emit valid JSON");
 
-    assert!(v.get("total_dead").is_some(), "must keep total_dead: {}", stdout);
+    assert!(
+        v.get("total_dead").is_some(),
+        "must keep total_dead: {}",
+        stdout
+    );
     assert!(
         v.get("shown_count").is_none(),
         "must drop shown_count (redundant w/ total_dead): {}",
@@ -202,7 +227,11 @@ fn l6_loc_by_language_is_object_on_single_lang() {
     let v: Value = serde_json::from_str(&stdout).expect("loc should emit valid JSON");
 
     let by_lang = v.get("by_language").expect("must have by_language");
-    assert!(by_lang.is_object(), "by_language must be a JSON object: {}", stdout);
+    assert!(
+        by_lang.is_object(),
+        "by_language must be a JSON object: {}",
+        stdout
+    );
     let keys: Vec<&str> = by_lang
         .as_object()
         .unwrap()
@@ -253,7 +282,10 @@ fn l8_global_quiet_flag_silences_progress() {
     // We deliberately avoid invoking `tldr semantic` here so the test
     // does not require the optional `--features semantic` build, nor a
     // 110MB model download.
-    let out = tldr_cmd().args(["--help"]).output().expect("tldr --help should run");
+    let out = tldr_cmd()
+        .args(["--help"])
+        .output()
+        .expect("tldr --help should run");
     assert!(out.status.success(), "tldr --help should succeed");
     let help = String::from_utf8_lossy(&out.stdout);
     assert!(

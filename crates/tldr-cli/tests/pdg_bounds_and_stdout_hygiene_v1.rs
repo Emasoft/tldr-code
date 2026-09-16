@@ -190,10 +190,7 @@ namespace tx {
         .get("path_exists")
         .and_then(|x| x.as_bool())
         .unwrap_or(false);
-    let explanation = v
-        .get("explanation")
-        .and_then(|x| x.as_str())
-        .unwrap_or("");
+    let explanation = v.get("explanation").and_then(|x| x.as_str()).unwrap_or("");
     assert!(
         !explanation.contains("4294967295"),
         "chop must not leak UINT32_MAX into explanation (BUG-AGG-5): {explanation}"
@@ -249,10 +246,7 @@ class StringHelper {
         .get("path_exists")
         .and_then(|x| x.as_bool())
         .unwrap_or(false);
-    let explanation = v
-        .get("explanation")
-        .and_then(|x| x.as_str())
-        .unwrap_or("");
+    let explanation = v.get("explanation").and_then(|x| x.as_str()).unwrap_or("");
     assert!(
         !explanation.contains("4294967295"),
         "chop must not leak UINT32_MAX into explanation (BUG-AGG-5): {explanation}"
@@ -335,10 +329,7 @@ public class Owner {
         .and_then(|x| x.as_bool())
         .unwrap_or(false);
     let count = v.get("count").and_then(|x| x.as_u64()).unwrap_or(0);
-    let explanation = v
-        .get("explanation")
-        .and_then(|x| x.as_str())
-        .unwrap_or("");
+    let explanation = v.get("explanation").and_then(|x| x.as_str()).unwrap_or("");
     assert!(
         !explanation.contains("4294967295"),
         "chop must not leak UINT32_MAX (BUG-AGG-5 regression check): {explanation}"

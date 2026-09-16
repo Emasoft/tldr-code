@@ -682,10 +682,7 @@ fn partition_files_by_size(candidates: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>
             } => {
                 skipped += 1;
                 warnings.push(format_oversize_warning(
-                    file,
-                    size_bytes,
-                    max_bytes,
-                    is_autogen,
+                    file, size_bytes, max_bytes, is_autogen,
                 ));
             }
             // WithinLimit | Unknown: keep the file. Unknown means the stat
@@ -1133,9 +1130,7 @@ fn index_lua_module(index: &mut HashMap<String, PathBuf>, file_path: &Path, rela
     // Dotted module form: "src.foo.bar" — what require("src.foo.bar") passes
     let dotted = path_to_module_name(&stem);
     if !dotted.is_empty() && dotted != stem_str {
-        index
-            .entry(dotted)
-            .or_insert_with(|| fp.clone());
+        index.entry(dotted).or_insert_with(|| fp.clone());
     }
 
     // Bare leaf name: "bar" — what require("bar") might pass for a
@@ -1156,15 +1151,11 @@ fn index_lua_module(index: &mut HashMap<String, PathBuf>, file_path: &Path, rela
         if let Some(parent) = stem.parent() {
             let parent_dotted = path_to_module_name(parent);
             if !parent_dotted.is_empty() {
-                index
-                    .entry(parent_dotted)
-                    .or_insert_with(|| fp.clone());
+                index.entry(parent_dotted).or_insert_with(|| fp.clone());
             }
             let parent_relative = parent.to_string_lossy().to_string();
             if !parent_relative.is_empty() {
-                index
-                    .entry(parent_relative)
-                    .or_insert_with(|| fp.clone());
+                index.entry(parent_relative).or_insert_with(|| fp.clone());
             }
             if let Some(parent_name) = parent.file_name() {
                 index
@@ -1585,10 +1576,7 @@ fn resolve_import(
 ///   3. Progressively shorter prefixes for nested module references that
 ///      may resolve to a parent `init.lua` (Lua package convention).
 ///   4. The bare leaf name as a last resort (matches a top-level module).
-fn resolve_lua_import(
-    import: &ImportInfo,
-    index: &HashMap<String, PathBuf>,
-) -> Option<PathBuf> {
+fn resolve_lua_import(import: &ImportInfo, index: &HashMap<String, PathBuf>) -> Option<PathBuf> {
     let module = &import.module;
     if module.is_empty() {
         return None;

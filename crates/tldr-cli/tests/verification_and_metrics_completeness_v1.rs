@@ -61,7 +61,10 @@ fn require_repo(p: &str) -> bool {
     if Path::new(p).exists() {
         true
     } else {
-        eprintln!("verification-and-metrics-completeness-v1: skipping (missing {})", p);
+        eprintln!(
+            "verification-and-metrics-completeness-v1: skipping (missing {})",
+            p
+        );
         false
     }
 }
@@ -85,7 +88,9 @@ fn test_specs_rust_test_attribute() {
         scanned >= 1,
         "expected ≥ 1 Rust #[test] function in {} (saw {} files / {} fns) — \
          test_recognizer Rust adapter regression",
-        path, files, scanned,
+        path,
+        files,
+        scanned,
     );
 }
 
@@ -104,7 +109,9 @@ fn test_specs_csharp_test_attribute() {
         scanned >= 1,
         "expected ≥ 1 C# [Test]/[Fact]/[TestMethod] method in {} (saw {} files / {} fns) — \
          test_recognizer C# adapter regression",
-        path, files, scanned,
+        path,
+        files,
+        scanned,
     );
 }
 
@@ -122,7 +129,11 @@ fn test_specs_kotlin_extracts_specs() {
     // Phase-12 baseline: 571 functions scanned but 0 specs extracted.
     // Post-fix the JVM-style assertion extractor MUST harvest at least one
     // assertEquals / assertTrue / assertNotNull from the 571 functions.
-    assert!(scanned >= 50, "expected ≥ 50 Kotlin test fns, saw {}", scanned);
+    assert!(
+        scanned >= 50,
+        "expected ≥ 50 Kotlin test fns, saw {}",
+        scanned
+    );
     assert!(
         total_specs >= 1,
         "expected ≥ 1 spec extracted from {} Kotlin test fns — JVM assertion \
@@ -274,8 +285,7 @@ fn test_contracts_cpp_first_param_not_function_name() {
     }
     // `XMLDocument::NewElement(const char* name)` — first param is `name`,
     // never the function name (which would be `NewElement`).
-    let (json, stderr, ok) =
-        run_tldr(&["contracts", path, "NewElement", "--format", "json"]);
+    let (json, stderr, ok) = run_tldr(&["contracts", path, "NewElement", "--format", "json"]);
     assert!(ok, "tldr contracts failed: {}", stderr);
     let preconditions = json["preconditions"].as_array().expect("array");
     for pc in preconditions {
@@ -298,17 +308,14 @@ fn test_semantic_excludes_vendored_minified_js() {
     if !require_repo(path) {
         return;
     }
-    let (json, stderr, ok) = run_tldr(&[
-        "semantic",
-        "parse XML element",
-        path,
-        "--format",
-        "json",
-    ]);
+    let (json, stderr, ok) = run_tldr(&["semantic", "parse XML element", path, "--format", "json"]);
     // Semantic search may fail on machines without the embedding model; in
     // that case skip cleanly rather than asserting a hard count.
     if !ok {
-        eprintln!("semantic command failed (likely missing ONNX model): {}", stderr);
+        eprintln!(
+            "semantic command failed (likely missing ONNX model): {}",
+            stderr
+        );
         return;
     }
     let results = match json["results"].as_array() {
@@ -334,6 +341,7 @@ fn test_semantic_excludes_vendored_minified_js() {
         vendor_hits.is_empty(),
         "semantic walker indexed vendored JS in {}/docs/: {:?} — \
          chunk_directory must use ProjectWalker + dir_has_generated_sentinel",
-        path, vendor_hits,
+        path,
+        vendor_hits,
     );
 }

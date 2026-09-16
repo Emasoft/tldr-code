@@ -28,9 +28,8 @@ fn composite_multi_pattern_string_literal_fp_returns_zero_findings() {
 
     let output = cmd.output().expect("failed to execute tldr vuln");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let report: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        panic!("failed to parse JSON: {}\n--- stdout ---\n{}", e, stdout)
-    });
+    let report: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("failed to parse JSON: {}\n--- stdout ---\n{}", e, stdout));
 
     let findings = report
         .get("findings")

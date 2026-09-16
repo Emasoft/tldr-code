@@ -89,7 +89,8 @@ fn entry_point<'a>(v: &'a serde_json::Value) -> &'a str {
 /// returned `WriteToken`.
 #[test]
 fn csharp_context_file_func_absolute_returns_callees() {
-    let file = "/tmp/repos/csharp-newtonsoft-bson-full/Src/Newtonsoft.Json.Bson/BsonBinaryWriter.cs";
+    let file =
+        "/tmp/repos/csharp-newtonsoft-bson-full/Src/Newtonsoft.Json.Bson/BsonBinaryWriter.cs";
     if !Path::new(file).exists() {
         return;
     }
@@ -343,12 +344,7 @@ fn lua_context_relative_file_func_m_reset() {
     }
     let (rc, out) = run_tldr_in(
         repo,
-        &[
-            "context",
-            "script/files.lua:m.reset",
-            "--format",
-            "json",
-        ],
+        &["context", "script/files.lua:m.reset", "--format", "json"],
     );
     assert_eq!(rc, 0, "lua context rc != 0; stdout={}", out);
     let v = parse_json(&out);

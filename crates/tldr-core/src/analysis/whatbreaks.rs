@@ -444,10 +444,7 @@ fn count_transitive_callers(tree: &crate::types::CallerTree) -> usize {
 /// `affected_test_count` JSON field that
 /// [`whatbreaks_analysis`]'s Function-target branch reads back into
 /// [`WhatbreaksSummary::affected_test_count`].
-fn collect_test_files_from_tree(
-    tree: &crate::types::CallerTree,
-    acc: &mut HashSet<PathBuf>,
-) {
+fn collect_test_files_from_tree(tree: &crate::types::CallerTree, acc: &mut HashSet<PathBuf>) {
     if is_test_file(&tree.file) {
         acc.insert(tree.file.clone());
     }
@@ -515,10 +512,9 @@ fn derive_module_name(target: &str) -> String {
         // above (same under-coverage bug) so module-name derivation strips the
         // extension for every language the tool supports, not just 5 of them.
         if [
-            ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".c",
-            ".h", ".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h++", ".rb", ".kt",
-            ".kts", ".swift", ".cs", ".scala", ".php", ".lua", ".luau", ".ex", ".exs", ".ml",
-            ".mli",
+            ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".c", ".h",
+            ".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h++", ".rb", ".kt", ".kts",
+            ".swift", ".cs", ".scala", ".php", ".lua", ".luau", ".ex", ".exs", ".ml", ".mli",
         ]
         .contains(&ext)
         {

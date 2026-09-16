@@ -1994,8 +1994,8 @@ mod language_threading {
     fn test_daemon_command_field_name_canonical_language() {
         // Case 1: Calls with canonical `language` key — already works post-M1.
         let json = r#"{"cmd":"calls","path":"/tmp/p","language":"rust"}"#;
-        let cmd: DaemonCommand = serde_json::from_str(json)
-            .expect("calls with canonical `language` must deserialize");
+        let cmd: DaemonCommand =
+            serde_json::from_str(json).expect("calls with canonical `language` must deserialize");
         match cmd {
             DaemonCommand::Calls { language, .. } => assert_eq!(
                 language,
@@ -2037,8 +2037,8 @@ mod language_threading {
 
         // Case 4: Structure with legacy `lang` key — must keep working.
         let json = r#"{"cmd":"structure","path":"/tmp/p","lang":"rust"}"#;
-        let cmd: DaemonCommand = serde_json::from_str(json)
-            .expect("structure with legacy `lang` key must deserialize");
+        let cmd: DaemonCommand =
+            serde_json::from_str(json).expect("structure with legacy `lang` key must deserialize");
         match cmd {
             DaemonCommand::Structure { lang, .. } => assert_eq!(
                 lang.as_deref(),
@@ -2057,8 +2057,8 @@ mod language_threading {
     fn test_daemon_command_field_name_back_compat_lang_alias() {
         // Calls — alias path.
         let json = r#"{"cmd":"calls","path":"/tmp/p","lang":"typescript"}"#;
-        let cmd: DaemonCommand = serde_json::from_str(json)
-            .expect("Calls + lang alias must deserialize indefinitely");
+        let cmd: DaemonCommand =
+            serde_json::from_str(json).expect("Calls + lang alias must deserialize indefinitely");
         match cmd {
             DaemonCommand::Calls { language, .. } => assert_eq!(
                 language,
@@ -2070,8 +2070,8 @@ mod language_threading {
 
         // Structure — canonical `lang` path.
         let json = r#"{"cmd":"structure","path":"/tmp/p","lang":"python"}"#;
-        let cmd: DaemonCommand = serde_json::from_str(json)
-            .expect("Structure + lang must deserialize indefinitely");
+        let cmd: DaemonCommand =
+            serde_json::from_str(json).expect("Structure + lang must deserialize indefinitely");
         match cmd {
             DaemonCommand::Structure { lang, .. } => assert_eq!(
                 lang.as_deref(),
@@ -2244,10 +2244,7 @@ export function caller(): number {
                     value
                 );
             }
-            other => panic!(
-                "Calls handler returned non-Result response: {:?}",
-                other
-            ),
+            other => panic!("Calls handler returned non-Result response: {:?}", other),
         }
     }
 }
@@ -2288,11 +2285,8 @@ mod cluster_m3a_cache_isolation {
         // Mixed-language project: one .py file with no callers (so a
         // Python call-graph build legally produces zero edges) plus one
         // .ts file with one intra-file edge.
-        fs::write(
-            temp.path().join("solo.py"),
-            "def lonely():\n    return 1\n",
-        )
-        .expect("write solo.py");
+        fs::write(temp.path().join("solo.py"), "def lonely():\n    return 1\n")
+            .expect("write solo.py");
         fs::write(
             temp.path().join("main.ts"),
             r#"export function callee(): number { return 42; }

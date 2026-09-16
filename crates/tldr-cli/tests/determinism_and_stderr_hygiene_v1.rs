@@ -167,8 +167,7 @@ fn vuln_exits_zero_on_completion() {
 
     // Sanity: the JSON should still report findings (regression guard
     // against accidentally suppressing the actual analysis).
-    let report: Value =
-        serde_json::from_str(&stdout).expect("vuln stdout must be JSON");
+    let report: Value = serde_json::from_str(&stdout).expect("vuln stdout must be JSON");
     let total = report
         .pointer("/summary/total_findings")
         .and_then(|v| v.as_u64())
@@ -290,7 +289,10 @@ fn hubs_output_is_byte_stable() {
     let s2 = serde_json::to_string(&r2).unwrap();
     let s3 = serde_json::to_string(&r3).unwrap();
 
-    assert_eq!(s1, s2, "hubs run #1 vs #2 differs (PageRank non-determinism?)");
+    assert_eq!(
+        s1, s2,
+        "hubs run #1 vs #2 differs (PageRank non-determinism?)"
+    );
     assert_eq!(s2, s3, "hubs run #2 vs #3 differs");
 
     // Sanity: at least one hub should be produced (chained helpers).

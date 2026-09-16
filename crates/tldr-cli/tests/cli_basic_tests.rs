@@ -535,7 +535,12 @@ from collections import OrderedDict
 
         // Legacy --legacy-array path still emits a top-level array.
         let mut cmd_legacy = tldr_cmd();
-        cmd_legacy.args(["imports", test_file.to_str().unwrap(), "--legacy-array", "-q"]);
+        cmd_legacy.args([
+            "imports",
+            test_file.to_str().unwrap(),
+            "--legacy-array",
+            "-q",
+        ]);
         let out_legacy = cmd_legacy.output().unwrap();
         let json_legacy: serde_json::Value = serde_json::from_slice(&out_legacy.stdout).unwrap();
         assert!(

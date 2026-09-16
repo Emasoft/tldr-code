@@ -18,8 +18,7 @@ use tldr_core::types::Language;
 use tldr_core::IgnoreSpec;
 
 fn structure_func_method_sum(path: &Path, lang: Language) -> u32 {
-    let s =
-        tldr_core::get_code_structure(path, lang, 0, Some(&IgnoreSpec::default())).unwrap();
+    let s = tldr_core::get_code_structure(path, lang, 0, Some(&IgnoreSpec::default())).unwrap();
     let mut total: u32 = 0;
     for f in &s.files {
         total = total.saturating_add(f.functions.len() as u32);
@@ -47,11 +46,7 @@ fn test_canonical_count_agrees_health_structure_dead_python() {
         "def f1():\n    pass\n\ndef f2():\n    pass\n\nclass C:\n    def __init__(self):\n        pass\n    def m1(self):\n        pass\n    def m2(self):\n        pass\n    def __repr__(self):\n        return ''\n",
     )
     .unwrap();
-    fs::write(
-        dir.path().join("b.py"),
-        "def g1():\n    pass\n",
-    )
-    .unwrap();
+    fs::write(dir.path().join("b.py"), "def g1():\n    pass\n").unwrap();
 
     let canonical = count_functions_canonical(dir.path(), Language::Python);
     let from_health = complexity_count(dir.path(), Language::Python);

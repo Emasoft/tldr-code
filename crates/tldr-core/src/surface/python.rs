@@ -1378,8 +1378,7 @@ mod tests {
         let (_, imported) = parse_python_reexport_line("from .a import x  # noqa").unwrap();
         assert_eq!(imported, vec![("x".to_string(), "x".to_string())]);
 
-        let (_, imported) =
-            parse_python_reexport_line("from .a import x as y  # comment").unwrap();
+        let (_, imported) = parse_python_reexport_line("from .a import x as y  # comment").unwrap();
         assert_eq!(imported, vec![("x".to_string(), "y".to_string())]);
     }
 

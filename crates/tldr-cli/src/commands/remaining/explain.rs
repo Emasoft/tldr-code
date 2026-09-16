@@ -321,11 +321,8 @@ fn find_function_node<'a>(
             let class_name = parts[0];
             let remainder = parts[1..].join(".");
             if let Some(class_node) = find_class_node_explain(root, class_name, source) {
-                let scope = class_node
-                    .child_by_field_name("body")
-                    .unwrap_or(class_node);
-                if let Some(found) =
-                    find_function_recursive(scope, source, &remainder, func_kinds)
+                let scope = class_node.child_by_field_name("body").unwrap_or(class_node);
+                if let Some(found) = find_function_recursive(scope, source, &remainder, func_kinds)
                 {
                     return Some(found);
                 }
@@ -387,9 +384,9 @@ fn find_class_node_explain<'a>(
     while let Some(node) = stack.pop() {
         if CLASS_KINDS.contains(&node.kind()) {
             // Try the conventional "name" field first.
-            let name_match = node.child_by_field_name("name").is_some_and(|n| {
-                node_text(n, source) == class_name
-            });
+            let name_match = node
+                .child_by_field_name("name")
+                .is_some_and(|n| node_text(n, source) == class_name);
             if name_match {
                 return Some(node);
             }
@@ -397,10 +394,7 @@ fn find_class_node_explain<'a>(
             // (Rust struct/enum/trait/impl, C++ class_specifier).
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if matches!(
-                    child.kind(),
-                    "identifier" | "type_identifier" | "constant"
-                ) {
+                if matches!(child.kind(), "identifier" | "type_identifier" | "constant") {
                     if node_text(child, source) == class_name {
                         return Some(node);
                     }
@@ -527,10 +521,7 @@ fn find_function_recursive<'a>(
             if key_name == function_name
                 && matches!(
                     value.kind(),
-                    "arrow_function"
-                        | "function"
-                        | "function_expression"
-                        | "generator_function"
+                    "arrow_function" | "function" | "function_expression" | "generator_function"
                 )
             {
                 return Some(value);
@@ -645,7 +636,9 @@ fn extract_signature(func_node: Node, source: &[u8], language: Language) -> Sign
             func_node.children(&mut func_node.walk()).any(|child| {
                 child.kind() == "async"
                     || (child.kind() == "function_modifiers"
-                        && child.children(&mut child.walk()).any(|m| m.kind() == "async"))
+                        && child
+                            .children(&mut child.walk())
+                            .any(|m| m.kind() == "async"))
             })
         }
         _ => false,
@@ -1233,8 +1226,7 @@ fn find_callees_recursive(
             let last_seg = name.rsplit('.').next().unwrap_or(&name).to_string();
             if !callees.iter().any(|c| {
                 c.name == name
-                    || (c.line == line
-                        && c.name.rsplit('.').next().unwrap_or(&c.name) == last_seg)
+                    || (c.line == line && c.name.rsplit('.').next().unwrap_or(&c.name) == last_seg)
             }) {
                 callees.push(CallInfo::new(name, file, line));
             }
@@ -1499,19 +1491,17 @@ fn format_explain_text(report: &ExplainReport) -> String {
 /// so a FILE path argument resolves its enclosing project root exactly the
 /// way `tldr explain` does — one root-resolution rule across both commands.
 pub(crate) fn explain_project_root(file: &std::path::Path) -> std::path::PathBuf {
-    let absolute = file
-        .canonicalize()
-        .unwrap_or_else(|_| {
-            // Canonicalize failed (file may not exist on disk via this path).
-            // Best-effort absolute form: join CWD with the relative input.
-            if file.is_absolute() {
-                file.to_path_buf()
-            } else {
-                std::env::current_dir()
-                    .map(|cwd| cwd.join(file))
-                    .unwrap_or_else(|_| file.to_path_buf())
-            }
-        });
+    let absolute = file.canonicalize().unwrap_or_else(|_| {
+        // Canonicalize failed (file may not exist on disk via this path).
+        // Best-effort absolute form: join CWD with the relative input.
+        if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(file))
+                .unwrap_or_else(|_| file.to_path_buf())
+        }
+    });
     let parent = absolute
         .parent()
         .map(|p| p.to_path_buf())
@@ -1886,12 +1876,8 @@ fn enrich_with_project_graph(
                 } else {
                     project_root.join(&caller.file)
                 };
-                let line = locate_call_in_caller_file(
-                    &abs_caller_file,
-                    &caller_name,
-                    function,
-                )
-                .unwrap_or(0);
+                let line = locate_call_in_caller_file(&abs_caller_file, &caller_name, function)
+                    .unwrap_or(0);
                 report
                     .callers
                     .push(CallInfo::new(caller_name, caller_file, line));
@@ -1910,9 +1896,7 @@ fn enrich_with_project_graph(
         let dst_file = edge.dst_file.display().to_string();
         let dst_name = edge.dst_func.clone();
         // Skip self-recursion duplicates of the same target name.
-        if explain_names_match(&dst_name, function)
-            && paths_equivalent(&edge.dst_file, file)
-        {
+        if explain_names_match(&dst_name, function) && paths_equivalent(&edge.dst_file, file) {
             continue;
         }
         if callee_already_present(&report.callees, &dst_name, &dst_file) {
@@ -1934,21 +1918,16 @@ fn enrich_with_project_graph(
         // duplicate. Skip when an entry sharing the same line and the
         // same last-segment already exists.
         if line > 0 {
-            let last_seg = dst_name
-                .rsplit('.')
-                .next()
-                .unwrap_or(&dst_name)
-                .to_string();
-            if report.callees.iter().any(|c| {
-                c.line == line
-                    && c.name.rsplit('.').next().unwrap_or(&c.name) == last_seg
-            }) {
+            let last_seg = dst_name.rsplit('.').next().unwrap_or(&dst_name).to_string();
+            if report
+                .callees
+                .iter()
+                .any(|c| c.line == line && c.name.rsplit('.').next().unwrap_or(&c.name) == last_seg)
+            {
                 continue;
             }
         }
-        report
-            .callees
-            .push(CallInfo::new(dst_name, dst_file, line));
+        report.callees.push(CallInfo::new(dst_name, dst_file, line));
     }
 
     // sibling-resolver-gaps-v1 (P14.AGG14-14): the Swift call-graph

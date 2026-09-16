@@ -245,7 +245,11 @@ fn no_callers_leaves_schema_intact_and_empties_callers() {
         .get("line")
         .and_then(|l| l.as_u64())
         .expect("`line` field must still be present (schema-unification-v1 BUG-17)");
-    assert!(line > 0, "line should be a real 1-indexed line; got {}", line);
+    assert!(
+        line > 0,
+        "line should be a real 1-indexed line; got {}",
+        line
+    );
     let callees = v
         .get("callees")
         .and_then(|c| c.as_array())

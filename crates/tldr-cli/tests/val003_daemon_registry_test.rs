@@ -38,11 +38,7 @@ impl Drop for StopAllGuard {
 
 /// Wait until the daemon for `project` answers `status --project <project>`
 /// with `"running"`. Caps at `timeout`.
-fn wait_for_daemon_running(
-    registry_dir: &Path,
-    project: &Path,
-    timeout: Duration,
-) -> bool {
+fn wait_for_daemon_running(registry_dir: &Path, project: &Path, timeout: Duration) -> bool {
     let start = Instant::now();
     while start.elapsed() < timeout {
         let out = Command::new(bin())
@@ -348,8 +344,7 @@ fn concurrent_add_entry_is_bounded_cas_safe() {
         .output()
         .expect("list spawn");
     let stdout = String::from_utf8_lossy(&list_out.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("parse concurrent list");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("parse concurrent list");
     let n = parsed["daemons"].as_array().unwrap().len();
     assert!(
         n >= 2,

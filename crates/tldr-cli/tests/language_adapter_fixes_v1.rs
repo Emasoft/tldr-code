@@ -325,8 +325,8 @@ fn agg13_5_context_bare_name_still_works() {
         .output()
         .expect("spawn tldr");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let report: Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("parse JSON: {e}\n{stdout}"));
+    let report: Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("parse JSON: {e}\n{stdout}"));
     assert_eq!(report["entry_point"], "render");
 }
 
@@ -358,8 +358,7 @@ fn agg13_5_context_non_file_colon_falls_through_to_bare_name() {
     // path half. The literal contains a `:` so the error message must
     // include either the LHS or the full string.
     assert!(
-        combined.contains("/nonexistent/path.js:foo")
-            || combined.contains("Function not found"),
+        combined.contains("/nonexistent/path.js:foo") || combined.contains("Function not found"),
         "expected error to reference the literal entry, got: {combined}"
     );
 }

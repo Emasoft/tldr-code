@@ -111,7 +111,6 @@ fn bugbot_check_staged_flag_changes_detection_method() {
     );
 }
 
-
 #[test]
 fn bugbot_check_staged_from_crate_subdir_does_not_double_the_path() {
     // Regression for TRDD-M2MUQ7QH: `cargo test -p tldr-cli` runs with cwd
@@ -149,7 +148,15 @@ fn bugbot_check_staged_from_crate_subdir_does_not_double_the_path() {
     git(&["add", "."], root.path());
 
     let output = tldr_bin()
-        .args(["--lang", "rust", "bugbot", "check", "--staged", "--no-fail", "."])
+        .args([
+            "--lang",
+            "rust",
+            "bugbot",
+            "check",
+            "--staged",
+            "--no-fail",
+            ".",
+        ])
         .current_dir(&crate_dir)
         .output()
         .expect("failed to execute bugbot check");
@@ -174,7 +181,10 @@ fn bugbot_check_staged_from_crate_subdir_does_not_double_the_path() {
     // canonicalized the same way the CLI canonicalizes the repo root
     // (TRDD-M2MUQ7QH / repo-root canonicalization hardening), so the
     // comparison is exact rather than a subset/contains check.
-    let canonical_root = root.path().canonicalize().expect("canonicalize tempdir root");
+    let canonical_root = root
+        .path()
+        .canonicalize()
+        .expect("canonicalize tempdir root");
     let expected_path = canonical_root.join("crate").join("src").join(&file_name);
     let mut actual_paths: Vec<String> = changed_files
         .iter()

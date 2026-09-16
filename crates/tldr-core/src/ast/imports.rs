@@ -850,16 +850,15 @@ fn extract_ruby_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                         });
                     }
                 }
-                "require_relative"
-                    if !arg_value.is_empty() => {
-                        // require_relative './path' - always relative
-                        imports.push(ImportInfo {
-                            module: arg_value,
-                            names: Vec::new(),
-                            is_from: true, // is_from = true for require_relative (relative import)
-                            alias: None,
-                        });
-                    }
+                "require_relative" if !arg_value.is_empty() => {
+                    // require_relative './path' - always relative
+                    imports.push(ImportInfo {
+                        module: arg_value,
+                        names: Vec::new(),
+                        is_from: true, // is_from = true for require_relative (relative import)
+                        alias: None,
+                    });
+                }
                 _ => {}
             }
         }
@@ -1416,10 +1415,9 @@ fn extract_lua_require(node: &Node, source: &str) -> Option<ImportInfo> {
                 }
             }
             // Direct string argument without parens: require"socket.dict" or require "mime"
-            "string"
-                if is_require => {
-                    module_name = get_string_content(&child, source);
-                }
+            "string" if is_require => {
+                module_name = get_string_content(&child, source);
+            }
             _ => {}
         }
     }
@@ -1805,14 +1803,24 @@ fn parse_swift_import_text(raw: &str) -> Option<ImportInfo> {
     // Submodule kind keywords that may follow the `import` keyword. The next
     // token after one of these is the module path.
     const KIND_KEYWORDS: &[&str] = &[
-        "struct", "class", "enum", "protocol", "typealias", "func", "var", "let",
+        "struct",
+        "class",
+        "enum",
+        "protocol",
+        "typealias",
+        "func",
+        "var",
+        "let",
     ];
 
     // Strip a leading attribute like `@testable`, `@_implementationOnly`, etc.
     let trimmed = raw.trim();
     let after_attr = if let Some(rest) = trimmed.strip_prefix('@') {
         // Skip until whitespace.
-        rest.split_whitespace().skip(1).collect::<Vec<_>>().join(" ")
+        rest.split_whitespace()
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join(" ")
     } else {
         trimmed.to_string()
     };

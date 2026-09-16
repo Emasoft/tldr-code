@@ -379,9 +379,7 @@ fn agg13_12_lua_explain_m_open_has_cross_module_callers() {
         files
     );
     assert!(
-        files
-            .iter()
-            .any(|f| f.contains("cli/check_worker.lua")),
+        files.iter().any(|f| f.contains("cli/check_worker.lua")),
         "expected check_worker.lua among m.open callers, got {:?}",
         files
     );

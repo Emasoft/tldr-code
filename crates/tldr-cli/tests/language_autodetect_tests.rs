@@ -342,7 +342,10 @@ fn test_swift_autodetect_with_cmakelists_at_root() {
         "Swift project with CMakeLists.txt should autodetect as swift, not c. Got: {}",
         actual_lang
     );
-    let files = v.get("files").and_then(|f| f.as_array()).map_or(0, |a| a.len());
+    let files = v
+        .get("files")
+        .and_then(|f| f.as_array())
+        .map_or(0, |a| a.len());
     assert!(
         files >= 1,
         "expected at least 1 swift file in structure output, got {}",
@@ -408,11 +411,15 @@ fn test_deps_autodetect_java_scala() {
         "name := \"demo\"\nscalaVersion := \"3.3.0\"\n",
     );
     write_file(
-        &scala_tmp.path().join("core/src/main/scala/cats/effect/IO.scala"),
+        &scala_tmp
+            .path()
+            .join("core/src/main/scala/cats/effect/IO.scala"),
         "package cats.effect\nclass IO {}\n",
     );
     write_file(
-        &scala_tmp.path().join("core/src/main/scala/cats/effect/Helper.scala"),
+        &scala_tmp
+            .path()
+            .join("core/src/main/scala/cats/effect/Helper.scala"),
         "package cats.effect\nclass Helper {}\n",
     );
 

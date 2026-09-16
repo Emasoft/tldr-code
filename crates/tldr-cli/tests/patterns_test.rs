@@ -1651,7 +1651,10 @@ mod temporal_command {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let parsed: serde_json::Value = serde_json::from_str(&stdout)
             .expect("temporal must emit valid JSON even when no constraints found");
-        assert!(parsed.get("constraints").is_some(), "must have .constraints");
+        assert!(
+            parsed.get("constraints").is_some(),
+            "must have .constraints"
+        );
         assert!(parsed.get("trigrams").is_some(), "must have .trigrams");
         assert!(parsed.get("metadata").is_some(), "must have .metadata");
     }

@@ -180,9 +180,7 @@ fn initialize_request_via_process_request_accepts_camelcase_params() {
 
     // Sanity: the response result still carries the spec-required
     // camelCase keys (M4 territory), so the round-trip is healthy.
-    let result = response
-        .get("result")
-        .expect("checked above");
+    let result = response.get("result").expect("checked above");
     assert!(
         result.get("protocolVersion").is_some(),
         "initialize result must have .protocolVersion (M4 invariant); got: {}",
@@ -218,9 +216,10 @@ fn initialize_params_snake_case_keys_no_longer_bind_post_fix() {
         "capabilities": {"experimental": {"flag": true}},
         "client_info": {"name": "legacy", "version": "0"}
     });
-    let parsed: InitializeParams = serde_json::from_value(snake_payload)
-        .expect("InitializeParams uses #[serde(default)] on every field, so even \
-                  unmapped keys never produce a deserialize error");
+    let parsed: InitializeParams = serde_json::from_value(snake_payload).expect(
+        "InitializeParams uses #[serde(default)] on every field, so even \
+                  unmapped keys never produce a deserialize error",
+    );
 
     // Post-fix: snake_case keys do NOT bind the renamed fields.
     // Pre-fix: snake_case keys DID bind (because the field names

@@ -91,8 +91,7 @@ impl HalsteadArgs {
             // value and feed `self.path` (as typed by the user) to the
             // analyzer so the `file` field in the report matches the input
             // (no `/private/tmp/...` rewrite on macOS).
-            let _validated_path =
-                validate_file_path(self.path.to_str().unwrap_or_default(), None)?;
+            let _validated_path = validate_file_path(self.path.to_str().unwrap_or_default(), None)?;
             let language =
                 detect_or_parse_language(self.lang.as_ref().map(|l| l.as_str()), &self.path)?;
 

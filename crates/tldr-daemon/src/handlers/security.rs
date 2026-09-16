@@ -50,9 +50,8 @@ pub async fn secrets(
     // the path (absolute or relative) and returns `PathTraversal` if the
     // canonical form escapes `project`.
     let path = if let Some(p) = &request.path {
-        validate_file_path(p, Some(&project)).map_err(|e| {
-            HandlerError(axum::http::StatusCode::BAD_REQUEST, e.to_string())
-        })?
+        validate_file_path(p, Some(&project))
+            .map_err(|e| HandlerError(axum::http::StatusCode::BAD_REQUEST, e.to_string()))?
     } else {
         project
     };
@@ -117,9 +116,8 @@ pub async fn vuln(
     // the path (absolute or relative) and returns `PathTraversal` if the
     // canonical form escapes `project`.
     let path = if let Some(p) = &request.path {
-        validate_file_path(p, Some(&project)).map_err(|e| {
-            HandlerError(axum::http::StatusCode::BAD_REQUEST, e.to_string())
-        })?
+        validate_file_path(p, Some(&project))
+            .map_err(|e| HandlerError(axum::http::StatusCode::BAD_REQUEST, e.to_string()))?
     } else {
         project
     };

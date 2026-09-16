@@ -150,7 +150,8 @@ pub fn assert_has_sink_of_type(result: &TaintInfo, expected_sink: TaintSinkType)
     assert!(
         !lines.is_empty(),
         "expected at least one {:?} sink; got sinks={:?}",
-        expected_sink, result.sinks
+        expected_sink,
+        result.sinks
     );
     lines
 }

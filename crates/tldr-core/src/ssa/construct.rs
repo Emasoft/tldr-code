@@ -402,8 +402,8 @@ fn collect_variable_definitions(
     for var_ref in &dfg.refs {
         // Both Definition and Update create new versions
         if matches!(var_ref.ref_type, RefType::Definition | RefType::Update) {
-            let block_id = get_block_for_line(var_ref.line, line_to_block)
-                .unwrap_or(cfg.entry_block);
+            let block_id =
+                get_block_for_line(var_ref.line, line_to_block).unwrap_or(cfg.entry_block);
             var_defs
                 .entry(var_ref.name.clone())
                 .or_default()
@@ -722,8 +722,10 @@ fn rename_variables_recursive(
             match mapped {
                 Some(b) => b == block_id,
                 // Orphaned definitions / updates → entry block
-                None => block_id == context.entry_block
-                    && matches!(r.ref_type, RefType::Definition | RefType::Update),
+                None => {
+                    block_id == context.entry_block
+                        && matches!(r.ref_type, RefType::Definition | RefType::Update)
+                }
             }
         })
         .collect();

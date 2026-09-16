@@ -578,11 +578,7 @@ fn test_secure_continues_after_bad_file_in_dir() {
 
     // Valid Python source — secure has a native `.py` analysis path so
     // this guarantees the scan does real work, not just a no-op walk.
-    create_test_file(
-        dir.path(),
-        "good.py",
-        "def safe():\n    return 1\n",
-    );
+    create_test_file(dir.path(), "good.py", "def safe():\n    return 1\n");
 
     // Synthetic bad file: valid prefix + raw 0xFF/0xFE (never valid as
     // UTF-8 leading bytes) + valid suffix. Mirrors the actual luau-luau
@@ -610,10 +606,12 @@ fn test_secure_continues_after_bad_file_in_dir() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let report: serde_json::Value =
-        serde_json::from_str(&stdout).unwrap_or_else(|e| {
-            panic!("secure stdout must be valid JSON; err: {}; stdout: {}", e, stdout)
-        });
+    let report: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "secure stdout must be valid JSON; err: {}; stdout: {}",
+            e, stdout
+        )
+    });
 
     let files_skipped = report
         .get("files_skipped")

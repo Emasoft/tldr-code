@@ -147,10 +147,7 @@ impl DaemonStartArgs {
         // state. A missing file degrades to the legacy behaviour where
         // `daemon status` from a different cwd reports `not_running`.
         if let Err(e) = add_entry(project, our_pid, &socket_path) {
-            eprintln!(
-                "warning: could not register daemon in registry: {}",
-                e
-            );
+            eprintln!("warning: could not register daemon in registry: {}", e);
         }
 
         // Print startup message

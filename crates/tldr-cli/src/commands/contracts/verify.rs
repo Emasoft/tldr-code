@@ -294,7 +294,15 @@ fn find_test_dirs(project_path: &Path) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     // Check common test directory names (top-level).
-    for name in &["tests", "test", "Tests", "Test", "spec", "specs", "__tests__"] {
+    for name in &[
+        "tests",
+        "test",
+        "Tests",
+        "Test",
+        "spec",
+        "specs",
+        "__tests__",
+    ] {
         let dir = project_path.join(name);
         if dir.is_dir() {
             candidates.push(dir);
@@ -319,8 +327,11 @@ fn find_test_dirs(project_path: &Path) -> Vec<PathBuf> {
     // MSBuild C# layout: project sibling `*Tests` or `*.Tests` directories
     // at top-level or under `Src/`/`src/` (case-insensitive on macOS, exact
     // on linux — read both forms).
-    for parent in &[project_path.to_path_buf(), project_path.join("src"), project_path.join("Src")]
-    {
+    for parent in &[
+        project_path.to_path_buf(),
+        project_path.join("src"),
+        project_path.join("Src"),
+    ] {
         if !parent.is_dir() {
             continue;
         }

@@ -44,10 +44,12 @@ impl CSemantics {
 
         if let Some(name) = name {
             let case = detect_naming_case(&name);
-            signals
-                .naming
-                .function_names
-                .push((name, case, file_path.display().to_string(), node.start_position().row as u32 + 1));
+            signals.naming.function_names.push((
+                name,
+                case,
+                file_path.display().to_string(),
+                node.start_position().row as u32 + 1,
+            ));
         }
     }
 
@@ -81,10 +83,12 @@ impl CSemantics {
                 .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_')
                 .to_string();
             let case = detect_naming_case(&name);
-            signals
-                .naming
-                .constant_names
-                .push((name, case, file_path.display().to_string(), node.start_position().row as u32 + 1));
+            signals.naming.constant_names.push((
+                name,
+                case,
+                file_path.display().to_string(),
+                node.start_position().row as u32 + 1,
+            ));
         }
     }
 }

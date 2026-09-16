@@ -115,9 +115,7 @@ impl CallsArgs {
         // call-graph construction (the call-graph builder requires a
         // language) but the JSON `language` field reflects the actual
         // detection result.
-        let detected_language = self
-            .lang
-            .or_else(|| Language::from_directory(&self.path));
+        let detected_language = self.lang.or_else(|| Language::from_directory(&self.path));
         let language = detected_language.unwrap_or(Language::Python);
 
         // Try daemon first for cached result

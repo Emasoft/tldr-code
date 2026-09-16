@@ -1356,10 +1356,8 @@ def moderately_complex(a, b, c, d, e):
         }
 
         let issues = find_complexity_issues(&src, Path::new("inclusive.py"), Language::Python);
-        let long_method_issues: Vec<_> = issues
-            .iter()
-            .filter(|i| i.rule == "long_method")
-            .collect();
+        let long_method_issues: Vec<_> =
+            issues.iter().filter(|i| i.rule == "long_method").collect();
 
         assert!(
             !long_method_issues.is_empty(),
@@ -2780,7 +2778,9 @@ mod java_debt_stackoverflow_v1_tests {
         // The Python TODO must NOT appear (its file was filtered out).
         let messages: Vec<_> = report.issues.iter().map(|i| i.message.as_str()).collect();
         assert!(
-            !messages.iter().any(|m| m.contains("python should be excluded")),
+            !messages
+                .iter()
+                .any(|m| m.contains("python should be excluded")),
             "Python file must be excluded under --lang java; got issues: {:?}",
             messages
         );

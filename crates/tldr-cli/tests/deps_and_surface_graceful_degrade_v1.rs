@@ -69,8 +69,12 @@ fn test_deps_skips_oversize_files_gracefully() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("deps stdout must be valid JSON; err: {}; stdout: {}", e, stdout));
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "deps stdout must be valid JSON; err: {}; stdout: {}",
+            e, stdout
+        )
+    });
 
     // Validate files_skipped + warnings include the oversize file.
     let files_skipped = json
@@ -141,8 +145,12 @@ fn test_surface_emits_empty_when_no_entrypoint() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("surface stdout must be valid JSON; err: {}; stdout: {}", e, stdout));
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "surface stdout must be valid JSON; err: {}; stdout: {}",
+            e, stdout
+        )
+    });
 
     let apis = json
         .get("apis")

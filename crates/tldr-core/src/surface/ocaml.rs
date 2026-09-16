@@ -436,12 +436,13 @@ fn walk_for_value_specs(node: Node<'_>, source: &str, out: &mut Vec<ValueSpec>) 
                 }
                 kind if kind != "val" && kind != ":"
                     // The first non-`val`/`:`/name child is the type expression.
-                    && name.is_some() && type_text.is_none() => {
-                        type_text = child
-                            .utf8_text(source.as_bytes())
-                            .ok()
-                            .map(|s| s.trim().to_string());
-                    }
+                    && name.is_some() && type_text.is_none() =>
+                {
+                    type_text = child
+                        .utf8_text(source.as_bytes())
+                        .ok()
+                        .map(|s| s.trim().to_string());
+                }
                 _ => {}
             }
         }

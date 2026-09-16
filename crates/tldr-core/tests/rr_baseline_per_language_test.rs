@@ -77,7 +77,12 @@ function handler(req, res) {
     eval(x);
 }
 ";
-    let result = analyze_with_ssa(src, Language::TypeScript, "handler", /* use_ssa */ false);
+    let result = analyze_with_ssa(
+        src,
+        Language::TypeScript,
+        "handler",
+        /* use_ssa */ false,
+    );
     assert_source_to_eval_flow(&result, TaintSourceType::HttpBody);
 }
 
@@ -94,7 +99,12 @@ function handler(req, res) {
     eval(x);
 }
 ";
-    let result = analyze_with_ssa(src, Language::JavaScript, "handler", /* use_ssa */ false);
+    let result = analyze_with_ssa(
+        src,
+        Language::JavaScript,
+        "handler",
+        /* use_ssa */ false,
+    );
     assert_source_to_eval_flow(&result, TaintSourceType::HttpBody);
 }
 

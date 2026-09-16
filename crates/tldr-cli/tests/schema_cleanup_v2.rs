@@ -268,9 +268,7 @@ fn calls_empty_dir_no_default_language() {
     // ALSO not acceptable here (the dir is empty, no language was
     // analysed).
     let lang = &report["language"];
-    let ok = lang.is_null()
-        || lang.as_str() == Some("unknown")
-        || lang.as_str() == Some("auto");
+    let ok = lang.is_null() || lang.as_str() == Some("unknown") || lang.as_str() == Some("auto");
     assert!(
         ok,
         "calls on empty dir must report language: null|\"unknown\"|\"auto\", \

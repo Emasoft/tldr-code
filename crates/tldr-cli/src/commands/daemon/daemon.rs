@@ -224,10 +224,7 @@ impl TLDRDaemon {
         // `QueryCache::load_from_file`'s graceful-discard contract, which
         // returns a fresh empty cache; only unexpected IO errors land in the
         // `unwrap_or_else` fallback below.
-        let cache_path = project
-            .join(".tldr")
-            .join("cache")
-            .join("query_cache.bin");
+        let cache_path = project.join(".tldr").join("cache").join("query_cache.bin");
         let cache =
             QueryCache::load_from_file(&cache_path).unwrap_or_else(|_| QueryCache::with_defaults());
 
@@ -709,8 +706,8 @@ impl TLDRDaemon {
                 // Extract auto-detects language from the file path. Tag the
                 // cache key with the detected language so two files with the
                 // same name in different language sub-projects do not collide.
-                let detected_lang = detect_or_parse_language(None, &file)
-                    .unwrap_or(Language::Python);
+                let detected_lang =
+                    detect_or_parse_language(None, &file).unwrap_or(Language::Python);
                 let key = extract_query_key(&file, detected_lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
@@ -733,11 +730,8 @@ impl TLDRDaemon {
                 let root = path.unwrap_or_else(|| self.project.clone());
                 let root_str = root.to_string_lossy().to_string();
                 // File tree is language-agnostic; tag with default language.
-                let key = QueryKey::new(
-                    "tree",
-                    hash_str_args(&[&root_str]),
-                    resolve_language(None),
-                );
+                let key =
+                    QueryKey::new("tree", hash_str_args(&[&root_str]), resolve_language(None));
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
@@ -789,11 +783,7 @@ impl TLDRDaemon {
             } => {
                 let d = depth.unwrap_or(2);
                 let lang = resolve_language(language);
-                let key = QueryKey::new(
-                    "context",
-                    hash_str_args(&[&entry, &d.to_string()]),
-                    lang,
-                );
+                let key = QueryKey::new("context", hash_str_args(&[&entry, &d.to_string()]), lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
@@ -937,11 +927,7 @@ impl TLDRDaemon {
             } => {
                 let d = depth.unwrap_or(3);
                 let lang = resolve_language(language);
-                let key = QueryKey::new(
-                    "impact",
-                    hash_str_args(&[&func, &d.to_string()]),
-                    lang,
-                );
+                let key = QueryKey::new("impact", hash_str_args(&[&func, &d.to_string()]), lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
@@ -976,11 +962,7 @@ impl TLDRDaemon {
                 let lang = resolve_language(language);
                 let root_str = root.to_string_lossy().to_string();
                 let entry_str = entry.as_ref().map(|v| v.join(",")).unwrap_or_default();
-                let key = QueryKey::new(
-                    "dead",
-                    hash_str_args(&[&root_str, &entry_str]),
-                    lang,
-                );
+                let key = QueryKey::new("dead", hash_str_args(&[&root_str, &entry_str]), lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
@@ -994,11 +976,8 @@ impl TLDRDaemon {
                     }
                 };
                 // Collect all functions from the project by extracting each file
-                let extensions: HashSet<String> = lang
-                    .extensions()
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
+                let extensions: HashSet<String> =
+                    lang.extensions().iter().map(|s| s.to_string()).collect();
                 let file_tree = match get_file_tree(&root, Some(&extensions), true, None) {
                     Ok(t) => t,
                     Err(e) => {
@@ -1097,11 +1076,7 @@ impl TLDRDaemon {
                 let root = path.unwrap_or_else(|| self.project.clone());
                 let lang = resolve_language(language);
                 let root_str = root.to_string_lossy().to_string();
-                let key = QueryKey::new(
-                    "importers",
-                    hash_str_args(&[&module, &root_str]),
-                    lang,
-                );
+                let key = QueryKey::new("importers", hash_str_args(&[&module, &root_str]), lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
@@ -1143,11 +1118,7 @@ impl TLDRDaemon {
                             .join(",")
                     })
                     .unwrap_or_default();
-                let key = QueryKey::new(
-                    "change_impact",
-                    hash_str_args(&[&files_str]),
-                    lang,
-                );
+                let key = QueryKey::new("change_impact", hash_str_args(&[&files_str]), lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
@@ -1335,9 +1306,13 @@ impl TLDRDaemon {
                             self.cache.insert(key, &val, vec![file_hash]);
                             stats.entries += 1;
                         }
-                        Err(e) => stats
-                            .errors
-                            .push(format!("{} {}::{}: {}", name, path.display(), function, e)),
+                        Err(e) => stats.errors.push(format!(
+                            "{} {}::{}: {}",
+                            name,
+                            path.display(),
+                            function,
+                            e
+                        )),
                     }
                 }
             }
@@ -2662,9 +2637,17 @@ mod tests {
         let cache_path = cache_dir.join("query_cache.bin");
 
         // Persist a cache entry exactly the way persist_stats does.
-        let key = QueryKey::new("extract", hash_str_args(&["/some/file.py"]), Language::Python);
+        let key = QueryKey::new(
+            "extract",
+            hash_str_args(&["/some/file.py"]),
+            Language::Python,
+        );
         let persisted = QueryCache::with_defaults();
-        persisted.insert(key.clone(), &serde_json::json!({ "precomputed": true }), vec![]);
+        persisted.insert(
+            key.clone(),
+            &serde_json::json!({ "precomputed": true }),
+            vec![],
+        );
         persisted.save_to_file(&cache_path).unwrap();
 
         let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());

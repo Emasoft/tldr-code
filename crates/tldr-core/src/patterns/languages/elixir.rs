@@ -25,10 +25,12 @@ impl LanguageSemantics for ElixirSemantics {
             "defmodule" => {
                 if let Some(name) = extract_identifier_arg(&call_text, "defmodule") {
                     let case = detect_naming_case(&name);
-                    signals
-                        .naming
-                        .class_names
-                        .push((name, case, file_path.display().to_string(), node.start_position().row as u32 + 1));
+                    signals.naming.class_names.push((
+                        name,
+                        case,
+                        file_path.display().to_string(),
+                        node.start_position().row as u32 + 1,
+                    ));
                 }
             }
             "def" | "defp" => {

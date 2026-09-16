@@ -860,10 +860,7 @@ mod tests {
     /// variable that has a points-to set (the SSA-driven extractor uses
     /// the unversioned base name from `parse_field_store`, which is its
     /// own pre-existing limitation orthogonal to this bug).
-    fn solver_from_raw(
-        constraints: Vec<Constraint>,
-        initial_pts: &[(&str, &str)],
-    ) -> AliasSolver {
+    fn solver_from_raw(constraints: Vec<Constraint>, initial_pts: &[(&str, &str)]) -> AliasSolver {
         let mut solver = AliasSolver {
             points_to: HashMap::new(),
             worklist: VecDeque::new(),

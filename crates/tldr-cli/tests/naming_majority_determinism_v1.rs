@@ -106,7 +106,8 @@ fn test_majority_breaks_ties_toward_concrete_over_degenerate() {
         .and_then(|c| c.as_str())
         .unwrap_or("<missing>");
     assert_eq!(
-        classes, "pascal_case",
+        classes,
+        "pascal_case",
         "naming.classes should resolve to pascal_case (the concrete \
          sibling), not the degenerate upper_alpha → pascal_case \
          collapse path; got {:?}. Full naming block: {:?}",
@@ -155,22 +156,10 @@ fn test_patterns_output_deterministic_across_repeats() {
         // sorted for set-equality comparison (file/line/name keys are
         // stable identifiers).
         let naming = v.pointer("/naming").cloned().unwrap_or(Value::Null);
-        let classes = naming
-            .get("classes")
-            .cloned()
-            .unwrap_or(Value::Null);
-        let functions = naming
-            .get("functions")
-            .cloned()
-            .unwrap_or(Value::Null);
-        let constants = naming
-            .get("constants")
-            .cloned()
-            .unwrap_or(Value::Null);
-        let private_prefix = naming
-            .get("private_prefix")
-            .cloned()
-            .unwrap_or(Value::Null);
+        let classes = naming.get("classes").cloned().unwrap_or(Value::Null);
+        let functions = naming.get("functions").cloned().unwrap_or(Value::Null);
+        let constants = naming.get("constants").cloned().unwrap_or(Value::Null);
+        let private_prefix = naming.get("private_prefix").cloned().unwrap_or(Value::Null);
         let mut violations = naming
             .get("violations")
             .and_then(|v| v.as_array())

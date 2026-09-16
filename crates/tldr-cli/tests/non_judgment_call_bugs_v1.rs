@@ -274,9 +274,10 @@ fn agg17_4_non_regression_halstead_summary_other_langs() {
         let (exit, out) = run_tldr(&["halstead", path, "--format", "json"]);
         assert_eq!(exit, 0, "halstead {} exit=0; out={}", lang, out);
         let v = parse_json(&out);
-        let summary = v.get("summary").and_then(|s| s.as_object()).unwrap_or_else(|| {
-            panic!("halstead {} must emit summary; out={}", lang, out)
-        });
+        let summary = v
+            .get("summary")
+            .and_then(|s| s.as_object())
+            .unwrap_or_else(|| panic!("halstead {} must emit summary; out={}", lang, out));
         assert!(
             summary.contains_key("avg_volume"),
             "halstead {} summary must contain avg_volume",
@@ -302,13 +303,13 @@ fn agg17_5_scala_clones_has_summary_key() {
     if !Path::new("/tmp/repos/scala-cats-effect").exists() {
         return;
     }
-    let (exit, out) = run_tldr(&[
-        "clones",
-        "/tmp/repos/scala-cats-effect",
-        "--format",
-        "json",
-    ]);
-    assert_eq!(exit, 0, "clones exit=0; out_head={}", &out[..out.len().min(200)]);
+    let (exit, out) = run_tldr(&["clones", "/tmp/repos/scala-cats-effect", "--format", "json"]);
+    assert_eq!(
+        exit,
+        0,
+        "clones exit=0; out_head={}",
+        &out[..out.len().min(200)]
+    );
     let v = parse_json(&out);
     let summary = v
         .get("summary")
@@ -398,9 +399,14 @@ fn agg17_6_kotlin_chop_within_bounds_does_not_say_outside() {
     // function". Either the chop succeeds (path found) OR the
     // explanation acknowledges the line is "within function" but no
     // PDG node is anchored there.
-    let success = v_c.get("path_exists").and_then(|x| x.as_bool()).unwrap_or(false);
+    let success = v_c
+        .get("path_exists")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
     assert!(
-        success || explanation.contains("within function") || !explanation.contains("outside function"),
+        success
+            || explanation.contains("within function")
+            || !explanation.contains("outside function"),
         "kotlin chop within bounds [{}..{}] must not report 'outside function'; \
          explanation={}",
         inner_a,
@@ -449,8 +455,7 @@ fn agg17_6_chop_outside_bounds_still_reports_outside() {
         .and_then(|x| x.as_str())
         .unwrap_or("");
     assert!(
-        explanation.contains("outside function")
-            || explanation.contains("could not"),
+        explanation.contains("outside function") || explanation.contains("could not"),
         "python chop with lines {}/{} far below function start {} must still \
          emit a diagnostic mentioning outside-function; got explanation={}",
         outside_a,
@@ -495,7 +500,8 @@ fn agg17_2_ts_explain_callees_no_newlines() {
         }
     }
     assert_eq!(
-        corrupted, 0,
+        corrupted,
+        0,
         "ts explain callees must contain no multi-line / source-text names; \
          found {} corrupted entries out of {}",
         corrupted,

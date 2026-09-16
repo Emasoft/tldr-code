@@ -639,7 +639,11 @@ fn bench_dirty_file_invalidation_speed() {
         file_hashes.push(file_hash);
 
         for query_type in &["cfg", "dfg", "structure"] {
-            let key = QueryKey::new(*query_type, hash_args(&(&file, query_type)), Language::Python);
+            let key = QueryKey::new(
+                *query_type,
+                hash_args(&(&file, query_type)),
+                Language::Python,
+            );
             cache.insert(key, &format!("data_{}_{}", i, query_type), vec![file_hash]);
         }
     }
@@ -655,7 +659,11 @@ fn bench_dirty_file_invalidation_speed() {
         // Re-populate entries for this file
         let file = format!("src/file_{}.rs", i);
         for query_type in &["cfg", "dfg", "structure"] {
-            let key = QueryKey::new(*query_type, hash_args(&(&file, query_type)), Language::Python);
+            let key = QueryKey::new(
+                *query_type,
+                hash_args(&(&file, query_type)),
+                Language::Python,
+            );
             cache.insert(key, &format!("data_{}_{}", i, query_type), vec![file_hash]);
         }
 
@@ -678,7 +686,11 @@ fn bench_dirty_file_invalidation_speed() {
     for (i, &file_hash) in file_hashes.iter().enumerate().take(100) {
         let file = format!("src/file_{}.rs", i);
         for query_type in &["cfg", "dfg", "structure"] {
-            let key = QueryKey::new(*query_type, hash_args(&(&file, query_type)), Language::Python);
+            let key = QueryKey::new(
+                *query_type,
+                hash_args(&(&file, query_type)),
+                Language::Python,
+            );
             cache.insert(key, &format!("data_{}_{}", i, query_type), vec![file_hash]);
         }
     }
@@ -940,7 +952,11 @@ fn bench_l2_query_type_coverage() {
 
     // 6. Program slice
     let slice_data: Vec<usize> = vec![1, 5, 12, 18, 25]; // affected line numbers
-    let slice_key = QueryKey::new("slice", hash_args(&("test.rs", "main", 25)), Language::Python);
+    let slice_key = QueryKey::new(
+        "slice",
+        hash_args(&("test.rs", "main", 25)),
+        Language::Python,
+    );
     cache.insert(slice_key.clone(), &slice_data, vec![]);
     let result: Option<Vec<usize>> = cache.get(&slice_key);
     assert!(result.is_some(), "slice query type: SUPPORTED");

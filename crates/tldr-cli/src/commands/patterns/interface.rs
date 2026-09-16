@@ -396,9 +396,7 @@ fn get_node_name<'a>(node: Node<'a>, source: &'a [u8], lang: Language) -> Option
                                     for bin_child in first_arg.children(&mut bin_cursor) {
                                         if bin_child.kind() == "call" {
                                             if let Some(fname) = bin_child.child(0) {
-                                                return Some(
-                                                    node_text(fname, source).to_string(),
-                                                );
+                                                return Some(node_text(fname, source).to_string());
                                             }
                                         }
                                     }
@@ -1699,11 +1697,7 @@ fn is_interface_container(kind: &str) -> bool {
 fn needs_deep_walk(lang: Language) -> bool {
     matches!(
         lang,
-        Language::Cpp
-            | Language::C
-            | Language::CSharp
-            | Language::Kotlin
-            | Language::Swift
+        Language::Cpp | Language::C | Language::CSharp | Language::Kotlin | Language::Swift
     )
 }
 
@@ -1788,10 +1782,7 @@ fn collect_top_level_definitions(
 /// matching the contract Python / TypeScript already satisfy at the
 /// schema level (every public callable is enumerable from `functions[]`
 /// without dereferencing `classes[]`).
-fn flatten_class_methods_to_functions(
-    classes: &[ClassInfo],
-    functions: &mut Vec<FunctionInfo>,
-) {
+fn flatten_class_methods_to_functions(classes: &[ClassInfo], functions: &mut Vec<FunctionInfo>) {
     use std::collections::HashSet;
     let mut seen: HashSet<(String, u32)> = HashSet::new();
     for f in functions.iter() {
@@ -1879,9 +1870,10 @@ fn merge_rust_impl_entries(classes: &mut Vec<ClassInfo>) {
 
         let canonical_entry = &mut classes[canonical];
         for m in methods {
-            let already = canonical_entry.methods.iter().any(|existing| {
-                existing.name == m.name && existing.signature == m.signature
-            });
+            let already = canonical_entry
+                .methods
+                .iter()
+                .any(|existing| existing.name == m.name && existing.signature == m.signature);
             if !already {
                 canonical_entry.methods.push(m);
             }
@@ -1891,8 +1883,9 @@ fn merge_rust_impl_entries(classes: &mut Vec<ClassInfo>) {
                 canonical_entry.bases.push(b);
             }
         }
-        canonical_entry.private_method_count =
-            canonical_entry.private_method_count.saturating_add(private_count);
+        canonical_entry.private_method_count = canonical_entry
+            .private_method_count
+            .saturating_add(private_count);
         to_remove.push(i);
     }
 
@@ -1958,8 +1951,7 @@ fn deep_collect(
             // already collected its inner methods/types via extract_class_info.
             // Top-level rule: a class node is "top-level" iff it isn't itself
             // contained in another class-kind ancestor.
-            if !is_inside_class_ancestor(child, class_kinds)
-                && is_node_public(child, source, lang)
+            if !is_inside_class_ancestor(child, class_kinds) && is_node_public(child, source, lang)
             {
                 let info = extract_class_info(child, source, lang);
                 // Skip empty/anonymous misparses where extract returned no name.

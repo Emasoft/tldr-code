@@ -312,9 +312,8 @@ fn descriptions_for(source_type: TaintSourceType, language: Language) -> &'stati
         (TaintSourceType::HttpParam, Language::CSharp) => "ASP.NET request parameter",
         (TaintSourceType::HttpParam, Language::Php) => "PHP $_GET / $_POST / $_REQUEST",
         (TaintSourceType::HttpParam, Language::Elixir) => "Phoenix conn.params",
-        (TaintSourceType::HttpParam, Language::Lua) | (TaintSourceType::HttpParam, Language::Luau) => {
-            "OpenResty/ngx request args"
-        }
+        (TaintSourceType::HttpParam, Language::Lua)
+        | (TaintSourceType::HttpParam, Language::Luau) => "OpenResty/ngx request args",
         (TaintSourceType::HttpParam, _) => "HTTP request parameter",
 
         (TaintSourceType::HttpBody, Language::Python) => "Flask JSON/raw request body",
@@ -328,7 +327,9 @@ fn descriptions_for(source_type: TaintSourceType, language: Language) -> &'stati
         (TaintSourceType::UserInput, Language::Kotlin) => "User input (readLine)",
         (TaintSourceType::UserInput, Language::Scala) => "User input (StdIn / readLine)",
         (TaintSourceType::UserInput, Language::CSharp) => "User input (Console.ReadLine)",
-        (TaintSourceType::UserInput, Language::Swift) => "User input (CommandLine.arguments / readLine)",
+        (TaintSourceType::UserInput, Language::Swift) => {
+            "User input (CommandLine.arguments / readLine)"
+        }
         (TaintSourceType::UserInput, Language::Lua)
         | (TaintSourceType::UserInput, Language::Luau) => "User input (io.read)",
         (TaintSourceType::UserInput, _) => "User input from stdin",
@@ -339,7 +340,9 @@ fn descriptions_for(source_type: TaintSourceType, language: Language) -> &'stati
         (TaintSourceType::Stdin, _) => "Standard input",
 
         // Environment / args
-        (TaintSourceType::EnvVar, Language::Python) => "Environment variable (os.environ / os.getenv)",
+        (TaintSourceType::EnvVar, Language::Python) => {
+            "Environment variable (os.environ / os.getenv)"
+        }
         (TaintSourceType::EnvVar, Language::JavaScript)
         | (TaintSourceType::EnvVar, Language::TypeScript) => "Environment variable (process.env)",
         (TaintSourceType::EnvVar, Language::Go) => "Environment variable (os.Getenv)",
@@ -347,12 +350,20 @@ fn descriptions_for(source_type: TaintSourceType, language: Language) -> &'stati
         (TaintSourceType::EnvVar, Language::Java) => "Environment variable (System.getenv)",
         (TaintSourceType::EnvVar, Language::Kotlin) => "Environment variable (System.getenv)",
         (TaintSourceType::EnvVar, Language::Scala) => "Environment variable (sys.env)",
-        (TaintSourceType::EnvVar, Language::CSharp) => "Environment variable (Environment.GetEnvironmentVariable)",
+        (TaintSourceType::EnvVar, Language::CSharp) => {
+            "Environment variable (Environment.GetEnvironmentVariable)"
+        }
         (TaintSourceType::EnvVar, Language::Php) => "Environment variable ($_ENV / getenv)",
         (TaintSourceType::EnvVar, Language::Ruby) => "Environment variable (ENV)",
-        (TaintSourceType::EnvVar, Language::C) | (TaintSourceType::EnvVar, Language::Cpp) => "Environment variable (getenv)",
-        (TaintSourceType::EnvVar, Language::Lua) | (TaintSourceType::EnvVar, Language::Luau) => "Environment variable (os.getenv)",
-        (TaintSourceType::EnvVar, Language::Swift) => "Environment variable (ProcessInfo.environment)",
+        (TaintSourceType::EnvVar, Language::C) | (TaintSourceType::EnvVar, Language::Cpp) => {
+            "Environment variable (getenv)"
+        }
+        (TaintSourceType::EnvVar, Language::Lua) | (TaintSourceType::EnvVar, Language::Luau) => {
+            "Environment variable (os.getenv)"
+        }
+        (TaintSourceType::EnvVar, Language::Swift) => {
+            "Environment variable (ProcessInfo.environment)"
+        }
         (TaintSourceType::EnvVar, Language::Elixir) => "Environment variable (System.get_env)",
         (TaintSourceType::EnvVar, Language::Ocaml) => "Environment variable (Sys.getenv)",
 
@@ -528,10 +539,8 @@ pub fn scan_vulnerabilities(
 /// Detect parameterized SQL: placeholder (`?` / `%s` / `:name`) + tuple/list/dict
 /// argument syntax on the same statement.
 fn is_parameterized_sql(line: &str) -> bool {
-    let has_placeholder =
-        line.contains('?') || line.contains("%s") || has_named_param(line);
-    let has_args_collection =
-        line.contains(", (") || line.contains(", [") || line.contains(", {");
+    let has_placeholder = line.contains('?') || line.contains("%s") || has_named_param(line);
+    let has_args_collection = line.contains(", (") || line.contains(", [") || line.contains(", {");
     has_placeholder && has_args_collection
 }
 
@@ -786,9 +795,7 @@ fn scan_file_vulns(path: &Path, vuln_filter: Option<VulnType>) -> TldrResult<Vec
                 if vuln_type == VulnType::SqlInjection && is_parameterized_sql(stmt_text) {
                     continue;
                 }
-                if vuln_type == VulnType::CommandInjection
-                    && is_safe_subprocess_call(stmt_text)
-                {
+                if vuln_type == VulnType::CommandInjection && is_safe_subprocess_call(stmt_text) {
                     continue;
                 }
                 // M3 detection-accuracy-v1 BUG-17: degenerate flow suppression.
@@ -819,17 +826,12 @@ fn scan_file_vulns(path: &Path, vuln_filter: Option<VulnType>) -> TldrResult<Vec
                 // in crates/tldr-cli/tests/detection_accuracy_v1.rs).
                 if flow.source.line == flow.sink.line
                     && flow.source.var == flow.sink.var
-                    && flow
-                        .source
-                        .statement
-                        .as_deref()
-                        .unwrap_or("")
+                    && flow.source.statement.as_deref().unwrap_or("")
                         == flow.sink.statement.as_deref().unwrap_or("")
                 {
                     continue;
                 }
-                let description =
-                    descriptions_for(flow.source.source_type, language).to_string();
+                let description = descriptions_for(flow.source.source_type, language).to_string();
                 let source_record: TaintSource = flow.source.clone().into();
                 let sink_record: TaintSink = flow.sink.clone().into();
                 let flow_path: Vec<String> = if flow.path.is_empty() {
@@ -961,16 +963,46 @@ mod tests {
     #[test]
     fn test_vuln_type_from_sink_exhaustive() {
         // Exhaustive — adding a TaintSinkType variant in M1 forces an update.
-        assert_eq!(vuln_type_from_sink(TaintSinkType::SqlQuery), VulnType::SqlInjection);
-        assert_eq!(vuln_type_from_sink(TaintSinkType::ShellExec), VulnType::CommandInjection);
-        assert_eq!(vuln_type_from_sink(TaintSinkType::CodeEval), VulnType::CommandInjection);
-        assert_eq!(vuln_type_from_sink(TaintSinkType::CodeExec), VulnType::CommandInjection);
-        assert_eq!(vuln_type_from_sink(TaintSinkType::CodeCompile), VulnType::CommandInjection);
-        assert_eq!(vuln_type_from_sink(TaintSinkType::HtmlOutput), VulnType::Xss);
-        assert_eq!(vuln_type_from_sink(TaintSinkType::FileOpen), VulnType::PathTraversal);
-        assert_eq!(vuln_type_from_sink(TaintSinkType::FileWrite), VulnType::PathTraversal);
-        assert_eq!(vuln_type_from_sink(TaintSinkType::HttpRequest), VulnType::Ssrf);
-        assert_eq!(vuln_type_from_sink(TaintSinkType::Deserialize), VulnType::Deserialization);
+        assert_eq!(
+            vuln_type_from_sink(TaintSinkType::SqlQuery),
+            VulnType::SqlInjection
+        );
+        assert_eq!(
+            vuln_type_from_sink(TaintSinkType::ShellExec),
+            VulnType::CommandInjection
+        );
+        assert_eq!(
+            vuln_type_from_sink(TaintSinkType::CodeEval),
+            VulnType::CommandInjection
+        );
+        assert_eq!(
+            vuln_type_from_sink(TaintSinkType::CodeExec),
+            VulnType::CommandInjection
+        );
+        assert_eq!(
+            vuln_type_from_sink(TaintSinkType::CodeCompile),
+            VulnType::CommandInjection
+        );
+        assert_eq!(
+            vuln_type_from_sink(TaintSinkType::HtmlOutput),
+            VulnType::Xss
+        );
+        assert_eq!(
+            vuln_type_from_sink(TaintSinkType::FileOpen),
+            VulnType::PathTraversal
+        );
+        assert_eq!(
+            vuln_type_from_sink(TaintSinkType::FileWrite),
+            VulnType::PathTraversal
+        );
+        assert_eq!(
+            vuln_type_from_sink(TaintSinkType::HttpRequest),
+            VulnType::Ssrf
+        );
+        assert_eq!(
+            vuln_type_from_sink(TaintSinkType::Deserialize),
+            VulnType::Deserialization
+        );
     }
 
     #[test]
@@ -1506,8 +1538,10 @@ def from_pyfile(filename):
             VulnType::Ssrf,
         )
         .unwrap();
-        assert!(!findings.is_empty(),
-            "VAL-007: Go `http.Get(target)` with tainted target must produce >= 1 SSRF finding.");
+        assert!(
+            !findings.is_empty(),
+            "VAL-007: Go `http.Get(target)` with tainted target must produce >= 1 SSRF finding."
+        );
     }
 
     #[test]
@@ -1642,10 +1676,7 @@ def from_pyfile(filename):
         // that drives the skip).
         let body = "def add(a, b):\n    total = a + b\n    return total * 2\n";
         assert!(
-            !crate::security::taint::function_body_has_taint_pattern(
-                body,
-                Language::Python
-            ),
+            !crate::security::taint::function_body_has_taint_pattern(body, Language::Python),
             "FAST-PATH-1: prefilter must report no source/sink pattern in pure-arithmetic body."
         );
     }
@@ -1661,7 +1692,8 @@ def from_pyfile(filename):
         // `request.args` substring is present); the AST analysis then
         // returns 0 flows because there is no sink. The point is
         // proving the predicate fired (admit, not skip).
-        let body_source_only = "def h():\n    target = request.args.get(\"q\")\n    return target.upper()\n";
+        let body_source_only =
+            "def h():\n    target = request.args.get(\"q\")\n    return target.upper()\n";
         assert!(
             crate::security::taint::function_body_has_taint_pattern(
                 body_source_only,
@@ -1738,7 +1770,15 @@ def from_pyfile(filename):
     fn test_fastpath_needle_set_python_canonical() {
         let needles = crate::security::taint::fastpath_pattern_strings(Language::Python);
         assert!(!needles.is_empty(), "Python needle set must not be empty.");
-        for canonical in &[".execute", ".read", "eval", "exec", "request.args", "os.system", "os.environ"] {
+        for canonical in &[
+            ".execute",
+            ".read",
+            "eval",
+            "exec",
+            "request.args",
+            "os.system",
+            "os.environ",
+        ] {
             assert!(
                 needles.contains(canonical),
                 "Python needle set missing canonical needle `{}`. Got: {:?}",

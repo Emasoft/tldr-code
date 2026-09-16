@@ -182,10 +182,7 @@ impl BodyArgs {
         }
 
         let writer = OutputWriter::new(cli_format, quiet);
-        writer.progress(&format!(
-            "Reading {}...",
-            self.file.display()
-        ));
+        writer.progress(&format!("Reading {}...", self.file.display()));
 
         // -- Byte-faithful read --------------------------------------------
         // Raw bytes only: `read_to_string` would normalize nothing but would
@@ -240,7 +237,10 @@ impl BodyArgs {
             if (to as usize) > total_lines {
                 warnings.push(format!(
                     "--to {} clamped to {} ('{}' has {} lines).",
-                    to, total_lines, self.file.display(), total_lines
+                    to,
+                    total_lines,
+                    self.file.display(),
+                    total_lines
                 ));
                 to = total_lines as u32;
             }

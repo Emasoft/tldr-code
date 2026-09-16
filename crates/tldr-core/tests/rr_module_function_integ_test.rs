@@ -82,7 +82,12 @@ fn assert_has_sink_of_type(result: &TaintInfo, expected: TaintSinkType, path: &s
     );
 }
 
-fn assert_has_source_or_sink(result: &TaintInfo, source: TaintSourceType, sink: TaintSinkType, path: &str) {
+fn assert_has_source_or_sink(
+    result: &TaintInfo,
+    source: TaintSourceType,
+    sink: TaintSinkType,
+    path: &str,
+) {
     assert_has_source_of_type(result, source, path);
     assert_has_sink_of_type(result, sink, path);
 }
@@ -105,7 +110,12 @@ end
 ";
     // (a) regular path: PASSES at HEAD via regex bank
     let regular = analyze_with_ssa(src, Language::Ruby, "handler", /* use_ssa */ false);
-    assert_has_source_or_sink(&regular, TaintSourceType::Stdin, TaintSinkType::CodeEval, "regular");
+    assert_has_source_or_sink(
+        &regular,
+        TaintSourceType::Stdin,
+        TaintSinkType::CodeEval,
+        "regular",
+    );
     // (b) AST-only path: FAILS at HEAD pre-M2 (RED gate; M2 turns GREEN)
     let ast_only = analyze_ast_only(src, Language::Ruby, "handler");
     assert_has_source_of_type(&ast_only, TaintSourceType::Stdin, "ast_only");

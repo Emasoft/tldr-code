@@ -96,8 +96,14 @@ fn function_mode_body_is_exact_file_slice() {
     // Additive-field hygiene: nothing lossy happened, so neither optional
     // field may appear.
     let obj = json.as_object().expect("JSON object");
-    assert!(!obj.contains_key("encoding_lossy"), "no lossy flag on clean UTF-8");
-    assert!(!obj.contains_key("warnings"), "no warnings on a clean extraction");
+    assert!(
+        !obj.contains_key("encoding_lossy"),
+        "no lossy flag on clean UTF-8"
+    );
+    assert!(
+        !obj.contains_key("warnings"),
+        "no warnings on a clean extraction"
+    );
 
     // The file has no trailing content, so the body is the entire file.
     assert_eq!(expected, fs::read(&file).expect("read file"));
@@ -145,8 +151,16 @@ fn bom_at_offset_zero_is_preserved() {
         body.starts_with('\u{feff}'),
         "full-range body must start with the BOM (U+FEFF)"
     );
-    assert_eq!(body.as_bytes(), &bytes[..], "body must equal the raw file bytes");
-    assert_eq!(json["byte_count"], bytes.len(), "byte_count must include the 3 BOM bytes");
+    assert_eq!(
+        body.as_bytes(),
+        &bytes[..],
+        "body must equal the raw file bytes"
+    );
+    assert_eq!(
+        json["byte_count"],
+        bytes.len(),
+        "byte_count must include the 3 BOM bytes"
+    );
     assert_eq!(json["line_start"], 1);
     assert_eq!(json["line_end"], 3);
 }
@@ -215,10 +229,19 @@ fn missing_function_fails_naming_function_and_file() {
         .output()
         .expect("run tldr body");
 
-    assert!(!output.status.success(), "missing function must exit non-zero");
+    assert!(
+        !output.status.success(),
+        "missing function must exit non-zero"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("does_not_exist"), "error must name the function: {stderr}");
-    assert!(stderr.contains("simple.py"), "error must name the file: {stderr}");
+    assert!(
+        stderr.contains("does_not_exist"),
+        "error must name the function: {stderr}"
+    );
+    assert!(
+        stderr.contains("simple.py"),
+        "error must name the file: {stderr}"
+    );
     // Nothing may leak onto stdout on failure.
     assert!(output.stdout.is_empty(), "stdout must stay empty on error");
 }

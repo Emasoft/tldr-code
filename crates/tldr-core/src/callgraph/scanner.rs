@@ -381,24 +381,24 @@ pub fn scan_project_files(
                 // `skip_current_dir()` it skipped the entire tree and no file was
                 // ever found. Only entries BELOW the root can be symlink cycles.
                 if entry.depth() > 0 {
-                if let Ok(canonical) = entry.path().canonicalize() {
-                    if !visited_dirs.insert(canonical.clone()) {
-                        // Already visited this directory - symlink cycle detected.
-                        // why: a plain `continue` here only skips *this* loop
-                        // iteration; WalkDir still descends into the directory next,
-                        // so a real symlink cycle recursed forever despite the doc
-                        // comment above claiming cycles were detected and broken.
-                        // `skip_current_dir()` is the only way to stop the descent.
-                        if config.verbose {
-                            eprintln!(
-                                "Warning: symlink cycle detected at {:?}, skipping",
-                                entry.path()
-                            );
+                    if let Ok(canonical) = entry.path().canonicalize() {
+                        if !visited_dirs.insert(canonical.clone()) {
+                            // Already visited this directory - symlink cycle detected.
+                            // why: a plain `continue` here only skips *this* loop
+                            // iteration; WalkDir still descends into the directory next,
+                            // so a real symlink cycle recursed forever despite the doc
+                            // comment above claiming cycles were detected and broken.
+                            // `skip_current_dir()` is the only way to stop the descent.
+                            if config.verbose {
+                                eprintln!(
+                                    "Warning: symlink cycle detected at {:?}, skipping",
+                                    entry.path()
+                                );
+                            }
+                            walker.skip_current_dir();
+                            continue;
                         }
-                        walker.skip_current_dir();
-                        continue;
                     }
-                }
                 }
                 continue; // Directories don't get added to files list
             }

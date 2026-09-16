@@ -313,7 +313,10 @@ fn java_interface_flattens_methods_to_functions() {
     assert_eq!(rc, 0, "tldr interface exited non-zero");
     let v = parse_json(&out);
     let classes = v["classes"].as_array().cloned().unwrap_or_default();
-    assert!(!classes.is_empty(), "java interface should find OwnerController class");
+    assert!(
+        !classes.is_empty(),
+        "java interface should find OwnerController class"
+    );
     let functions = v["functions"].as_array().cloned().unwrap_or_default();
     assert!(
         functions.len() >= 5,
@@ -396,7 +399,8 @@ fn nonreg_lua_smells_kind_populated() {
         .filter(|s| s["smell_type"].is_null() || s["smell_type"].as_str() == Some(""))
         .count();
     assert_eq!(
-        null_kinds, 0,
+        null_kinds,
+        0,
         "lua smells should never have null smell_type (got {} null entries of {} total)",
         null_kinds,
         smells.len()

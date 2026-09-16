@@ -491,7 +491,12 @@ fn extract_match_windows(
             let start = first.saturating_sub(WINDOW_CONTEXT_LINES);
             let end = (last + WINDOW_CONTEXT_LINES + 1).min(lines.len());
             let snippet = lines[start..end].join("\n");
-            ((first + 1) as u32, (last + 1) as u32, snippet, label.to_string())
+            (
+                (first + 1) as u32,
+                (last + 1) as u32,
+                snippet,
+                label.to_string(),
+            )
         })
         .collect()
 }
@@ -752,9 +757,7 @@ mod tests {
         let results = index.search("dres", 10);
 
         assert!(
-            results
-                .iter()
-                .any(|r| r.line_start <= 1 && r.line_end >= 2),
+            results.iter().any(|r| r.line_start <= 1 && r.line_end >= 2),
             "cluster 1 (lines 1-2) must be covered; got {results:?}"
         );
         assert!(
@@ -795,7 +798,11 @@ mod tests {
         // Disjoint clusters (gap > WINDOW_MERGE_GAP) split into two windows.
         let content = "const dres = 1;\na\nb\nc\ncall(dres);\n";
         let windows = extract_match_windows(&tokenizer, content, &terms);
-        assert_eq!(windows.len(), 2, "disjoint clusters must split; got {windows:?}");
+        assert_eq!(
+            windows.len(),
+            2,
+            "disjoint clusters must split; got {windows:?}"
+        );
         assert_eq!((windows[0].0, windows[0].1), (1, 1));
         assert_eq!((windows[1].0, windows[1].1), (5, 5));
 

@@ -91,10 +91,9 @@ impl AvailableArgs {
         // silently swallowing a non-UTF-8 path here would misroute it into that
         // branch and fail with a confusing "function not found" error instead of a
         // clear path error.
-        let file_str = self
-            .file
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("File path is not valid UTF-8: {}", self.file.display()))?;
+        let file_str = self.file.to_str().ok_or_else(|| {
+            anyhow::anyhow!("File path is not valid UTF-8: {}", self.file.display())
+        })?;
 
         // Get CFG for the function
         let cfg = get_cfg_context(file_str, &self.function, language)?;

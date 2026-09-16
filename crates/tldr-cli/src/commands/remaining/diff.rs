@@ -961,8 +961,7 @@ fn detect_changes(
                 let kind_mismatch = (node_a.kind != n_b.kind) as u32;
                 let method_mismatch = (node_a.is_method != n_b.is_method) as u32;
                 let body_mismatch = (node_a.normalized_body != n_b.normalized_body) as u32;
-                let line_diff =
-                    (node_a.line as i64 - n_b.line as i64).unsigned_abs() as u32;
+                let line_diff = (node_a.line as i64 - n_b.line as i64).unsigned_abs() as u32;
                 (kind_mismatch, method_mismatch, body_mismatch, line_diff)
             });
 

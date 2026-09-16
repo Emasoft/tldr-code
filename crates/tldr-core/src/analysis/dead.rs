@@ -579,10 +579,7 @@ fn has_test_decorator(decorators: &[String]) -> bool {
         let lower = d.to_lowercase();
         // Direct test markers (covers Python `@pytest.mark.parametrize`, generic
         // `test`/`testXxx`, plus Rust `#[test]`).
-        if lower == "test"
-            || lower == "pytest.mark.parametrize"
-            || lower.starts_with("test")
-        {
+        if lower == "test" || lower == "pytest.mark.parametrize" || lower.starts_with("test") {
             return true;
         }
         // Rust ecosystem test attributes: `#[tokio::test]`, `#[async_std::test]`,

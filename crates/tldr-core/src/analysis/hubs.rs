@@ -674,7 +674,8 @@ pub fn compute_pagerank(
             // In the original graph, these are the callers of `node`
             let incoming_contrib: f64 = reverse_graph.get(node).map_or(0.0, |callers| {
                 let mut sorted_callers: Vec<&FunctionRef> = callers.iter().collect();
-                sorted_callers.sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.name.cmp(&b.name)));
+                sorted_callers
+                    .sort_by(|a, b| a.file.cmp(&b.file).then_with(|| a.name.cmp(&b.name)));
                 sorted_callers
                     .iter()
                     .map(|caller| {

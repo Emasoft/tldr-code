@@ -228,10 +228,7 @@ fn test_structure_json_valid_for_all_problematic_languages() {
         match serde_json::from_slice::<Value>(&stdout) {
             Ok(_) => {}
             Err(e) => {
-                let preview: String = String::from_utf8_lossy(&stdout)
-                    .chars()
-                    .take(200)
-                    .collect();
+                let preview: String = String::from_utf8_lossy(&stdout).chars().take(200).collect();
                 failures.push(format!(
                     "[{}] structure JSON invalid: {} | head=<{}>",
                     lang, e, preview
@@ -400,8 +397,9 @@ fn test_structure_json_handles_tab_and_backslash_quote_in_python_signature() {
     ]);
     let stdout = cmd.assert().success().get_output().stdout.clone();
 
-    let v: Value = serde_json::from_slice(&stdout)
-        .expect("structure-json-escape-v1: python signature with tab/backslash-quote MUST yield valid JSON");
+    let v: Value = serde_json::from_slice(&stdout).expect(
+        "structure-json-escape-v1: python signature with tab/backslash-quote MUST yield valid JSON",
+    );
 
     // Sanity: at least one file must be present so we know the
     // assertion above isn't trivially passing on an empty payload.

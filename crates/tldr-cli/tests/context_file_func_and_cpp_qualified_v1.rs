@@ -197,8 +197,7 @@ fn agg14_3_cpp_available_xmldocument_parse() {
     if skip_if_missing(file) {
         return;
     }
-    let (code, stdout, stderr) =
-        run_status(&["available", file, "XMLDocument::Parse"]);
+    let (code, stdout, stderr) = run_status(&["available", file, "XMLDocument::Parse"]);
     assert_eq!(
         code, 0,
         "available exit non-zero: stdout={stdout} stderr={stderr}"
@@ -278,7 +277,9 @@ fn agg14_3_cpp_explain_xmldocument_parse() {
     }
     let report = run_json(&["explain", file, "XMLDocument::Parse"]);
     assert_eq!(report["function"], "XMLDocument::Parse");
-    let line = report["line_start"].as_u64().or_else(|| report["line"].as_u64());
+    let line = report["line_start"]
+        .as_u64()
+        .or_else(|| report["line"].as_u64());
     assert!(line.is_some(), "expected line/line_start in explain");
 }
 
@@ -317,8 +318,7 @@ fn agg14_3_cpp_complexity_xmldocument_savefile() {
         return;
     }
     // SaveFile is a different XMLDocument out-of-class definition.
-    let (code, stdout, _stderr) =
-        run_status(&["complexity", file, "XMLDocument::SaveFile"]);
+    let (code, stdout, _stderr) = run_status(&["complexity", file, "XMLDocument::SaveFile"]);
     if code == 0 {
         let v: Value = serde_json::from_str(&stdout).expect("parse");
         assert_eq!(v["function"], "XMLDocument::SaveFile");

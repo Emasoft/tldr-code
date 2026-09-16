@@ -153,8 +153,7 @@ impl ReferencesArgs {
         // P13.AGG13-12 by also querying the bare method name and
         // accepting hits whose context is `\.<method>(`. Apply the
         // same enrichment here so `references` agrees with `explain`.
-        let resolved_lang = cli_lang
-            .or_else(|| Language::from_directory(&self.path));
+        let resolved_lang = cli_lang.or_else(|| Language::from_directory(&self.path));
         if matches!(resolved_lang, Some(Language::Lua) | Some(Language::Luau)) {
             enrich_lua_alias_callers(&mut report, &self.symbol, &self.path, resolved_lang);
         }

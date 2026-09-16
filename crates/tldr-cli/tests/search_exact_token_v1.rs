@@ -47,9 +47,7 @@ const TOTAL_LINES: usize = 1200;
 fn build_fixture_lines() -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     lines.push("// App shell bootstrap.".to_string());
-    lines.push(
-        "// rescanClicks state: addresses stale UI flags after a rescan.".to_string(),
-    );
+    lines.push("// rescanClicks state: addresses stale UI flags after a rescan.".to_string());
     lines.push("// See the rescan scheduler for details.".to_string());
 
     // Filler functions until just before the real occurrences.
@@ -112,7 +110,11 @@ fn build_two_cluster_fixture() -> String {
 /// lines (979-980).
 fn write_fixture(dir: &std::path::Path) -> std::path::PathBuf {
     let lines = build_fixture_lines();
-    assert_eq!(lines.len(), TOTAL_LINES, "fixture must have {TOTAL_LINES} lines");
+    assert_eq!(
+        lines.len(),
+        TOTAL_LINES,
+        "fixture must have {TOTAL_LINES} lines"
+    );
     assert_eq!(
         lines[DRES_LINE_1 - 1],
         "const dres = fetch('/api/data');",

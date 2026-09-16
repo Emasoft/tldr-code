@@ -282,10 +282,9 @@ impl TypeScriptHandler {
                                     alias = Some(get_node_text(&child, source).to_string());
                                 }
                             }
-                            "call_expression"
-                                if imp.is_none() => {
-                                    imp = self.parse_require_call(&child, source);
-                                }
+                            "call_expression" if imp.is_none() => {
+                                imp = self.parse_require_call(&child, source);
+                            }
                             _ => {}
                         }
                     }
@@ -308,10 +307,9 @@ impl TypeScriptHandler {
                                     alias = Some(get_node_text(&child, source).to_string());
                                 }
                             }
-                            "call_expression"
-                                if imp.is_none() => {
-                                    imp = self.parse_require_call(&child, source);
-                                }
+                            "call_expression" if imp.is_none() => {
+                                imp = self.parse_require_call(&child, source);
+                            }
                             _ => {}
                         }
                     }
@@ -510,9 +508,7 @@ impl TypeScriptHandler {
                     // `app.init()` route to `resolve_method_or_attr_call`
                     // and silently fail to resolve in-project.
                     if Self::is_top_level_assignment(&node) {
-                        if let Some(name) =
-                            Self::extract_assignment_function_name(&node, source)
-                        {
+                        if let Some(name) = Self::extract_assignment_function_name(&node, source) {
                             functions.insert(name);
                         }
                     }

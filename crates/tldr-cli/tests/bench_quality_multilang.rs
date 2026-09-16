@@ -2262,10 +2262,7 @@ mod explain_tests {
     fn test_explain_ruby() {
         let path = fixture_path("test_ruby.rb");
         if let Some(json) = run_explain(&path, "top_level_func") {
-            assert_eq!(
-                json["function"].as_str().unwrap_or(""),
-                "top_level_func"
-            );
+            assert_eq!(json["function"].as_str().unwrap_or(""), "top_level_func");
         }
     }
 

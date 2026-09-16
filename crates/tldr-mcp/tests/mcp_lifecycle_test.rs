@@ -22,8 +22,7 @@ use tldr_mcp::tools::ToolRegistry;
 
 const FRAME_A_INITIALIZE: &str = r#"{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
 
-const FRAME_B_NOTIFICATION: &str =
-    r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+const FRAME_B_NOTIFICATION: &str = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
 
 const FRAME_C_TOOLS_LIST: &str = r#"{"jsonrpc":"2.0","method":"tools/list","id":2}"#;
 

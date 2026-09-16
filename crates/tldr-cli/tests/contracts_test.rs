@@ -537,7 +537,10 @@ mod contracts_command {
         // why: `is_empty() || !is_empty()` is a tautology that can never fail;
         // assert the actual field we know for a single-expression function body.
         assert_eq!(report.function, "simple");
-        assert!(report.preconditions.is_empty(), "simple() has no guard clauses");
+        assert!(
+            report.preconditions.is_empty(),
+            "simple() has no guard clauses"
+        );
     }
 
     #[test]

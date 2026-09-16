@@ -359,9 +359,7 @@ pub fn analyze_halstead(
     {
         use std::collections::HashSet;
         let mut seen: HashSet<(String, String, String)> = HashSet::new();
-        violations.retain(|v| {
-            seen.insert((v.name.clone(), v.file.clone(), v.metric.clone()))
-        });
+        violations.retain(|v| seen.insert((v.name.clone(), v.file.clone(), v.metric.clone())));
     }
 
     // Sort by volume (descending) for top-N

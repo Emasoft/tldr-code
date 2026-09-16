@@ -1421,7 +1421,10 @@ mod function_tests {
         // why: extract_functions has an explicit `Language::CSharp => {}` arm
         // (C# has no free functions), so the real contract is "always empty".
         // The previous assertion `a || !a` is a tautology that can never fail.
-        assert!(functions.is_empty(), "C# has no free functions, only methods");
+        assert!(
+            functions.is_empty(),
+            "C# has no free functions, only methods"
+        );
     }
 
     /// Test Scala function extraction (P2 - currently stubbed)

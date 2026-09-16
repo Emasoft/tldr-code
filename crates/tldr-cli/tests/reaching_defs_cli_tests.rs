@@ -746,7 +746,11 @@ fn test_reaching_defs_killed_definition() {
         .iter()
         .filter(|c| c["definition"]["var"].as_str().unwrap() == "x")
         .collect();
-    assert_eq!(x_chains.len(), 2, "should have a chain for each x definition");
+    assert_eq!(
+        x_chains.len(),
+        2,
+        "should have a chain for each x definition"
+    );
 
     let last_def_line = x_chains
         .iter()

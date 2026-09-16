@@ -153,11 +153,7 @@ fn callgraph_fixture() -> TempDir {
         "from c import deep\n\ndef process(x):\n    deep(x)\n    return x\n",
     )
     .unwrap();
-    fs::write(
-        temp.path().join("c.py"),
-        "def deep(x):\n    return x * 2\n",
-    )
-    .unwrap();
+    fs::write(temp.path().join("c.py"), "def deep(x):\n    return x * 2\n").unwrap();
     fs::write(
         temp.path().join("d.py"),
         "from a import main\n\ndef driver():\n    main()\n",
@@ -370,12 +366,7 @@ fn n5_imports_parses_commonjs_require() {
     .unwrap();
 
     let out = tldr_cmd()
-        .args([
-            "imports",
-            f.to_str().unwrap(),
-            "--format",
-            "json",
-        ])
+        .args(["imports", f.to_str().unwrap(), "--format", "json"])
         .output()
         .expect("tldr imports should run");
     assert!(out.status.success(), "imports should succeed");
@@ -415,19 +406,10 @@ fn n5_imports_skips_dynamic_require() {
     // emit an import (we have no resolvable module name).
     let temp = TempDir::new().unwrap();
     let f = temp.path().join("dyn.js");
-    fs::write(
-        &f,
-        "const name = 'lodash';\nconst mod = require(name);\n",
-    )
-    .unwrap();
+    fs::write(&f, "const name = 'lodash';\nconst mod = require(name);\n").unwrap();
 
     let out = tldr_cmd()
-        .args([
-            "imports",
-            f.to_str().unwrap(),
-            "--format",
-            "json",
-        ])
+        .args(["imports", f.to_str().unwrap(), "--format", "json"])
         .output()
         .expect("tldr imports should run");
     assert!(out.status.success());

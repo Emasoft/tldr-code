@@ -334,8 +334,8 @@ fn scan_test_recognizer(test_path: &Path) -> (u32, u32) {
     if test_path.is_file() {
         tally(test_path);
     } else {
-        for entry in
-            walk_project(test_path).filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+        for entry in walk_project(test_path)
+            .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
         {
             tally(entry.path());
         }

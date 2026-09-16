@@ -139,10 +139,7 @@ impl HealthArgs {
         // when the user did not pass `--lang` AND the directory contains
         // no analyzable files, returning a stub report consistent with
         // `structure`.
-        if lang.is_none()
-            && self.path.is_dir()
-            && Language::from_directory(&self.path).is_none()
-        {
+        if lang.is_none() && self.path.is_dir() && Language::from_directory(&self.path).is_none() {
             let stub = serde_json::json!({
                 "wrapper": "health",
                 "root": self.path.display().to_string(),

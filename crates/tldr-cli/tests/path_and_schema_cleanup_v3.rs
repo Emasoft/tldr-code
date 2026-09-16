@@ -387,9 +387,9 @@ fn python_imports_includes_future() {
         .get("imports")
         .and_then(|x| x.as_array())
         .expect("imports JSON must have imports array");
-    let has_future = imports.iter().any(|imp| {
-        imp.get("module").and_then(|m| m.as_str()) == Some("__future__")
-    });
+    let has_future = imports
+        .iter()
+        .any(|imp| imp.get("module").and_then(|m| m.as_str()) == Some("__future__"));
     assert!(
         has_future,
         "P3.BUG-N3: imports must include {{module: __future__}}, \
@@ -415,7 +415,10 @@ fn structure_definitions_always_present_even_on_empty() {
         .get("files")
         .and_then(|x| x.as_array())
         .expect("structure JSON must have files array");
-    assert!(!files.is_empty(), "structure must emit at least one file entry");
+    assert!(
+        !files.is_empty(),
+        "structure must emit at least one file entry"
+    );
     let defs = files[0].get("definitions");
     assert!(
         defs.is_some(),

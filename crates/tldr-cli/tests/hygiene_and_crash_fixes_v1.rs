@@ -82,7 +82,10 @@ fn assert_stdout_is_json(stdout: &[u8], stderr: &[u8], context: &str) {
          got first chars: {:?} | stderr={}",
         context,
         &s.chars().take(120).collect::<String>(),
-        String::from_utf8_lossy(stderr).chars().take(200).collect::<String>(),
+        String::from_utf8_lossy(stderr)
+            .chars()
+            .take(200)
+            .collect::<String>(),
     );
     serde_json::from_slice::<serde_json::Value>(stdout).unwrap_or_else(|e| {
         panic!(
@@ -286,7 +289,8 @@ fn agg12_6_diagnostics_no_tools_emits_valid_json() {
     if !Path::new(target).exists() {
         return;
     }
-    let (stdout, stderr, code) = run(&["diagnostics", target, "--lang", "luau", "--format", "json"]);
+    let (stdout, stderr, code) =
+        run(&["diagnostics", target, "--lang", "luau", "--format", "json"]);
 
     // Stdout MUST be valid JSON (the whole point of the fix).
     assert!(
@@ -298,17 +302,28 @@ fn agg12_6_diagnostics_no_tools_emits_valid_json() {
         panic!(
             "diagnostics no-tools stdout must parse as JSON: {} | head: {:?}",
             e,
-            String::from_utf8_lossy(&stdout).chars().take(300).collect::<String>()
+            String::from_utf8_lossy(&stdout)
+                .chars()
+                .take(300)
+                .collect::<String>()
         )
     });
 
     // Schema invariants on the empty report.
-    assert!(v.get("diagnostics").is_some(), "must have 'diagnostics' field");
+    assert!(
+        v.get("diagnostics").is_some(),
+        "must have 'diagnostics' field"
+    );
     assert!(v.get("summary").is_some(), "must have 'summary' field");
     assert!(v.get("tools_run").is_some(), "must have 'tools_run' field");
-    assert!(v.get("files_analyzed").is_some(), "must have 'files_analyzed'");
+    assert!(
+        v.get("files_analyzed").is_some(),
+        "must have 'files_analyzed'"
+    );
     assert_eq!(
-        v.get("diagnostics").and_then(|x| x.as_array()).map(|a| a.len()),
+        v.get("diagnostics")
+            .and_then(|x| x.as_array())
+            .map(|a| a.len()),
         Some(0),
         "no-tools diagnostics must be empty array"
     );
@@ -339,19 +354,16 @@ fn agg12_6_diagnostics_no_tools_emits_valid_sarif() {
     if !Path::new(target).exists() {
         return;
     }
-    let (stdout, stderr, _code) = run(&[
-        "diagnostics",
-        target,
-        "--lang",
-        "luau",
-        "--output",
-        "sarif",
-    ]);
+    let (stdout, stderr, _code) =
+        run(&["diagnostics", target, "--lang", "luau", "--output", "sarif"]);
     let v: serde_json::Value = serde_json::from_slice(&stdout).unwrap_or_else(|e| {
         panic!(
             "no-tools SARIF stdout must parse: {} | head: {:?}",
             e,
-            String::from_utf8_lossy(&stdout).chars().take(300).collect::<String>()
+            String::from_utf8_lossy(&stdout)
+                .chars()
+                .take(300)
+                .collect::<String>()
         )
     });
     assert_eq!(
@@ -359,7 +371,10 @@ fn agg12_6_diagnostics_no_tools_emits_valid_sarif() {
         Some("2.1.0"),
         "SARIF version must be 2.1.0"
     );
-    assert!(v.get("runs").and_then(|x| x.as_array()).is_some(), "SARIF must have 'runs'");
+    assert!(
+        v.get("runs").and_then(|x| x.as_array()).is_some(),
+        "SARIF must have 'runs'"
+    );
     let _ = stderr;
 }
 
@@ -409,9 +424,8 @@ fn swift_2_change_impact_usage_error_to_stderr() {
 
     // If stdout is non-empty, it must be valid JSON.
     if !stdout.iter().all(|b| b.is_ascii_whitespace()) {
-        serde_json::from_slice::<serde_json::Value>(&stdout).expect(
-            "non-empty stdout from change-impact usage error must still parse as JSON",
-        );
+        serde_json::from_slice::<serde_json::Value>(&stdout)
+            .expect("non-empty stdout from change-impact usage error must still parse as JSON");
     }
 }
 

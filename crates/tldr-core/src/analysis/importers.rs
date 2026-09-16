@@ -194,9 +194,7 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
             if import_module.starts_with(&format!("{}.", target)) {
                 return true;
             }
-            if import_module.contains('.')
-                && target.starts_with(&format!("{}.", import_module))
-            {
+            if import_module.contains('.') && target.starts_with(&format!("{}.", import_module)) {
                 return true;
             }
             if !target.contains('.') && import_module.ends_with(&format!(".{}", target)) {

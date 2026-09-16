@@ -1368,7 +1368,8 @@ mod tests {
         };
         let report = run_health(p, Some(Language::Python), opts).unwrap();
         assert_eq!(
-            report.summary.files_analyzed, 3,
+            report.summary.files_analyzed,
+            3,
             "expected 3 files_analyzed, got {} (functions={}, classes={})",
             report.summary.files_analyzed,
             report.summary.functions_analyzed,
@@ -1411,9 +1412,7 @@ mod tests {
         let line = text
             .lines()
             .find(|l| l.contains("tightly coupled pairs"))
-            .expect(
-                "text output must include a 'tightly coupled pairs' line when count > 0",
-            );
+            .expect("text output must include a 'tightly coupled pairs' line when count > 0");
 
         // Parse the leading integer out of "Coupling:    N tightly coupled pairs".
         let text_pairs: u64 = line

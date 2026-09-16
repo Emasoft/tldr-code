@@ -88,8 +88,7 @@ fn test_vuln_secure_autodetect_parity_express() {
         vuln_code == 0 || vuln_code == 2,
         "tldr vuln autodetect failed (exit {vuln_code}); stdout:\n{vuln_stdout}"
     );
-    let vuln_json: Value =
-        serde_json::from_str(&vuln_stdout).expect("vuln stdout must be JSON");
+    let vuln_json: Value = serde_json::from_str(&vuln_stdout).expect("vuln stdout must be JSON");
     let vuln_findings = vuln_json
         .get("findings")
         .and_then(|v| v.as_array())

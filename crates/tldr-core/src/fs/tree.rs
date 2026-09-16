@@ -483,11 +483,7 @@ mod tests {
             result.err()
         );
         let tree = result.unwrap();
-        let names: Vec<&str> = tree
-            .children
-            .iter()
-            .map(|c| c.name.as_str())
-            .collect();
+        let names: Vec<&str> = tree.children.iter().map(|c| c.name.as_str()).collect();
         assert!(
             names.contains(&"original.txt") && names.contains(&"hardlink.txt"),
             "expected both hardlinked files in tree; got: {:?}",

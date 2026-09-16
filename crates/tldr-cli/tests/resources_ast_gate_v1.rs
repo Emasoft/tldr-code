@@ -169,9 +169,9 @@ export function makeRequest(): void {
         .and_then(|x| x.as_array())
         .cloned()
         .unwrap_or_default();
-    let request_flagged = resources.iter().any(|r| {
-        r.get("name").and_then(|n| n.as_str()) == Some("request")
-    });
+    let request_flagged = resources
+        .iter()
+        .any(|r| r.get("name").and_then(|n| n.as_str()) == Some("request"));
     assert!(
         request_flagged,
         "AGG17-7 positive: `const request = http.request(...)` followed by \

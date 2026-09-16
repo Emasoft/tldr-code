@@ -27,7 +27,8 @@ fn tldr_cmd() -> Command {
     Command::new(assert_cmd::cargo::cargo_bin!("tldr"))
 }
 
-const FIXTURE: &str = "defmodule Foo do\n  def bar(x) do\n    x + 1\n  end\n\n  defp baz do\n    :ok\n  end\nend\n";
+const FIXTURE: &str =
+    "defmodule Foo do\n  def bar(x) do\n    x + 1\n  end\n\n  defp baz do\n    :ok\n  end\nend\n";
 
 fn run_structure(dir: &TempDir) -> Value {
     let mut cmd = tldr_cmd();
@@ -115,7 +116,12 @@ fn test_structure_elixir_method_infos_populated() {
         let name = entry.get("name").and_then(Value::as_str).unwrap_or("");
         let line = entry.get("line").and_then(Value::as_u64).unwrap_or(0);
         let sig = entry.get("signature").and_then(Value::as_str).unwrap_or("");
-        assert!(line > 0, "method_infos[{}].line must be 1-indexed positive, got {}", name, line);
+        assert!(
+            line > 0,
+            "method_infos[{}].line must be 1-indexed positive, got {}",
+            name,
+            line
+        );
         assert!(
             !sig.is_empty(),
             "method_infos[{}].signature must be non-empty",

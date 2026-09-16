@@ -363,15 +363,13 @@ fn find_function_in_graph(
                         if class.name == class_name {
                             for method in &class.methods {
                                 if method.name == method_name {
-                                    if let Some(graph_key) = find_call_graph_key(
-                                        call_graph, &abs, func_name, project,
-                                    ) {
+                                    if let Some(graph_key) =
+                                        find_call_graph_key(call_graph, &abs, func_name, project)
+                                    {
                                         return Ok(graph_key);
                                     }
-                                    let rel = abs
-                                        .strip_prefix(project)
-                                        .unwrap_or(&abs)
-                                        .to_path_buf();
+                                    let rel =
+                                        abs.strip_prefix(project).unwrap_or(&abs).to_path_buf();
                                     return Ok((rel, func_name.to_string()));
                                 }
                             }

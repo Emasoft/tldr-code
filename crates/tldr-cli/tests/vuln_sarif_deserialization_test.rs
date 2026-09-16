@@ -148,14 +148,12 @@ fn vuln_json_labels_deserialization_correctly() {
 fn vuln_sarif_labels_deserialization_correctly() {
     let sarif = run_vuln("sarif");
 
-    let result = sarif
-        .pointer("/runs/0/results/0")
-        .unwrap_or_else(|| {
-            panic!(
-                "expected runs[0].results[0] in SARIF output; full SARIF:\n{}",
-                serde_json::to_string_pretty(&sarif).unwrap_or_default()
-            )
-        });
+    let result = sarif.pointer("/runs/0/results/0").unwrap_or_else(|| {
+        panic!(
+            "expected runs[0].results[0] in SARIF output; full SARIF:\n{}",
+            serde_json::to_string_pretty(&sarif).unwrap_or_default()
+        )
+    });
 
     let rule_id = result
         .get("ruleId")

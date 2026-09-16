@@ -64,11 +64,7 @@ fn write(path: &Path, contents: &str) {
 #[test]
 fn test_search_help_does_not_falsely_claim_regex() {
     let (stdout, stderr, ok) = run_tldr(&["search", "--help"]);
-    assert!(
-        ok,
-        "`tldr search --help` must succeed (stderr: {})",
-        stderr
-    );
+    assert!(ok, "`tldr search --help` must succeed (stderr: {})", stderr);
 
     let combined = format!("{}{}", stdout, stderr);
     let lower = combined.to_lowercase();

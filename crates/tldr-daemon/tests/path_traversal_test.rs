@@ -67,8 +67,7 @@ password=\"VictimSuperSecretValue_canary_xyz_42\"
 async fn secrets_handler_rejects_absolute_path_outside_project() {
     // Project root: a tempdir with at least one file (so canonicalize works).
     let project_dir = TempDir::new().expect("project tempdir");
-    std::fs::write(project_dir.path().join("inside.txt"), "harmless")
-        .expect("write inside file");
+    std::fs::write(project_dir.path().join("inside.txt"), "harmless").expect("write inside file");
 
     // Victim location: a SEPARATE tempdir (outside project_dir).
     // This simulates "/etc/passwd" — an absolute path the daemon should refuse.
@@ -103,8 +102,7 @@ async fn secrets_handler_rejects_absolute_path_outside_project() {
         Ok(Json(response)) => {
             // Unfixed path: the file was read. Serialize the response and walk
             // the JSON for any leaked content from the victim file.
-            let serialized =
-                serde_json::to_value(&response).expect("serialize daemon response");
+            let serialized = serde_json::to_value(&response).expect("serialize daemon response");
 
             // The canary substring "root:" MUST NOT appear anywhere in the
             // response. If it does, the file content leaked through the
@@ -132,8 +130,7 @@ async fn vuln_handler_rejects_absolute_path_outside_project() {
     // the absolute path BEFORE invoking the scanner. The strongest signal is
     // that the response is an error (path validation refused the input).
     let project_dir = TempDir::new().expect("project tempdir");
-    std::fs::write(project_dir.path().join("inside.txt"), "harmless")
-        .expect("write inside file");
+    std::fs::write(project_dir.path().join("inside.txt"), "harmless").expect("write inside file");
 
     let victim_dir = TempDir::new().expect("victim tempdir");
     let victim_path = write_victim_file(victim_dir.path());

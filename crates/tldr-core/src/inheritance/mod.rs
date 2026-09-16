@@ -270,8 +270,8 @@ fn collect_source_files(path: &Path, lang: Option<Language>) -> Vec<PathBuf> {
         // why: sibling-aware detection so `--lang cpp` doesn't drop a `.h`
         // header at collection time when it would later be classified as
         // C++ by the extraction loop's own `from_path_with_siblings` call.
-        if let Some(file_lang) =
-            Language::from_path_with_siblings(entry_path).or_else(|| Language::from_path(entry_path))
+        if let Some(file_lang) = Language::from_path_with_siblings(entry_path)
+            .or_else(|| Language::from_path(entry_path))
         {
             if lang.is_none() || lang == Some(file_lang) {
                 files.push(entry_path.to_path_buf());
