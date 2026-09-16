@@ -82,7 +82,8 @@ fn function_node_kinds(lang: Language) -> &'static [&'static str] {
         Language::Kotlin | Language::Swift => &["function_declaration"],
         // Formats extension (2025-09): no functions in data/config documents;
         // log entries are not functions; markdown headings/code blocks are
-        // not functions either (2026-09); plain-text TOC headings neither.
+        // not functions either (2026-09); plain-text TOC headings neither;
+        // CSV/TSV records/cells neither (CSV/TSV batch).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -93,7 +94,9 @@ fn function_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &[],
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &[],
     }
 }
 
@@ -140,7 +143,7 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
         Language::Swift => &["class_declaration", "protocol_declaration"],
         // Formats extension (2025-09): no classes in data/config documents;
         // log entries are not classes; markdown documents neither (2026-09);
-        // plain text neither.
+        // plain text neither; CSV/TSV data neither (CSV/TSV batch).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -151,7 +154,9 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &[],
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &[],
     }
 }
 

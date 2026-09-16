@@ -92,6 +92,18 @@ codebook-tree-sitter-latex = "=0.6.1"
 tree-sitter-md = "=0.5.3"
 # NOTE: tree-sitter-sql dropped — crates.io only publishes 0.0.2 (DerekStride
 # grammar is source-only); revisit if a maintained sql crate targets ts 0.25.
+# NOTE: tree-sitter-csv dropped (CSV/TSV batch, 2026-09) — the only CSV
+# grammar crate on crates.io, tree-sitter-csv 1.2.0 (last publish 2024-01-24),
+# is UNBUILDABLE and UNLINKABLE in this workspace, verified by build probe:
+# (1) its build-dep `cc ~1.0.82` semver-conflicts with the `cc ^1.2.10` the
+# pinned tree-sitter 0.25 stack requires — cargo refuses the duplicate cc
+# requirement; (2) its exports are raw ts-0.20-era `language_csv()` functions
+# with NO tree-sitter-language bridge LanguageFn, so it cannot load against
+# the pinned ts 0.25 runtime (the latex/markdown bridge precedent). `.csv`/
+# `.tsv` are therefore handled by the NATIVE RFC 4180 streaming record
+# scanner in `crates/tldr-core/src/ast/csvscan` (Log/Text no-grammar
+# precedent) — revisit if a maintained csv crate ships a bridge LanguageFn
+# and drops the pinned cc build-dep.
 # Phase 3: Ruby grammar
 # Note: tree-sitter-ruby 0.23.1 uses tree-sitter-language crate for ABI compatibility
 tree-sitter-ruby = "=0.23.1"

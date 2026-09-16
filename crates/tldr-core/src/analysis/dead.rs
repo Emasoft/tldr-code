@@ -692,7 +692,9 @@ fn infer_visibility_from_name(
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => true,
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => true,
     }
 }
 

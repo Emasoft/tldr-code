@@ -374,8 +374,8 @@ fn descriptions_for(source_type: TaintSourceType, language: Language) -> &'stati
         // define no taint sources (see taint::get_patterns), so this arm only
         // exists for exhaustiveness — a description is never rendered for
         // them in practice. Log files likewise define no taint sources, as do
-        // markdown documents (markdown batch, 2026-09) and plain-text files
-        // (plain-text batch).
+        // markdown documents (markdown batch, 2026-09), plain-text files
+        // (plain-text batch) and CSV/TSV records (CSV/TSV batch).
         (_, Language::Json)
         | (_, Language::Yaml)
         | (_, Language::Toml)
@@ -386,7 +386,9 @@ fn descriptions_for(source_type: TaintSourceType, language: Language) -> &'stati
         | (_, Language::Latex)
         | (_, Language::Log)
         | (_, Language::Markdown)
-        | (_, Language::Text) => "Untrusted input",
+        | (_, Language::Text)
+        | (_, Language::Csv)
+        | (_, Language::Tsv) => "Untrusted input",
     }
 }
 

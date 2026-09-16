@@ -203,6 +203,21 @@ impl ParserPool {
             // `ast::doclinks` (imports) — both regex-free-of-grammars,
             // text-only passes.
             TldrLanguage::Text => None,
+            // CSV/TSV batch: NO grammar, and not for lack of trying — the
+            // only CSV grammar crate on crates.io (`tree-sitter-csv` 1.2.0,
+            // last publish 2024-01-24) is UNBUILDABLE here: its build-dep
+            // `cc ~1.0.82` semver-conflicts with the `cc ^1.2.10` the pinned
+            // tree-sitter 0.25 stack requires (cargo refuses the duplicate),
+            // and its exports are raw ts-0.20-era `language_csv()` functions
+            // with NO tree-sitter-language bridge LanguageFn (verified by
+            // build probe; audit note in the root Cargo.toml next to the
+            // tree-sitter-sql comment). So `Language::Csv`/`Language::Tsv`
+            // deliberately have no tree-sitter mapping — a direct
+            // `parse(source, Csv)` call is UnsupportedLanguage. CSV/TSV
+            // content is consumed exclusively by the native RFC 4180 record
+            // scanner in `ast::csvscan`; `parse_file_with_lang` short-
+            // circuits before this would ever matter.
+            TldrLanguage::Csv | TldrLanguage::Tsv => None,
         }
     }
 
@@ -464,6 +479,24 @@ impl ParserPool {
             let source = crate::ast::toc::parse_text_file(path)?;
             let tree = self.parse("", TldrLanguage::Bash)?;
             return Ok((tree, source, lang));
+        }
+
+        // CSV/TSV batch: `.csv`/`.tsv` files NEVER go through tree-sitter —
+        // the only CSV grammar crate on crates.io is unbuildable (`cc
+        // ~1.0.82` build-dep semver-conflicts with ts 0.25's `cc ^1.2.10`;
+        // ts-0.20-era exports with no bridge LanguageFns — audit note in the
+        // root Cargo.toml). The native RFC 4180 record scanner in
+        // `ast::csvscan` owns CSV/TSV content. Mirroring the Log arm above,
+        // this returns the EMPTY structural placeholder tree (an empty shell
+        // `program`) WITHOUT reading the file (a GiB export costs nothing
+        // here — the scanner streams it): the `get_code_structure` hook
+        // early-returns to `ast::csvscan` before any tree walk happens, and
+        // the scanner re-derives everything from the file, so the placeholder
+        // source stays empty. Direct `parse(source, Csv)` calls (no file)
+        // still fail with UnsupportedLanguage, which is the honest answer.
+        if lang == TldrLanguage::Csv || lang == TldrLanguage::Tsv {
+            let tree = self.parse("", TldrLanguage::Bash)?;
+            return Ok((tree, String::new(), lang));
         }
 
         // Read file content with UTF-8 lossy fallback - M2 mitigation

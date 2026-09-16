@@ -247,7 +247,7 @@ fn is_candidate_test_file(path: &Path, language: Language) -> bool {
         }
         // Formats extension (2025-09): data/config documents are never test
         // files; log files neither; markdown documents neither (2026-09);
-        // plain text neither.
+        // plain text neither; CSV/TSV data neither (CSV/TSV batch).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -258,7 +258,9 @@ fn is_candidate_test_file(path: &Path, language: Language) -> bool {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => false,
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => false,
     }
 }
 
@@ -314,7 +316,8 @@ fn matches_test_function(node: &Node, source: &[u8], language: Language) -> bool
         // Formats extension (2025-09): data/config documents have no tests;
         // log entries are not test functions either; markdown elements are
         // not test functions either (2026-09); plain-text TOC headings are
-        // not test functions either.
+        // not test functions either; CSV/TSV records/cells are not test
+        // functions either (CSV/TSV batch).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -325,7 +328,9 @@ fn matches_test_function(node: &Node, source: &[u8], language: Language) -> bool
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => false,
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => false,
     }
 }
 

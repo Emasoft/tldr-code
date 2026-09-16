@@ -586,6 +586,10 @@ fn is_supported_source_file(path: &Path, lang: Option<Language>) -> bool {
         Some(Language::Log) => ext == "log",
         Some(Language::Markdown) => matches!(ext, "md" | "markdown"),
         Some(Language::Text) => matches!(ext, "txt" | "text"),
+        // CSV/TSV batch: bare data, no taint sources/sinks — but the
+        // extension filter still resolves the language (scanning is a no-op).
+        Some(Language::Csv) => ext == "csv",
+        Some(Language::Tsv) => ext == "tsv",
         // No --lang: preserve historical behavior of scanning py + rs
         // (the two languages the taint analyzer natively handles).
         None => matches!(ext, "py" | "rs"),

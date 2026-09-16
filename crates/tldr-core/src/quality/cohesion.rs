@@ -1874,7 +1874,7 @@ fn extract_field_from_pattern(
         Language::Ocaml => None,
         // Formats extension (2025-09): no `this`-style field access in
         // data/config documents; log entries have none either; markdown
-        // documents neither; plain text neither.
+        // documents neither; plain text neither; CSV/TSV records neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -1885,7 +1885,9 @@ fn extract_field_from_pattern(
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => None,
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => None,
     }
 }
 

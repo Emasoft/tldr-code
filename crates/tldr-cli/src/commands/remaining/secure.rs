@@ -406,6 +406,10 @@ fn is_supported_secure_file(path: &std::path::Path, lang: Option<Language>) -> b
         Some(Language::Log) => ext == "log",
         Some(Language::Markdown) => matches!(ext, "md" | "markdown"),
         Some(Language::Text) => matches!(ext, "txt" | "text"),
+        // CSV/TSV batch: bare data, no taint sinks — but the extension
+        // filter still resolves the language (scanning is a no-op).
+        Some(Language::Csv) => ext == "csv",
+        Some(Language::Tsv) => ext == "tsv",
         None => matches!(ext, "py" | "rs"),
     }
 }

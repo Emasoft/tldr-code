@@ -131,6 +131,9 @@ fn language_to_string(lang: Language) -> String {
         Language::Log => "log".to_string(),
         Language::Markdown => "markdown".to_string(),
         Language::Text => "text".to_string(),
+        // CSV/TSV batch
+        Language::Csv => "csv".to_string(),
+        Language::Tsv => "tsv".to_string(),
     }
 }
 

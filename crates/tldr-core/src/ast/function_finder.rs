@@ -443,7 +443,8 @@ pub fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Ocaml => &["let_binding", "value_definition"],
         // Formats extension: no function nodes in data/config/markup docs;
         // markdown headings/code blocks/tables are not functions either;
-        // plain-text TOC headings are not functions either.
+        // plain-text TOC headings are not functions either; CSV/TSV
+        // records/cells are not functions either.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -454,7 +455,9 @@ pub fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &[],
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &[],
     }
 }
 
@@ -517,7 +520,7 @@ pub fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
         ],
         // Formats extension: no class-like containers in data/config markup;
         // log files have none either; markdown documents neither; plain
-        // text neither.
+        // text neither; CSV/TSV data neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -528,7 +531,9 @@ pub fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &[],
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &[],
     }
 }
 

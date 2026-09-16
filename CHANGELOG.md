@@ -15,6 +15,33 @@
 
 ### Added
 
+- **CSV/TSV support via a native RFC 4180 scanner.** `.csv`/`.tsv` files join the supported formats as
+  languages 30/31 (`Language::Csv`/`Language::Tsv`, signal=false like every other format — a directory of
+  data exports must never outvote source code). The usual tree-sitter route was evaluated and REJECTED
+  with evidence: the only CSV grammar crate on crates.io, `tree-sitter-csv` 1.2.0 (last publish
+  2024-01-24), is unbuildable in this workspace — its `cc ~1.0.82` build-dependency semver-conflicts with
+  the `cc ^1.2.10` the pinned tree-sitter 0.25 stack requires (cargo refuses the duplicate), and its
+  exports are raw ts-0.20-era `language_csv()` functions with no `tree-sitter-language` bridge LanguageFn
+  (audit note recorded next to the tree-sitter-sql comment in the root `Cargo.toml`). So `.csv`/`.tsv`
+  never parse through tree-sitter — `parse(source, Csv)` stays `UnsupportedLanguage` and
+  `parse_file_with_lang` returns the Log-batch structural placeholder tree — and a deterministic,
+  **streaming** RFC 4180 record scanner (`ast::csvscan`) is the only consumer: a 1 MB buffered state
+  machine (one physical line + the record being assembled in RAM; byte offsets tracked manually so spans
+  stay exact) implementing the full dialect — quoted fields with delimiters and `""` escapes, records
+  spanning lines via quoted embedded newlines, CRLF excluded from spans/text while the cursor advances,
+  UTF-8 BOM skipped, blank lines and the trailing-newline phantom record skipped, plus two documented
+  leniencies (quote-in-unquoted-field = content; garbage after a closing quote keeps scanning). **Element
+  semantics:** `tldr structure data.csv` emits one `record` definition per record (name = first field text
+  truncated to 60 chars, else `row-N`) plus `cell` definitions for the FIRST record's fields (the header
+  convention), each with exact byte spans (`source[byte_start..byte_end]` reproduces the record/cell —
+  delimiters, quotes and embedded newlines included) and `definition_line` = the start line. Size caps do
+  not apply (streamed like `.jsonl`/`.log`; the honest ceiling is the materialised `Vec<CsvRecord>`), and
+  Csv/Tsv deliberately have no document-link surface (bare data — a generic cell scan would fabricate file
+  edges out of every address-looking column; `is_doc_language` untouched). Covered by `ast::csvscan` unit
+  tests (13 incl. a 1000-row determinism smoke), `formats_grammar_test` extension mapping +
+  no-parse pins, exact-span pins in `element_extraction_v1`/`symbol_fidelity_v1`, and the count tests 29
+  → 31 (the documented both-must-update rule: `types.rs` + `tests/types_base_tests.rs`).
+
 - **Extensionless text files are first-class tldr targets (extensionless-targets-v1).** Before this,
   a file without a recognized extension was invisible: `Language::from_path` returned `None` (no
   arm for "no extension at all"), `tldr structure Makefile` mislabeled it with the parent

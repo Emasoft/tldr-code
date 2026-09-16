@@ -1456,7 +1456,8 @@ pub fn language_profile(language: crate::types::Language) -> Option<LanguageProf
         // files join them: log entries are not code constructs. Markdown
         // joins them too (2026-09): headings/code blocks/tables are not code
         // constructs either. Text joins them (plain-text batch): TOC
-        // headings are not code constructs either.
+        // headings are not code constructs either. Csv/Tsv join them
+        // (CSV/TSV batch): records/cells are not code constructs either.
         crate::types::Language::Json
         | crate::types::Language::Yaml
         | crate::types::Language::Toml
@@ -1467,7 +1468,9 @@ pub fn language_profile(language: crate::types::Language) -> Option<LanguageProf
         | crate::types::Language::Latex
         | crate::types::Language::Log
         | crate::types::Language::Markdown
-        | crate::types::Language::Text => None,
+        | crate::types::Language::Text
+        | crate::types::Language::Csv
+        | crate::types::Language::Tsv => None,
     }
 }
 

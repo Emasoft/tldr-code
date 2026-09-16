@@ -583,6 +583,9 @@ fn is_comment_line(trimmed: &str, language: Language) -> bool {
         // Plain-text batch: `.txt` lines are prose — a leading `#` is a
         // TOC-ish marker or ASCII decoration, not a comment.
         Language::Text => false,
+        // CSV/TSV batch: bare data rows have no comment syntax (a leading
+        // `#` in a cell is cell content).
+        Language::Csv | Language::Tsv => false,
     }
 }
 
@@ -628,6 +631,10 @@ fn comment_node_kinds(language: Language) -> &'static [&'static str] {
         // grammar — there is no syntax to parse) — no comment node kinds
         // exist.
         Language::Text => &[],
+        // CSV/TSV batch: `.csv`/`.tsv` never parse through tree-sitter (the
+        // only grammar crate is unbuildable — see `ast::csvscan`) — no
+        // comment node kinds exist.
+        Language::Csv | Language::Tsv => &[],
     }
 }
 

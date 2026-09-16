@@ -233,7 +233,8 @@ fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["call"], // Elixir def/defp are call nodes
         Language::Ocaml => &["value_definition"],
         // Formats extension (2025-09): no functions in data/config documents;
-        // log entries are not functions; markdown elements are not functions.
+        // log entries are not functions; markdown elements are not functions;
+        // CSV/TSV records/cells are not functions either (CSV/TSV batch).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -244,7 +245,9 @@ fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &[],
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &[],
     }
 }
 
@@ -301,6 +304,18 @@ fn get_parser(language: Language) -> Result<Parser, RemainingError> {
             return Err(RemainingError::parse_error(
                 PathBuf::new(),
                 "plain text has no tree-sitter grammar; use 'tldr structure' for text headings"
+                    .to_string(),
+            ))
+        }
+        // CSV/TSV batch: the only CSV grammar crate on crates.io is
+        // unbuildable (cc build-dep conflict with ts 0.25 + no bridge
+        // LanguageFns — root Cargo.toml audit note); records/cells come from
+        // the native `ast::csvscan` scanner. Explain cannot analyze a CSV
+        // "function" either.
+        Language::Csv | Language::Tsv => {
+            return Err(RemainingError::parse_error(
+                PathBuf::new(),
+                "csv/tsv have no tree-sitter grammar; use 'tldr structure' for records/cells"
                     .to_string(),
             ))
         }
@@ -2345,6 +2360,8 @@ impl ExplainArgs {
             Language::Log => "log",
             Language::Markdown => "markdown",
             Language::Text => "text",
+            Language::Csv => "csv",
+            Language::Tsv => "tsv",
         };
 
         // Build report

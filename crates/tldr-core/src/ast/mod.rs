@@ -14,12 +14,17 @@
 //!   grammar exists for logs; this scanner is the only consumer)
 //! - `toc` - heuristic table-of-contents scanning for `.txt`/`.text` files
 //!   (NO tree-sitter grammar exists for prose; the Log no-grammar precedent)
+//! - `csvscan` - native RFC 4180 record scanning for `.csv`/`.tsv` files
+//!   (the only CSV grammar crate on crates.io is unbuildable — cc build-dep
+//!   conflict with ts 0.25 + ts-0.20-era exports with no bridge LanguageFns;
+//!   the Log/Text no-grammar precedent)
 //! - `ooxml` - OOXML containers (.docx/.xlsx/.pptx): in-memory unzip +
 //!   the XML element walker over the container's XML parts
 //! - `doclinks` - document link extraction: markdown/html/xml hyperlinks
 //!   as ImportInfo entries (doclinks-v1)
 
 pub mod count;
+pub mod csvscan;
 pub mod doclinks;
 pub mod elements;
 pub mod extract;
@@ -33,6 +38,10 @@ pub mod parser;
 pub mod toc;
 
 pub use count::{count_functions_canonical, count_functions_canonical_from_modules};
+pub use csvscan::{
+    delimiter_for, is_csv_path, is_tsv_path, parse_csv_file, stream_csv_records, CsvField,
+    CsvRecord,
+};
 pub use doclinks::extract_doc_links;
 pub use elements::extract_elements;
 pub use extract::{extract_file, extract_file_with_lang, extract_from_tree};

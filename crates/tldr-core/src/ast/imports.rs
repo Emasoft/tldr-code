@@ -98,6 +98,13 @@ pub fn extract_imports_from_tree(
         // is a structural placeholder), no path convention — log files are
         // consumed exclusively by the native scanner in `ast::logs`.
         Language::Log => Vec::new(),
+        // Csv/Tsv (CSV/TSV batch) have no reference surface either: bare
+        // tabular data with NO link/path convention (see the "bare-data
+        // formats" section of the `ast::doclinks` module docs) — a generic
+        // cell scan would fabricate file edges out of every URL-looking
+        // address column. Their structure surface is the record/cell
+        // scanner in `ast::csvscan`.
+        Language::Csv | Language::Tsv => Vec::new(),
     };
 
     Ok(imports)

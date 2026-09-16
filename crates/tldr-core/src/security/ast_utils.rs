@@ -31,6 +31,8 @@ macro_rules! formats_langs {
             | Language::Log
             | Language::Markdown
             | Language::Text
+            | Language::Csv
+            | Language::Tsv
     };
 }
 

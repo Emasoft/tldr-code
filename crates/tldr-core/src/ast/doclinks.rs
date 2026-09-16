@@ -30,6 +30,17 @@
 //!   (`import` / `url`), or the LaTeX command name (`input` /
 //!   `includegraphics` / …).
 //!
+//! # Bare-data formats (CSV/TSV) — no reference surface by design
+//!
+//! `Csv`/`Tsv` (CSV/TSV batch, 2026-09) emit NOTHING here. A CSV/TSV file is
+//! bare tabular data: it has no link/path convention at all — a generic
+//! string scan over cell text would fabricate file edges out of every
+//! URL-looking address column and product-code-looking path column, exactly
+//! the false-edge class the JSON/YAML key allow-list exists to prevent. They
+//! are also NOT document languages (`is_doc_language` stays untouched), so
+//! they never enter the document link graph; their structure surface is the
+//! record/cell element scanner in `ast::csvscan`.
+//!
 //! # Loaded elements (CSS and LaTeX)
 //!
 //! CSS `@import` and `url()` targets are **loaded elements**: a stylesheet

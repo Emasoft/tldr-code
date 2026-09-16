@@ -58,7 +58,9 @@ pub fn identifier_node_types(language: Language) -> &'static [&'static str] {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &[],
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &[],
     }
 }
 

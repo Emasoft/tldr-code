@@ -275,6 +275,8 @@ pub(crate) fn extract_functions_detailed(
         // Markdown joins them (2026-09): headings/code blocks/tables are
         // elements, not functions (see `ast::elements`). Plain-text batch:
         // Text joins too — TOC headings are elements (see `ast::toc`).
+        // Csv/Tsv join too (CSV/TSV batch): records/header cells are
+        // elements (see `ast::csvscan`).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -285,7 +287,9 @@ pub(crate) fn extract_functions_detailed(
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => {}
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => {}
     }
 
     functions
@@ -325,7 +329,7 @@ pub(crate) fn extract_classes_detailed(
         Language::C | Language::Lua | Language::Luau | Language::Ocaml => {} // No classes
         // Formats extension: no classes in data/config/markup documents;
         // log entries are not classes either; markdown documents neither;
-        // plain text neither.
+        // plain text neither; CSV/TSV records neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -336,7 +340,9 @@ pub(crate) fn extract_classes_detailed(
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => {}
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => {}
     }
 
     classes
@@ -773,7 +779,8 @@ fn extract_module_constants(tree: &Tree, source: &str, language: Language) -> Ve
         Language::Ocaml => extract_ocaml_module_constants(&root, source),
         // Formats extension: no module constants in data/config/markup
         // documents (JSON keys are not constants); log entries neither;
-        // markdown documents neither; plain text neither.
+        // markdown documents neither; plain text neither; CSV/TSV records
+        // neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -784,7 +791,9 @@ fn extract_module_constants(tree: &Tree, source: &str, language: Language) -> Ve
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => Vec::new(),
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => Vec::new(),
     }
 }
 

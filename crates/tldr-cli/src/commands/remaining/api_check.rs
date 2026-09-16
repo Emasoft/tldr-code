@@ -1488,7 +1488,8 @@ fn map_language_to_api_language(lang: Language) -> Option<ApiLanguage> {
         // Formats extension (2025-09): no api-check rule pack for data/config
         // formats — None means "don't filter" (documented caller contract).
         // Log files join them (log entries are not API calls), markdown
-        // documents too (2026-09), and plain text (plain-text batch).
+        // documents too (2026-09), plain text (plain-text batch), and
+        // CSV/TSV records (CSV/TSV batch).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -1499,7 +1500,9 @@ fn map_language_to_api_language(lang: Language) -> Option<ApiLanguage> {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => None,
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => None,
     }
 }
 

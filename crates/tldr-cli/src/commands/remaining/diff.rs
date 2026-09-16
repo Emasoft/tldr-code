@@ -598,7 +598,7 @@ fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Ocaml => &["module_definition", "type_definition"],
         // Formats extension (2025-09): no classes in data/config documents;
         // log entries are not classes; markdown documents neither (2026-09);
-        // plain text neither.
+        // plain text neither; CSV/TSV data neither (CSV/TSV batch).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -609,7 +609,9 @@ fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &[],
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &[],
     }
 }
 
@@ -633,7 +635,7 @@ fn get_class_body_kinds(language: Language) -> &'static [&'static str] {
         Language::Ocaml => &[],
         // Formats extension (2025-09): no class bodies in data/config docs;
         // log entries have no bodies either; markdown documents neither;
-        // plain text neither.
+        // plain text neither; CSV/TSV records neither (CSV/TSV batch).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -644,7 +646,9 @@ fn get_class_body_kinds(language: Language) -> &'static [&'static str] {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &[],
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &[],
     }
 }
 
@@ -1618,7 +1622,8 @@ fn get_statement_node_kinds(lang: Language) -> &'static [&'static str] {
         ],
         // Formats extension (2025-09): no statements in data/config documents;
         // log lines are not statements; markdown elements are not statements;
-        // plain-text TOC headings are not statements.
+        // plain-text TOC headings are not statements; CSV/TSV records are not
+        // statements either (CSV/TSV batch).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -1629,7 +1634,9 @@ fn get_statement_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &[],
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &[],
     }
 }
 
@@ -1799,7 +1806,7 @@ fn find_function_body(func_node: Node, lang: Language) -> Option<Node> {
         Language::Ocaml => &["let_binding"],
         // Formats extension (2025-09): no function bodies in data/config docs;
         // log entries have none either; markdown documents neither; plain
-        // text neither.
+        // text neither; CSV/TSV records neither (CSV/TSV batch).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -1810,7 +1817,9 @@ fn find_function_body(func_node: Node, lang: Language) -> Option<Node> {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &[],
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &[],
     };
 
     let mut cursor = func_node.walk();

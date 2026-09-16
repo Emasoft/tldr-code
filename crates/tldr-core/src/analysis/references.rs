@@ -1129,7 +1129,9 @@ pub fn classify_reference_kind(node: &Node, source: &[u8], language: Language) -
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => ReferenceKind::Other,
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => ReferenceKind::Other,
     }
 }
 

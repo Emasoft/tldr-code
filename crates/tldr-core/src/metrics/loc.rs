@@ -487,6 +487,9 @@ fn is_single_line_comment(trimmed: &str, lang: Language) -> bool {
         // notes file is a TOC-ish marker or ASCII decoration, not a comment
         // language, so nothing counts as a comment.
         Language::Text => false,
+        // CSV/TSV batch: bare data rows have no comment syntax at all (a
+        // leading `#` in a cell is cell content, not a comment).
+        Language::Csv | Language::Tsv => false,
         // why: OCaml has no single-line comment syntax — every comment is a
         // `(* ... *)` block (possibly spanning one line). Treating a line
         // that merely starts with "(*" as already-closed single-line

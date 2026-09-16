@@ -1462,3 +1462,122 @@ SEE ALSO:
         );
     }
 }
+
+/// CSV PIN (`csv_records_and_header_cells_are_elements`, CSV/TSV batch):
+/// `.csv`/`.tsv` files never reach a tree-sitter tree — the only CSV grammar
+/// crate on crates.io (`tree-sitter-csv` 1.2.0) is unbuildable (its `cc
+/// ~1.0.82` build-dep semver-conflicts with the `cc ^1.2.10` the pinned ts
+/// 0.25 stack requires) and its ts-0.20-era exports ship no bridge
+/// LanguageFns (root `Cargo.toml` audit note) — so the native, streaming RFC
+/// 4180 scanner in `ast::csvscan` is the ONLY source of CSV definitions. `tldr
+/// structure <file>.csv` must surface one `record` definition per record —
+/// named after the first field's text (else `row-N`) — plus `cell` definitions
+/// for the FIRST record's fields (the header convention), with exact byte
+/// spans (`source[byte_start..byte_end]` IS the record/cell region, quoted
+/// commas and embedded newlines included) and `definition_line` = the start
+/// line. Records must not split on delimiters/newlines INSIDE quoted fields.
+#[test]
+fn csv_records_and_header_cells_are_elements() {
+    let fixture = "sku,product,notes\n\
+                   A-1,Widget,\"round, blue\"\n\
+                   A-2,Gadget,\"sells\n\
+                   well, sometimes\"\n";
+    let dir = TempDir::new().unwrap_or_else(|e| panic!("symbol-fidelity-v1: tempdir failed: {e}"));
+    let path = dir.path().join("data.csv");
+    fs::write(&path, fixture)
+        .unwrap_or_else(|e| panic!("symbol-fidelity-v1: write data.csv failed: {e}"));
+
+    let structure = get_code_structure(&path, Language::Csv, 0, None)
+        .unwrap_or_else(|e| panic!("symbol-fidelity-v1: data.csv extraction failed: {e}"));
+    assert_eq!(
+        structure.files.len(),
+        1,
+        "symbol-fidelity-v1 [data.csv]: expected exactly one FileStructure"
+    );
+    assert_eq!(
+        structure.language,
+        Some(Language::Csv),
+        "symbol-fidelity-v1 [data.csv]: language must report csv"
+    );
+    let defs = &structure.files[0].definitions;
+
+    // EXACT sequence, source order — the header record with its cells, then
+    // one record per data row.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("record", "sku"),
+        ("cell", "sku"),
+        ("cell", "product"),
+        ("cell", "notes"),
+        ("record", "A-1"),
+        ("record", "A-2"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "symbol-fidelity-v1 [data.csv]: expected exact record/cell sequence, got {defs:#?}"
+    );
+
+    // The quoted field's comma must NOT split record A-1, and its region is
+    // the exact physical line (quotes included).
+    let a1 = defs
+        .iter()
+        .find(|d| d.kind == "record" && d.name == "A-1")
+        .unwrap_or_else(|| {
+            panic!("symbol-fidelity-v1 [data.csv]: record A-1 not found.\n{defs:#?}")
+        });
+    assert_eq!(
+        &fixture[a1.byte_start.unwrap() as usize..a1.byte_end.unwrap() as usize],
+        "A-1,Widget,\"round, blue\"",
+        "symbol-fidelity-v1 [data.csv]: record A-1 region = its exact source line"
+    );
+
+    // The embedded newline inside A-2's quoted field must NOT split it into
+    // two records: the record spans lines 3-4 and its byte region
+    // reconstructs both lines (comma and newline included).
+    let a2 = defs
+        .iter()
+        .find(|d| d.kind == "record" && d.name == "A-2")
+        .unwrap_or_else(|| {
+            panic!("symbol-fidelity-v1 [data.csv]: record A-2 not found.\n{defs:#?}")
+        });
+    assert_eq!(
+        (a2.line_start, a2.line_end),
+        (3, 4),
+        "symbol-fidelity-v1 [data.csv]: record A-2 must absorb its embedded newline (lines 3..=4)"
+    );
+    assert_eq!(
+        &fixture[a2.byte_start.unwrap() as usize..a2.byte_end.unwrap() as usize],
+        "A-2,Gadget,\"sells\nwell, sometimes\"",
+        "symbol-fidelity-v1 [data.csv]: record A-2 region = the exact two-line source region"
+    );
+
+    // Every element: byte spans present + definition_line = start line +
+    // empty signature (a data row has nothing signature-shaped).
+    for d in defs {
+        assert!(
+            d.byte_start.is_some() && d.byte_end.is_some(),
+            "symbol-fidelity-v1 [data.csv]: {}:`{}` must carry byte spans",
+            d.kind,
+            d.name
+        );
+        assert_eq!(
+            d.definition_line,
+            Some(d.line_start),
+            "symbol-fidelity-v1 [data.csv]: {}:`{}` definition_line must be its start line",
+            d.kind,
+            d.name
+        );
+        assert!(
+            d.signature.is_empty(),
+            "symbol-fidelity-v1 [data.csv]: {}:`{}` data rows have no signatures",
+            d.kind,
+            d.name
+        );
+    }
+}

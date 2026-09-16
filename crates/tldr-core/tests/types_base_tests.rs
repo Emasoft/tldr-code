@@ -15,16 +15,16 @@ use tldr_core::types::*;
 // =============================================================================
 
 #[test]
-fn test_language_all_29_variants() {
+fn test_language_all_31_variants() {
     // why: this integration target was non-compiling while the enum grew
     // (the jsonl-field batch) and reappeared with a stale 18-variant
     // assertion behind it; re-synced with the in-crate count test
-    // `types::tests::test_language_all_29_variants` (29 = 18 source
-    // languages + 11 formats: JSON, YAML, TOML, XML, HTML, CSS, Bash,
-    // LaTeX, Log, Markdown, Text). Every later grammar addition must
-    // update BOTH tests.
+    // `types::tests::test_language_all_31_variants` (31 = 18 source
+    // languages + 13 formats: JSON, YAML, TOML, XML, HTML, CSS, Bash,
+    // LaTeX, Log, Markdown, Text, Csv, Tsv). Every later grammar addition
+    // must update BOTH tests.
     let all = Language::all();
-    assert_eq!(all.len(), 29);
+    assert_eq!(all.len(), 31);
 
     // Verify all expected languages are present
     let expected = vec![
@@ -57,6 +57,8 @@ fn test_language_all_29_variants() {
         Language::Log,
         Language::Markdown,
         Language::Text,
+        Language::Csv,
+        Language::Tsv,
     ];
     // Second guard: the documented count must equal the number of
     // variants enumerated here, so an added variant cannot pass the

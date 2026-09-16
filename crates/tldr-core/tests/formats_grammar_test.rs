@@ -199,6 +199,8 @@ fn new_languages_map_from_extension() {
         (".markdown", Language::Markdown),
         (".txt", Language::Text),
         (".text", Language::Text),
+        (".csv", Language::Csv),
+        (".tsv", Language::Tsv),
     ] {
         let got = Language::from_extension(ext).unwrap_or_else(|| panic!("{ext} should resolve"));
         assert_eq!(got, expected, "extension {ext}");
@@ -240,13 +242,38 @@ fn new_languages_map_from_extension() {
         Language::from_path(std::path::Path::new("docs/README.md")),
         Some(Language::Markdown)
     );
+    // CSV/TSV batch: `.csv`/`.tsv` resolve through `from_path` too (the path
+    // `tldr structure data.csv` takes). NO parse smoke test is possible for
+    // Csv/Tsv — the only CSV grammar crate on crates.io (tree-sitter-csv
+    // 1.2.0) is unbuildable (cc ~1.0.82 build-dep semver-conflicts with ts
+    // 0.25's cc ^1.2.10) and its ts-0.20-era exports ship no bridge
+    // LanguageFns (root Cargo.toml audit note) — so parsing data files must
+    // stay UnsupportedLanguage (the Log/Text no-grammar precedent). The
+    // native RFC 4180 scanner in `ast::csvscan` is the only consumer, pinned
+    // by element_extraction_v1/symbol_fidelity_v1.
+    assert_eq!(
+        Language::from_path(std::path::Path::new("exports/data.csv")),
+        Some(Language::Csv)
+    );
+    assert_eq!(
+        Language::from_path(std::path::Path::new("exports/data.tsv")),
+        Some(Language::Tsv)
+    );
+    assert!(
+        tldr_core::ast::parser::parse("a,b\n1,2\n", Language::Csv).is_err(),
+        "csv has no tree-sitter grammar — direct parse must fail"
+    );
+    assert!(
+        tldr_core::ast::parser::parse("a\tb\n1\t2\n", Language::Tsv).is_err(),
+        "tsv has no tree-sitter grammar — direct parse must fail"
+    );
 }
 
 #[test]
-fn all_29_variants_have_str_and_extensions() {
+fn all_31_variants_have_str_and_extensions() {
     assert_eq!(
         Language::all().len(),
-        29,
+        31,
         "Language::all() must list every variant"
     );
     for lang in Language::all() {

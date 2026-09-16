@@ -719,7 +719,9 @@ fn is_scope_node(kind: &str, language: Language) -> bool {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => matches!(kind, "document" | "program" | "module" | "source_file"),
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => matches!(kind, "document" | "program" | "module" | "source_file"),
     }
 }
 
@@ -767,7 +769,9 @@ fn scan_scope_for_binding(
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => None,
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => None,
     }
 }
 
@@ -2569,7 +2573,9 @@ fn resolve_import_scope(
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => None,
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => None,
     };
 
     let Some((line_no, col)) = line_idx else {

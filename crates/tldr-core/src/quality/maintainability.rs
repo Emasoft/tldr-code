@@ -363,6 +363,8 @@ fn count_loc(source: &str, language: Language) -> usize {
         Language::Markdown => vec!["<!--"],
         // Plain-text batch: prose lines are not comments — no prefixes.
         Language::Text => vec![],
+        // CSV/TSV batch: bare data rows are not comments — no prefixes.
+        Language::Csv | Language::Tsv => vec![],
     };
 
     source

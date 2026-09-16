@@ -31,12 +31,13 @@ use std::path::{Path, PathBuf};
 // Language Support
 // =============================================================================
 
-/// Supported programming languages (29 variants — see `test_language_all_29_variants`)
+/// Supported programming languages (31 variants — see `test_language_all_31_variants`)
 // why: comment said 17, but OCaml (added later) brought the enum to 18,
 // and the formats extension (2025-09, "all tree-sitter formats" directive)
 // brought it to 25 with the data/config/markup/web/shell batch below; the
 // LaTeX batch (2025-11) brought it to 26, the log batch to 27, the
-// markdown batch to 28, and the plain-text batch to 29.
+// markdown batch to 28, and the plain-text batch to 29; the CSV/TSV batch
+// (native RFC 4180 scanner — see `ast::csvscan`) brought it to 31.
 //
 // Priority levels:
 // - P0: Python, TypeScript, JavaScript, Go (full support)
@@ -144,6 +145,24 @@ pub enum Language {
     /// angle-bracketed paths, shell-escaped paths and plain path tokens as
     /// document references (so `.txt` joins the document link graph).
     Text,
+    /// CSV data files (.csv) — the CSV/TSV batch. NO usable tree-sitter
+    /// grammar exists: the only CSV grammar crate on crates.io
+    /// (`tree-sitter-csv` 1.2.0, last publish 2024-01-24) is unbuildable in
+    /// this workspace (its `cc ~1.0.82` build-dep semver-conflicts with the
+    /// `cc ^1.2.10` the pinned tree-sitter 0.25 stack requires) and its
+    /// exports are raw ts-0.20-era `language_csv()` functions with no
+    /// tree-sitter-language bridge LanguageFn (audit note in the root
+    /// `Cargo.toml`). `.csv` files NEVER parse through tree-sitter — the Log
+    /// no-grammar precedent — and are consumed exclusively by the native,
+    /// streaming RFC 4180 record scanner in [`crate::ast::csvscan`]. `tldr
+    /// structure <file>.csv` emits one `record` definition per CSV record
+    /// plus `cell` definitions for the first (header) record's fields.
+    Csv,
+    /// Tab-separated data files (.tsv) — the CSV/TSV batch. Same story as
+    /// [`Language::Csv`]: no usable grammar exists, so `.tsv` never parses
+    /// through tree-sitter and flows through the same native RFC 4180
+    /// scanner in [`crate::ast::csvscan`] with the `\t` field delimiter.
+    Tsv,
 }
 
 impl Language {
@@ -190,6 +209,11 @@ impl Language {
             Language::Log => &[".log"],
             Language::Markdown => &[".md", ".markdown"],
             Language::Text => &[".txt", ".text"],
+            // CSV/TSV batch: canonical extensions (one each — there are no
+            // sibling spellings; `.tab` and friends are deliberately not
+            // mapped to keep the single-bucket classifier simple).
+            Language::Csv => &[".csv"],
+            Language::Tsv => &[".tsv"],
         }
     }
 
@@ -301,6 +325,15 @@ impl Language {
             // scanner in `ast::toc` and the reference scanner in
             // `ast::doclinks::scan_paths_and_urls` are the only consumers.
             ".txt" | ".text" => Some(Language::Text),
+            // CSV/TSV batch: `.csv`/`.tsv` resolve to Language::Csv/Tsv.
+            // There is NO usable tree-sitter grammar (the crate-audit note
+            // lives at the variants and in the root Cargo.toml) — parsing
+            // never happens through `ParserPool` beyond the structural
+            // placeholder (see `parse_file_with_lang`'s Csv/Tsv branch);
+            // the native RFC 4180 scanner in `ast::csvscan` is the only
+            // consumer (`,`,`\t` delimiter selected by `csvscan::delimiter_for`).
+            ".csv" => Some(Language::Csv),
+            ".tsv" => Some(Language::Tsv),
             ".swift" => Some(Language::Swift),
             ".cs" => Some(Language::CSharp),
             ".scala" => Some(Language::Scala),
@@ -680,6 +713,8 @@ impl Language {
             Language::Log => "log",
             Language::Markdown => "markdown",
             Language::Text => "text",
+            Language::Csv => "csv",
+            Language::Tsv => "tsv",
         }
     }
 
@@ -698,9 +733,9 @@ impl Language {
 
     /// Can this language act as a *project-level* signal?
     ///
-    /// Returns `false` for exactly the 11 "formats" variants (Json, Yaml,
-    /// Toml, Xml, Html, Css, Bash, Latex, Log, Markdown, Text) and `true`
-    /// for the 18 source-code languages.
+    /// Returns `false` for exactly the 13 "formats" variants (Json, Yaml,
+    /// Toml, Xml, Html, Css, Bash, Latex, Log, Markdown, Text, Csv, Tsv)
+    /// and `true` for the 18 source-code languages.
     ///
     /// Rationale: the formats variants are first-class for **per-file**
     /// analysis — `Language::from_path` resolves them, `tldr structure
@@ -747,6 +782,13 @@ impl Language {
     /// structure notes.txt` reports `language: "text"` and surfaces the
     /// heuristic TOC headings as elements (see `ast::toc`).
     ///
+    /// Csv/Tsv join the formats block (CSV/TSV batch): `.csv`/`.tsv` files
+    /// are bare data exports present in projects of every implementation
+    /// language (same false-dominance argument as the other formats). Fully
+    /// supported per-file: `tldr structure data.csv` reports
+    /// `language: "csv"` and surfaces records + header cells as elements
+    /// (see `ast::csvscan`).
+    ///
     /// Sites that MUST consult this predicate (kept consistent):
     /// - `Language::from_directory` Stage-1 extension tally (project
     ///   dominant-language detection),
@@ -767,6 +809,8 @@ impl Language {
                 | Language::Log
                 | Language::Markdown
                 | Language::Text
+                | Language::Csv
+                | Language::Tsv
         )
     }
 
@@ -802,6 +846,8 @@ impl Language {
             Language::Log,
             Language::Markdown,
             Language::Text,
+            Language::Csv,
+            Language::Tsv,
         ]
     }
 }
@@ -1352,6 +1398,10 @@ impl std::str::FromStr for Language {
             // reason the other formats were added here — clap routes every
             // Option<Language> argument through this FromStr).
             "text" | "txt" => Ok(Language::Text),
+            // CSV/TSV batch: `--lang csv` / `--lang tsv` must work end to
+            // end (same clap FromStr routing as the formats above).
+            "csv" => Ok(Language::Csv),
+            "tsv" => Ok(Language::Tsv),
             _ => Err(format!("Unknown language: {}", s)),
         }
     }
@@ -3622,7 +3672,7 @@ mod tests {
     }
 
     #[test]
-    fn test_language_all_29_variants() {
+    fn test_language_all_31_variants() {
         // formats-extension-v1 (2025-09): 18 source languages + 7
         // tree-sitter data/config/markup formats (JSON, YAML, TOML, XML/SVG,
         // HTML, CSS, Bash) = 25; latex-formats-v1 (2025-11) added LaTeX
@@ -3630,8 +3680,10 @@ mod tests {
         // scanner, no tree-sitter grammar) = 27; the markdown batch added
         // Markdown (.md/.markdown, tree-sitter-md block grammar) = 28; the
         // plain-text batch added Text (.txt/.text, heuristic TOC scanner,
-        // no tree-sitter grammar) = 29.
-        assert_eq!(Language::all().len(), 29);
+        // no tree-sitter grammar) = 29; the CSV/TSV batch added Csv/Tsv
+        // (.csv/.tsv, native RFC 4180 scanner — the only grammar crate is
+        // unbuildable, see `ast::csvscan`) = 31.
+        assert_eq!(Language::all().len(), 31);
     }
 
     #[test]

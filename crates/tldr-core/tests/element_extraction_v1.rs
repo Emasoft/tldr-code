@@ -60,6 +60,15 @@
 //!   `" | "`. Paragraphs/lists/block quotes/thematic breaks/HTML blocks/
 //!   link reference definitions never emit. Parsed with the tree-sitter-md
 //!   BLOCK grammar only — inline spans stay unparsed.
+//! - Csv/Tsv → `record` per RFC 4180 record from the NATIVE scanner
+//!   (`ast::csvscan` — the only CSV grammar crate on crates.io is
+//!   unbuildable, so no tree-sitter grammar is wired), named after the first
+//!   field's text truncated to 60 chars (else `row-N`), region = the record's
+//!   exact source bytes (delimiters, quotes and embedded newlines included;
+//!   the terminating `\n`/`\r\n` excluded) + `cell` per field of the FIRST
+//!   record only (the header convention; name = the field's unescaped text,
+//!   region = the field's RAW bytes, quotes included). Signature is always
+//!   empty; `definition_line` = the record/field's start line.
 //!
 //! Every element pins:
 //! 1. EXACT `kind` / `name` / `line_start` / `line_end` (1-indexed), and
@@ -1131,6 +1140,164 @@ fn markdown_headings_code_blocks_and_tables_are_elements() {
 }
 
 // =============================================================================
+// CSV/TSV — native RFC 4180 scanner (NO tree-sitter): records + header cells
+// =============================================================================
+//
+// `.csv`/`.tsv` never reach a tree-sitter tree (the only CSV grammar crate on
+// crates.io is unbuildable — cc build-dep conflict with ts 0.25 + no bridge
+// LanguageFns; root Cargo.toml audit note). The `get_code_structure` hook
+// early-returns to the `ast::csvscan` scanner, and each record maps onto a
+// `DefinitionInfo` with kind `"record"` (name = first field text truncated to
+// 60 chars, else `row-N`), while the FIRST record's fields additionally map
+// onto kind `"cell"` definitions (the header convention). `signature` is
+// always empty (a data row has nothing signature-shaped) and
+// `definition_line` = the record/field's start line.
+// `assert_element_invariants` is deliberately NOT applied here: CSV elements
+// DO set `definition_line`.
+//
+// Line map (the pinned spans below are computed against exactly this text):
+//  1: sku,product,notes
+//  2: A-1,Widget,"round, blue"
+//  3: A-2,Gadget,"sells
+//  4: well, sometimes"
+//  5: A-3,Doodad,plain
+const CSV_FIXTURE: &str = "sku,product,notes\n\
+                           A-1,Widget,\"round, blue\"\n\
+                           A-2,Gadget,\"sells\n\
+                           well, sometimes\"\n\
+                           A-3,Doodad,plain\n";
+
+#[test]
+fn csv_records_and_header_cells_are_definitions_with_exact_spans() {
+    let defs = extract_elements("data.csv", CSV_FIXTURE, Language::Csv);
+
+    // EXACT source-order sequence: the header record (whose cells follow it),
+    // then one record per data row — record 2 spans two lines (its quoted
+    // `notes` field embeds a newline AND a comma).
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("record", "sku"),
+        ("cell", "sku"),
+        ("cell", "product"),
+        ("cell", "notes"),
+        ("record", "A-1"),
+        ("record", "A-2"),
+        ("record", "A-3"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [data.csv]: expected exact record/cell sequence"
+    );
+
+    // Every element: definition_line = start line, byte spans present, and
+    // the byte region is an exact slice of the source.
+    for d in &defs {
+        assert_eq!(
+            d.definition_line,
+            Some(d.line_start),
+            "element-extraction-v1 [data.csv]: {}:`{}` definition_line must be the start line",
+            d.kind,
+            d.name
+        );
+        assert!(
+            d.byte_start.is_some() && d.byte_end.is_some(),
+            "element-extraction-v1 [data.csv]: {}:`{}` must carry byte spans",
+            d.kind,
+            d.name
+        );
+        assert!(
+            d.signature.is_empty(),
+            "element-extraction-v1 [data.csv]: {}:`{}` data rows have no signatures",
+            d.kind,
+            d.name
+        );
+    }
+
+    // Header record: one line, its cells are sub-regions of its span.
+    let header = find_element(&defs, "data.csv", "record", "sku");
+    assert_span(header, "data.csv", "record:sku", 1, 1);
+    let header_slice =
+        &CSV_FIXTURE[header.byte_start.unwrap() as usize..header.byte_end.unwrap() as usize];
+    assert_eq!(header_slice, "sku,product,notes", "header region = row 1");
+
+    let cell_sku = find_element(&defs, "data.csv", "cell", "sku");
+    assert_span(cell_sku, "data.csv", "cell:sku", 1, 1);
+    assert_byte_slice(cell_sku, CSV_FIXTURE, "data.csv", "sku");
+
+    let cell_product = find_element(&defs, "data.csv", "cell", "product");
+    assert_span(cell_product, "data.csv", "cell:product", 1, 1);
+    assert_byte_slice(cell_product, CSV_FIXTURE, "data.csv", "product");
+
+    let cell_notes = find_element(&defs, "data.csv", "cell", "notes");
+    assert_span(cell_notes, "data.csv", "cell:notes", 1, 1);
+    assert_byte_slice(cell_notes, CSV_FIXTURE, "data.csv", "notes");
+
+    // Record A-1: quoted field with a comma inside — the record span covers
+    // the WHOLE physical line, quotes included, and the cell name is the
+    // first field's raw text.
+    let a1 = find_element(&defs, "data.csv", "record", "A-1");
+    assert_span(a1, "data.csv", "record:A-1", 2, 2);
+    let a1_slice = &CSV_FIXTURE[a1.byte_start.unwrap() as usize..a1.byte_end.unwrap() as usize];
+    assert_eq!(
+        a1_slice, "A-1,Widget,\"round, blue\"",
+        "record region = the exact source line (comma inside quotes kept)"
+    );
+
+    // Record A-2: embedded newline in the quoted field → the record spans
+    // lines 3-4 and its byte region reproduces BOTH lines exactly.
+    let a2 = find_element(&defs, "data.csv", "record", "A-2");
+    assert_span(a2, "data.csv", "record:A-2", 3, 4);
+    let a2_slice = &CSV_FIXTURE[a2.byte_start.unwrap() as usize..a2.byte_end.unwrap() as usize];
+    assert_eq!(
+        a2_slice, "A-2,Gadget,\"sells\nwell, sometimes\"",
+        "record region covers the embedded newline record exactly"
+    );
+
+    // Record A-3: plain record.
+    let a3 = find_element(&defs, "data.csv", "record", "A-3");
+    assert_span(a3, "data.csv", "record:A-3", 5, 5);
+    assert_byte_slice(a3, CSV_FIXTURE, "data.csv", "A-3");
+}
+
+// TSV is the same scanner with `\t` as the delimiter byte — one fixture pin.
+const TSV_FIXTURE: &str = "id\tname\n1\tada\n";
+
+#[test]
+fn tsv_records_use_the_tab_delimiter() {
+    let defs = extract_elements("data.tsv", TSV_FIXTURE, Language::Tsv);
+
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("record", "id"),
+        ("cell", "id"),
+        ("cell", "name"),
+        ("record", "1"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [data.tsv]: expected exact record/cell sequence"
+    );
+
+    let header = find_element(&defs, "data.tsv", "record", "id");
+    assert_span(header, "data.tsv", "record:id", 1, 1);
+    let header_slice =
+        &TSV_FIXTURE[header.byte_start.unwrap() as usize..header.byte_end.unwrap() as usize];
+    assert_eq!(header_slice, "id\tname");
+}
+
+// =============================================================================
 // Cross-format: the JSON shape consumers see is the plain definitions array
 // =============================================================================
 
@@ -1149,6 +1316,8 @@ fn elements_flow_through_the_definitions_array_of_every_format() {
         ("server.log", LOG_FIXTURE, Language::Log, 6),
         ("notes.txt", TEXT_FIXTURE, Language::Text, 6),
         ("README.md", MARKDOWN_FIXTURE, Language::Markdown, 7),
+        ("data.csv", CSV_FIXTURE, Language::Csv, 7),
+        ("data.tsv", TSV_FIXTURE, Language::Tsv, 4),
     ] {
         let defs = extract_elements(filename, content, language);
         assert!(

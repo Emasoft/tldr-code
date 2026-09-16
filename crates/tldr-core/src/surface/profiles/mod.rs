@@ -66,7 +66,7 @@ pub(crate) fn profile_for(language: Language) -> Option<&'static SurfaceLanguage
         // data/config formats (a JSON document has no callable surface);
         // log entries have no callable surface either; markdown documents
         // neither (markdown batch, 2026-09); plain text neither
-        // (plain-text batch).
+        // (plain-text batch); CSV/TSV records neither (CSV/TSV batch).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -77,6 +77,8 @@ pub(crate) fn profile_for(language: Language) -> Option<&'static SurfaceLanguage
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => None,
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => None,
     }
 }

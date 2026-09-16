@@ -809,6 +809,8 @@ pub fn get_patterns(language: Language) -> &'static LanguagePatterns {
         // Log files join them: log text is not executable input syntax.
         // Markdown joins them (2026-09): document text is not input syntax.
         // Text joins them (plain-text batch): prose is not input syntax.
+        // Csv/Tsv join them (CSV/TSV batch): bare data rows are not input
+        // syntax.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -819,7 +821,9 @@ pub fn get_patterns(language: Language) -> &'static LanguagePatterns {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &FORMATS_PATTERNS,
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &FORMATS_PATTERNS,
     }
 }
 
@@ -3931,7 +3935,9 @@ fn get_ast_patterns(language: Language) -> AstLanguagePatterns {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => AstLanguagePatterns {
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => AstLanguagePatterns {
             sources: &[],
             sinks: &[],
             sanitizers: &[],
@@ -4002,7 +4008,7 @@ pub fn fastpath_pattern_strings(language: Language) -> &'static [&'static str] {
         Language::Ocaml => fastpath_static!(OCAML, Language::Ocaml),
         // Formats extension: no taint needles in data/config documents;
         // log files have none either (never parsed as source); markdown
-        // documents neither; plain text neither.
+        // documents neither; plain text neither; CSV/TSV records neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -4013,7 +4019,9 @@ pub fn fastpath_pattern_strings(language: Language) -> &'static [&'static str] {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &[],
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &[],
     }
 }
 

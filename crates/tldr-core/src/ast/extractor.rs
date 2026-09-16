@@ -149,6 +149,67 @@ pub fn get_code_structure(
         });
     }
 
+    // CSV/TSV batch: `.csv`/`.tsv` files NEVER go through tree-sitter — the
+    // only CSV grammar crate on crates.io (`tree-sitter-csv` 1.2.0) is
+    // unbuildable (its `cc ~1.0.82` build-dep semver-conflicts with ts 0.25's
+    // `cc ^1.2.10`, and its ts-0.20-era exports ship no bridge LanguageFns —
+    // audit note in the root Cargo.toml), so the whole parse-then-walk
+    // machinery is skipped via this early-return, exactly like the JSONL, Log
+    // and Text returns above. Records come from the native, streaming RFC
+    // 4180 scanner in `ast::csvscan` (delimiter `,` vs `\t` selected by the
+    // extension) and map onto `DefinitionInfo` with kind `"record"` (one per
+    // record) plus kind `"cell"` for the FIRST record's fields (the header
+    // convention — a data file's only row-shaped "names" live in row 1).
+    //
+    // Why NOT `extract_elements`: that engine walks tree-sitter trees, and
+    // Csv/Tsv have no tree — there is nothing for it to walk. `elements.rs`
+    // is deliberately untouched; records and cells are emitted here, from the
+    // scanner, in source order. Like `.jsonl`/`.log` (and unlike `.txt`),
+    // `.csv`/`.tsv` keep NO size cap: the scan streams with a 1 MB buffer
+    // (bounded memory — the honest ceiling is the materialised
+    // `Vec<CsvRecord>`, see `fs::oversize::max_size_for`).
+    if root.is_file() && crate::ast::csvscan::delimiter_for(root).is_some() {
+        let delimiter = crate::ast::csvscan::delimiter_for(root).unwrap_or(b',');
+        let language = if crate::ast::csvscan::is_csv_path(root) {
+            Language::Csv
+        } else {
+            Language::Tsv
+        };
+        let records = crate::ast::csvscan::parse_csv_file(root, delimiter)?;
+        let mut definitions = Vec::new();
+        for (index, record) in records.iter().enumerate() {
+            // The record definition precedes its cells — the same
+            // parent-before-children order the JSON element walker uses
+            // (outer key first, nested keys after).
+            definitions.push(csv_record_definition(record, (index + 1) as u64));
+            if index == 0 {
+                // Header convention: only the FIRST record's fields surface
+                // as `cell` definitions (a data file's only row-shaped
+                // "names" live in row 1).
+                for field in &record.fields {
+                    definitions.push(csv_cell_definition(field));
+                }
+            }
+        }
+        let file_structure = crate::types::FileStructure {
+            path: root.to_path_buf(),
+            functions: Vec::new(),
+            classes: Vec::new(),
+            methods: Vec::new(),
+            method_infos: Vec::new(),
+            imports: Vec::new(),
+            definitions,
+        };
+        return Ok(CodeStructure {
+            root: root.to_path_buf(),
+            language: Some(language),
+            files: vec![file_structure],
+            files_skipped: 0,
+            warnings: Vec::new(),
+            jsonl_stream: None,
+        });
+    }
+
     // OOXML containers (2026-xx): `.docx`/`.xlsx`/`.pptx` are ZIP packages,
     // not tree-sitter files — and deliberately NOT a `Language` variant (the
     // container-is-not-a-language decision is documented at the top of
@@ -504,6 +565,58 @@ fn log_entry_definition(entry: crate::ast::logs::LogEntry) -> DefinitionInfo {
     }
 }
 
+/// Map a scanned [`crate::ast::csvscan::CsvRecord`] onto the `DefinitionInfo`
+/// channel so `tldr structure <file>.csv` surfaces records through the same
+/// `files[0].definitions` array every other format uses (CSV/TSV batch).
+///
+/// - `kind` = `"record"`.
+/// - `name` = the first field's text truncated to 60 chars (ellipsis on
+///   truncation), or `row-N` (1-indexed source order) when that text is
+///   empty/whitespace — see `ast::csvscan::record_name`.
+/// - line/byte spans come straight from the scanner: the record's region is
+///   its first field's first byte through its last field's last byte
+///   (delimiters, quotes and embedded line breaks included; the terminating
+///   `\n`/`\r\n` excluded), so `source[byte_start..byte_end]` IS the record.
+/// - `signature` = empty (a data row has nothing signature-shaped).
+/// - `definition_line` = the record's first line.
+fn csv_record_definition(
+    record: &crate::ast::csvscan::CsvRecord,
+    row_number: u64,
+) -> DefinitionInfo {
+    DefinitionInfo {
+        name: crate::ast::csvscan::record_name(record, row_number),
+        kind: "record".to_string(),
+        line_start: record.line_start,
+        line_end: record.line_end,
+        definition_line: Some(record.line_start),
+        byte_start: Some(record.byte_start),
+        byte_end: Some(record.byte_end),
+        signature: String::new(),
+    }
+}
+
+/// Map one field of the FIRST record (the header row) onto a `cell`
+/// definition — the CSV analogue of a JSON key: the header row is where a
+/// data file names its columns, so only those fields get per-field
+/// definitions.
+///
+/// - `kind` = `"cell"`; `name` = the field's unescaped text.
+/// - byte span = the field's RAW region (quotes included for quoted fields —
+///   the addressable region, not the display text).
+/// - `signature` = empty; `definition_line` = the field's first line.
+fn csv_cell_definition(field: &crate::ast::csvscan::CsvField) -> DefinitionInfo {
+    DefinitionInfo {
+        name: field.text.clone(),
+        kind: "cell".to_string(),
+        line_start: field.line_start,
+        line_end: field.line_end,
+        definition_line: Some(field.line_start),
+        byte_start: Some(field.byte_start),
+        byte_end: Some(field.byte_end),
+        signature: String::new(),
+    }
+}
+
 /// Extract function names from a syntax tree
 pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<String> {
     let mut functions = Vec::new();
@@ -536,6 +649,8 @@ pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<S
         // Markdown joins them (2026-09): headings/code blocks/tables are
         // elements, not functions. Text joins too (plain-text batch): TOC
         // headings are elements from the `ast::toc` scanner via its own
+        // early-return. Csv/Tsv join too (CSV/TSV batch): records and header
+        // cells are elements from the `ast::csvscan` scanner via its own
         // early-return.
         Language::Json
         | Language::Yaml
@@ -547,7 +662,9 @@ pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<S
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => {}
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => {}
     }
 
     functions
@@ -2602,7 +2719,7 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
         Language::Lua | Language::Luau | Language::Ocaml => None,
         // Formats extension: no constants in data/config/markup documents;
         // log entries carry no constants either; markdown documents
-        // neither; plain text neither.
+        // neither; plain text neither; CSV/TSV records neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -2613,7 +2730,9 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => None,
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => None,
     }
 }
 
@@ -2856,7 +2975,7 @@ fn anonymous_callable_kinds(language: Language) -> &'static [&'static str] {
         Language::C => &[],
         // Formats extension: no lambdas in data/config/markup documents;
         // log entries are not lambdas; markdown documents neither; plain
-        // text neither.
+        // text neither; CSV/TSV records neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -2867,7 +2986,9 @@ fn anonymous_callable_kinds(language: Language) -> &'static [&'static str] {
         | Language::Latex
         | Language::Log
         | Language::Markdown
-        | Language::Text => &[],
+        | Language::Text
+        | Language::Csv
+        | Language::Tsv => &[],
     }
 }
 
