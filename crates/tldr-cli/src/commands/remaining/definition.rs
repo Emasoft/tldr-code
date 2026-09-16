@@ -705,7 +705,9 @@ fn is_scope_node(kind: &str, language: Language) -> bool {
                 | "compilation_unit"
         ),
         // Formats extension (2025-09): a whole data/config document is one
-        // scope; a whole log file is one scope too.
+        // scope; a whole log file is one scope too; a whole markdown
+        // document is one scope too (its root kind is `document`,
+        // markdown batch 2026-09).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -714,7 +716,8 @@ fn is_scope_node(kind: &str, language: Language) -> bool {
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => matches!(kind, "document" | "program" | "module" | "source_file"),
+        | Language::Log
+        | Language::Markdown => matches!(kind, "document" | "program" | "module" | "source_file"),
     }
 }
 
@@ -750,7 +753,8 @@ fn scan_scope_for_binding(
         Language::Ocaml => scan_ocaml_scope(node, bytes, symbol, file),
         Language::CSharp => scan_csharp_scope(node, bytes, symbol, file),
         // Formats extension: no bindings to scan for in data/config documents;
-        // log entries define no bindings either.
+        // log entries define no bindings either; markdown documents neither
+        // (2026-09).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -759,7 +763,8 @@ fn scan_scope_for_binding(
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => None,
+        | Language::Log
+        | Language::Markdown => None,
     }
 }
 
@@ -2559,7 +2564,8 @@ fn resolve_import_scope(
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => None,
+        | Language::Log
+        | Language::Markdown => None,
     };
 
     let Some((line_no, col)) = line_idx else {

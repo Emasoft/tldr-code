@@ -1873,7 +1873,8 @@ fn extract_field_from_pattern(
         Language::Elixir => extract_elixir_module_attribute(node, source),
         Language::Ocaml => None,
         // Formats extension (2025-09): no `this`-style field access in
-        // data/config documents; log entries have none either.
+        // data/config documents; log entries have none either; markdown
+        // documents neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -1882,7 +1883,8 @@ fn extract_field_from_pattern(
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => None,
+        | Language::Log
+        | Language::Markdown => None,
     }
 }
 

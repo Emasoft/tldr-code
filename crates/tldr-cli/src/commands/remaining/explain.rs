@@ -233,7 +233,7 @@ fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["call"], // Elixir def/defp are call nodes
         Language::Ocaml => &["value_definition"],
         // Formats extension (2025-09): no functions in data/config documents;
-        // log entries are not functions.
+        // log entries are not functions; markdown elements are not functions.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -242,7 +242,8 @@ fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => &[],
+        | Language::Log
+        | Language::Markdown => &[],
     }
 }
 
@@ -277,6 +278,10 @@ fn get_parser(language: Language) -> Result<Parser, RemainingError> {
         Language::Html => tree_sitter_html::LANGUAGE.into(),
         Language::Css => tree_sitter_css::LANGUAGE.into(),
         Language::Latex => codebook_tree_sitter_latex::LANGUAGE.into(),
+        // Markdown batch (2026-09): the tree-sitter-md BLOCK grammar (the
+        // crate also ships a separate INLINE_LANGUAGE; see ParserPool for the
+        // block-only decision).
+        Language::Markdown => tree_sitter_md::LANGUAGE.into(),
         Language::Bash => tree_sitter_bash::LANGUAGE.into(),
         // Log batch: logs have NO tree-sitter grammar (crates.io 404 audit);
         // entries come from the native `ast::logs` scanner. Explain cannot
@@ -2327,6 +2332,7 @@ impl ExplainArgs {
             Language::Bash => "bash",
             Language::Latex => "latex",
             Language::Log => "log",
+            Language::Markdown => "markdown",
         };
 
         // Build report

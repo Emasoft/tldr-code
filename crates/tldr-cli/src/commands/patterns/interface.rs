@@ -81,7 +81,8 @@ fn function_node_kinds(lang: Language) -> &'static [&'static str] {
         // for top-level/standalone function definitions.
         Language::Kotlin | Language::Swift => &["function_declaration"],
         // Formats extension (2025-09): no functions in data/config documents;
-        // log entries are not functions.
+        // log entries are not functions; markdown headings/code blocks are
+        // not functions either (2026-09).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -90,7 +91,8 @@ fn function_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => &[],
+        | Language::Log
+        | Language::Markdown => &[],
     }
 }
 
@@ -136,7 +138,7 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
         // swift-collections/.../Span+Extras.swift).
         Language::Swift => &["class_declaration", "protocol_declaration"],
         // Formats extension (2025-09): no classes in data/config documents;
-        // log entries are not classes.
+        // log entries are not classes; markdown documents neither (2026-09).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -145,7 +147,8 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => &[],
+        | Language::Log
+        | Language::Markdown => &[],
     }
 }
 
@@ -2915,6 +2918,11 @@ end
         assert!(is_supported_source_file(Path::new("test.rb")));
         assert!(is_supported_source_file(Path::new("test.cs")));
         assert!(!is_supported_source_file(Path::new("test.txt")));
-        assert!(!is_supported_source_file(Path::new("test.md")));
+        // markdown batch (2026-09): `.md` resolves to Language::Markdown, so
+        // it IS a (format-tier) supported source file now — the old
+        // negative assertion here was valid only while `.md` resolved to
+        // None. `.xyz` keeps a genuinely unsupported negative in the test.
+        assert!(is_supported_source_file(Path::new("test.md")));
+        assert!(!is_supported_source_file(Path::new("test.xyz")));
     }
 }

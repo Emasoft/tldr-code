@@ -796,7 +796,10 @@ mod tests {
 
     #[test]
     fn test_walk_source_files_skips_non_source_files() {
-        // Non-source files (.txt, .md, .lock) should be skipped
+        // Non-source files (.txt, .lock) should be skipped. `.md` JOINED the
+        // recognized formats in the markdown batch (2026-09): it now resolves
+        // to `Language::Markdown` and is counted as a format-tier source file
+        // (like `.json`/`.tex` before it), so it is asserted as INCLUDED.
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("readme.md"), "# README").unwrap();
         fs::write(dir.path().join("notes.txt"), "some notes").unwrap();
@@ -808,8 +811,16 @@ mod tests {
 
         assert_eq!(
             files.len(),
-            1,
-            "Should only return source files, not .md/.txt/.lock. Found: {:?}",
+            2,
+            "Should return main.py + readme.md (format-tier markdown) and skip \
+             .txt/.lock. Found: {:?}",
+            files
+        );
+        assert!(
+            files
+                .iter()
+                .any(|f| f.extension().map(|e| e == "md").unwrap_or(false)),
+            "readme.md must be included now that .md is a recognized language: {:?}",
             files
         );
     }

@@ -1150,6 +1150,67 @@ fn latex_definitions_are_elements() {
     }
 }
 
+/// MARKDOWN PIN (`markdown_definitions_are_elements`, markdown batch 2026-09):
+/// `.md` flows through the same element engine via the tree-sitter-md BLOCK
+/// grammar: ATX and setext headings emit `heading` (named after the heading
+/// text — the `#`/underline markers are separate grammar children), fenced
+/// code blocks emit `code-block` (named after the info string's `language`
+/// token, `"code-block"` when there is none), and pipe tables emit `table`
+/// (named after the header-row cells joined with `" | "`). Body prose never
+/// emits. Exact spans live in the dedicated `element_extraction_v1` suite.
+#[test]
+fn markdown_definitions_are_elements() {
+    let fixture =
+        "# Intro\n\nSome prose.\n\n```rust\nfn main() {}\n```\n\n| A | B |\n| - | - |\n| 1 | 2 |\n";
+    let dir = TempDir::new().unwrap_or_else(|e| panic!("symbol-fidelity-v1: tempdir failed: {e}"));
+    let path = dir.path().join("README.md");
+    fs::write(&path, fixture)
+        .unwrap_or_else(|e| panic!("symbol-fidelity-v1: write README.md failed: {e}"));
+
+    let structure = get_code_structure(&path, Language::Markdown, 0, None)
+        .unwrap_or_else(|e| panic!("symbol-fidelity-v1: README.md extraction failed: {e}"));
+    assert_eq!(
+        structure.files.len(),
+        1,
+        "symbol-fidelity-v1 [README.md]: expected exactly one FileStructure"
+    );
+    assert_eq!(
+        structure.language,
+        Some(Language::Markdown),
+        "symbol-fidelity-v1 [README.md]: language must report markdown"
+    );
+    let defs = &structure.files[0].definitions;
+
+    // EXACT element sequence, source order: heading, code-block, table.
+    // The prose paragraph never emits.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("heading", "Intro"),
+        ("code-block", "rust"),
+        ("table", "A | B"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "symbol-fidelity-v1 [README.md]: expected exact markdown element sequence, got {defs:#?}"
+    );
+
+    // Every element carries byte spans (the format-tier contract).
+    for d in defs {
+        assert!(
+            d.byte_start.is_some() && d.byte_end.is_some(),
+            "symbol-fidelity-v1 [README.md]: element {}:`{}` must carry byte spans",
+            d.kind,
+            d.name
+        );
+    }
+}
+
 #[test]
 fn xml_html_css_definitions_are_elements() {
     let cases: &[(&str, &str, Language, &[&str])] = &[

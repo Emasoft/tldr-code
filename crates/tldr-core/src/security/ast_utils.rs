@@ -29,6 +29,7 @@ macro_rules! formats_langs {
             | Language::Bash
             | Language::Latex
             | Language::Log
+            | Language::Markdown
     };
 }
 

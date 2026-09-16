@@ -114,6 +114,56 @@ fn latex_parses_document_with_sections_and_environments() {
     }
 }
 
+#[test]
+fn markdown_parses_document_with_headings_code_blocks_and_tables() {
+    // Root kind + node kinds from the tree-sitter-md 0.5.3 BLOCK grammar
+    // (tree_sitter_md::LANGUAGE — the crate's block/inline split is
+    // documented at ParserPool and ast::elements::walk_markdown). If a
+    // grammar bump renames these kinds, this fails loudly — the element
+    // walker in ast::elements keys on exactly these names.
+    let src = "# Title\n\nSome prose.\n\n## Sub\n\n```rust\nfn main() {}\n```\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n    indented code\n";
+    let tree = parse(src, Language::Markdown).unwrap();
+    assert_eq!(tree.root_node().kind(), "document");
+    assert!(
+        !tree.root_node().has_error(),
+        "markdown root: {}",
+        tree.root_node().kind()
+    );
+    for kind in [
+        "section",
+        "atx_heading",
+        "fenced_code_block",
+        "info_string",
+        "language",
+        "pipe_table",
+        "indented_code_block",
+    ] {
+        assert!(
+            tree_contains_kind(tree.root_node(), kind),
+            "markdown tree must contain a `{kind}` node"
+        );
+    }
+}
+
+#[test]
+fn markdown_setext_heading_and_block_grammar_only() {
+    // Setext headings get a dedicated node whose `heading_content` field is
+    // the paragraph (the underline is a sibling child). Also pins the
+    // block-grammar-only decision: inline emphasis is NOT parsed into
+    // emphasis nodes — the ATX heading's `inline` child keeps the raw text
+    // (the crate's INLINE_LANGUAGE is deliberately not wired; see
+    // ParserPool).
+    let src = "Setext Title\n============\n\n# The *Fast* Method\n";
+    let tree = parse(src, Language::Markdown).unwrap();
+    assert!(!tree.root_node().has_error());
+    assert!(tree_contains_kind(tree.root_node(), "setext_heading"));
+    assert!(tree_contains_kind(tree.root_node(), "setext_h1_underline"));
+    assert!(
+        !tree_contains_kind(tree.root_node(), "emphasis"),
+        "inline spans must stay unparsed under the BLOCK grammar"
+    );
+}
+
 fn tree_contains_kind(node: tree_sitter::Node, kind: &str) -> bool {
     if node.kind() == kind {
         return true;
@@ -145,6 +195,8 @@ fn new_languages_map_from_extension() {
         (".sty", Language::Latex),
         (".cls", Language::Latex),
         (".log", Language::Log),
+        (".md", Language::Markdown),
+        (".markdown", Language::Markdown),
     ] {
         let got = Language::from_extension(ext).unwrap_or_else(|| panic!("{ext} should resolve"));
         assert_eq!(got, expected, "extension {ext}");
@@ -161,13 +213,21 @@ fn new_languages_map_from_extension() {
         tldr_core::ast::parser::parse("some log line", Language::Log).is_err(),
         "logs have no tree-sitter grammar — direct parse must fail"
     );
+    // Markdown batch: `.md` also resolves through `from_path` — this is the
+    // path `tldr structure README.md` resolves through (the mislabel fix:
+    // before this batch `.md` returned None and single-file structure runs
+    // fell back to directory autodetect).
+    assert_eq!(
+        Language::from_path(std::path::Path::new("docs/README.md")),
+        Some(Language::Markdown)
+    );
 }
 
 #[test]
-fn all_27_variants_have_str_and_extensions() {
+fn all_28_variants_have_str_and_extensions() {
     assert_eq!(
         Language::all().len(),
-        27,
+        28,
         "Language::all() must list every variant"
     );
     for lang in Language::all() {

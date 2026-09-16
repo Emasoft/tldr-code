@@ -577,6 +577,9 @@ fn is_comment_line(trimmed: &str, language: Language) -> bool {
         // Log batch: a log line is event text, never a comment — a leading
         // `#` in a log is log CONTENT.
         Language::Log => false,
+        // Markdown batch: no line-comment syntax (the HTML `<!-- … -->` block
+        // is not a line prefix; mirrors Json/Xml/Html/Css).
+        Language::Markdown => false,
     }
 }
 
@@ -614,6 +617,10 @@ fn comment_node_kinds(language: Language) -> &'static [&'static str] {
         // Log batch: `.log` never parses through tree-sitter (no grammar) —
         // no comment node kinds exist.
         Language::Log => &[],
+        // Markdown batch: the tree-sitter-md BLOCK grammar has no dedicated
+        // comment node — HTML comments surface as `html_block` alongside real
+        // HTML, so no kind is safely classifiable as "comment".
+        Language::Markdown => &[],
     }
 }
 

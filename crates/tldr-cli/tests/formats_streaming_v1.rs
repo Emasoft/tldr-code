@@ -289,6 +289,63 @@ fn structure_on_yaml_reports_language() {
     );
 }
 
+/// (4d) Markdown sibling — the mislabel fix (markdown batch, 2026-09). Before
+/// `.md` mapped to `Language::Markdown`, `Language::from_path("README.md")`
+/// returned `None`, so a single-file `tldr structure README.md` fell back to
+/// directory autodetect and mislabeled the file (measured: reported "rust").
+/// Now `.md` resolves directly and the report says `language: "markdown"`,
+/// with headings/code blocks/tables riding the definitions array.
+#[test]
+fn structure_on_markdown_reports_language() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("README.md");
+    fs::write(
+        &path,
+        "# Title\n\nProse paragraph.\n\n```rust\nfn main() {}\n```\n\n| A | B |\n| - | - |\n| 1 | 2 |\n",
+    )
+    .expect("write markdown");
+
+    let output = tldr_cmd()
+        .args(["structure", path.to_str().unwrap(), "-f", "json"])
+        .output()
+        .expect("run tldr structure on markdown");
+
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(
+        json["language"], "markdown",
+        "single-file structure on a .md must report language \"markdown\" \
+         (from_path resolves it — the single-file fallback mislabel is fixed)"
+    );
+    assert!(json.get("jsonl_stream").is_none());
+    // element-extraction-v1: markdown elements ride definitions too —
+    // heading + code-block (info-string named) + table (header-row named).
+    let defs = json["files"][0]["definitions"]
+        .as_array()
+        .expect("definitions array");
+    let kinds: Vec<&str> = defs.iter().filter_map(|d| d["kind"].as_str()).collect();
+    assert_eq!(
+        kinds,
+        vec!["heading", "code-block", "table"],
+        "expected heading:Title + code-block:rust + table:A | B elements, got {defs:?}"
+    );
+    assert!(
+        defs.iter()
+            .any(|d| d["name"] == "rust" && d["kind"] == "code-block"),
+        "the ```rust fenced block must be named after its info-string language, got {defs:?}"
+    );
+    assert!(
+        defs.iter()
+            .any(|d| d["name"] == "A | B" && d["kind"] == "table"),
+        "the pipe table must be named after its header-row cells, got {defs:?}"
+    );
+    assert!(
+        defs.iter()
+            .all(|d| d["byte_start"].is_u64() && d["byte_end"].is_u64()),
+        "format elements must carry byte_start/byte_end, got {defs:?}"
+    );
+}
+
 /// (5) `tldr order` on an out-of-MVP format answers instantly (no full-file
 /// read) with the graceful explanation — exit 0, zero issues.
 #[test]

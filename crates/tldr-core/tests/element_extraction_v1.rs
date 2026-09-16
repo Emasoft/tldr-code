@@ -39,6 +39,17 @@
 //!   region; signature = the raw timestamp text (or empty). Unlike the
 //!   tree-walk formats, entries set `definition_line` = the entry's start
 //!   line.
+//! - Markdown → `heading` per ATX heading (`#`…`######`) and setext heading
+//!   (`text` + `===`/`---` underline), named after the heading text (the
+//!   `#`/underline markers are separate grammar children and never enter the
+//!   name; region = the heading node itself, NOT content-spanning) +
+//!   `code-block` per fenced code block (named after the info string's
+//!   `language` token, `"code-block"` when there is none) and per indented
+//!   code block (the BLOCK grammar emits a dedicated node kind) +
+//!   `table` per pipe table, named after the header-row cells joined with
+//!   `" | "`. Paragraphs/lists/block quotes/thematic breaks/HTML blocks/
+//!   link reference definitions never emit. Parsed with the tree-sitter-md
+//!   BLOCK grammar only — inline spans stay unparsed.
 //!
 //! Every element pins:
 //! 1. EXACT `kind` / `name` / `line_start` / `line_end` (1-indexed), and
@@ -827,6 +838,157 @@ fn log_entries_are_definitions_with_exact_spans() {
 }
 
 // =============================================================================
+// Markdown — headings (ATX + setext), fenced/indented code blocks, pipe table
+// =============================================================================
+
+// Line map (the pinned spans below are computed against exactly this text):
+//  1: # Top Level
+//  2:
+//  3: Body text under the title is NOT an element.
+//  4:
+//  5: ## Details
+//  6:
+//  7: ```rust
+//  8: fn main() {}
+//  9: ```
+// 10:
+// 11: Setext Heading
+// 12: ==============
+// 13:
+// 14: ```
+// 15: plain fence, no language token
+// 16: ```
+// 17:
+// 18: | Column A | Column B |
+// 19: | -------- | -------- |
+// 20: | value 1  | value 2  |
+// 21:
+// 22: - a list item
+// 23: > a block quote
+// 24:
+// 25:     indented code line one
+// 26:     indented code line two
+const MARKDOWN_FIXTURE: &str = "\
+# Top Level
+
+Body text under the title is NOT an element.
+
+## Details
+
+```rust
+fn main() {}
+```
+
+Setext Heading
+==============
+
+```
+plain fence, no language token
+```
+
+| Column A | Column B |
+| -------- | -------- |
+| value 1  | value 2  |
+
+- a list item
+> a block quote
+
+    indented code line one
+    indented code line two
+";
+
+#[test]
+fn markdown_headings_code_blocks_and_tables_are_elements() {
+    let defs = extract_elements("README.md", MARKDOWN_FIXTURE, Language::Markdown);
+    assert_element_invariants(&defs, "README.md");
+
+    // EXACT source-order sequence: paragraphs, the list, the block quote and
+    // front-matter-style prose never emit. The setext heading sits BETWEEN
+    // the rust fenced block and the plain fenced block.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("heading", "Top Level"),
+        ("heading", "Details"),
+        ("code-block", "rust"),
+        ("heading", "Setext Heading"),
+        ("code-block", "code-block"),
+        ("table", "Column A | Column B"),
+        ("code-block", "code-block"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [README.md]: expected exact markdown element sequence"
+    );
+
+    // ATX heading: region = the heading node itself (the `# Top Level`
+    // line), NOT content-spanning — the markdown block grammar keeps
+    // content in sibling nodes, unlike LaTeX's nested sections.
+    let top = find_element(&defs, "README.md", "heading", "Top Level");
+    assert_span(top, "README.md", "heading:Top Level", 1, 1);
+    assert_byte_slice(top, MARKDOWN_FIXTURE, "README.md", "# Top Level");
+    let top_slice =
+        &MARKDOWN_FIXTURE[top.byte_start.unwrap() as usize..top.byte_end.unwrap() as usize];
+    assert_eq!(
+        top_slice, "# Top Level\n",
+        "ATX region is exactly its own line (+newline)"
+    );
+
+    // The ```rust fence names after its info-string `language` token and
+    // spans BOTH fence lines.
+    let rust = find_element(&defs, "README.md", "code-block", "rust");
+    assert_span(rust, "README.md", "code-block:rust", 7, 9);
+    assert_byte_slice(rust, MARKDOWN_FIXTURE, "README.md", "```rust");
+
+    // Setext heading: the region covers the heading lines + underline; the
+    // name comes from the `heading_content` paragraph alone (the underline
+    // is a sibling child and never enters the name).
+    let setext = find_element(&defs, "README.md", "heading", "Setext Heading");
+    assert_span(setext, "README.md", "heading:Setext Heading", 11, 12);
+    assert_byte_slice(setext, MARKDOWN_FIXTURE, "README.md", "Setext Heading");
+    let setext_slice =
+        &MARKDOWN_FIXTURE[setext.byte_start.unwrap() as usize..setext.byte_end.unwrap() as usize];
+    assert_eq!(
+        setext_slice, "Setext Heading\n==============\n",
+        "setext region = heading lines + underline"
+    );
+
+    // Plain fenced block: no language token → "code-block".
+    let plain = find_element(&defs, "README.md", "code-block", "code-block");
+    assert_span(plain, "README.md", "code-block:fenced-plain", 14, 16);
+    assert_byte_slice(plain, MARKDOWN_FIXTURE, "README.md", "```");
+
+    // Pipe table: name = header cells joined with " | ", delimiter row
+    // ignored; region = the whole pipe_table node (header through last row).
+    let table = find_element(&defs, "README.md", "table", "Column A | Column B");
+    assert_span(table, "README.md", "table:Column A | Column B", 18, 20);
+    assert_byte_slice(table, MARKDOWN_FIXTURE, "README.md", "| Column A |");
+
+    // The indented code block shares the "code-block" name with the plain
+    // fence — select it by its line (25) and pin its span.
+    let indented = defs
+        .iter()
+        .find(|d| d.kind == "code-block" && d.name == "code-block" && d.line_start == 25)
+        .unwrap_or_else(|| {
+            panic!(
+                "element-extraction-v1 [README.md]: indented code block (line 25) not found.\n{defs:#?}"
+            )
+        });
+    assert_span(indented, "README.md", "code-block:indented", 25, 26);
+    assert_byte_slice(
+        indented,
+        MARKDOWN_FIXTURE,
+        "README.md",
+        "    indented code line one",
+    );
+}
+
+// =============================================================================
 // Cross-format: the JSON shape consumers see is the plain definitions array
 // =============================================================================
 
@@ -843,6 +1005,7 @@ fn elements_flow_through_the_definitions_array_of_every_format() {
         ("pinned.css", CSS_FIXTURE, Language::Css, 5),
         ("pinned.tex", LATEX_FIXTURE, Language::Latex, 6),
         ("server.log", LOG_FIXTURE, Language::Log, 6),
+        ("README.md", MARKDOWN_FIXTURE, Language::Markdown, 7),
     ] {
         let defs = extract_elements(filename, content, language);
         assert!(

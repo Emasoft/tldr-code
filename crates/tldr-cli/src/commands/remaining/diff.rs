@@ -597,7 +597,7 @@ fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &[], // Lua has no class syntax
         Language::Ocaml => &["module_definition", "type_definition"],
         // Formats extension (2025-09): no classes in data/config documents;
-        // log entries are not classes.
+        // log entries are not classes; markdown documents neither (2026-09).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -606,7 +606,8 @@ fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => &[],
+        | Language::Log
+        | Language::Markdown => &[],
     }
 }
 
@@ -629,7 +630,7 @@ fn get_class_body_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &[],
         Language::Ocaml => &[],
         // Formats extension (2025-09): no class bodies in data/config docs;
-        // log entries have no bodies either.
+        // log entries have no bodies either; markdown documents neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -638,7 +639,8 @@ fn get_class_body_kinds(language: Language) -> &'static [&'static str] {
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => &[],
+        | Language::Log
+        | Language::Markdown => &[],
     }
 }
 
@@ -1611,7 +1613,7 @@ fn get_statement_node_kinds(lang: Language) -> &'static [&'static str] {
             "application",
         ],
         // Formats extension (2025-09): no statements in data/config documents;
-        // log lines are not statements.
+        // log lines are not statements; markdown elements are not statements.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -1620,7 +1622,8 @@ fn get_statement_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => &[],
+        | Language::Log
+        | Language::Markdown => &[],
     }
 }
 
@@ -1789,7 +1792,7 @@ fn find_function_body(func_node: Node, lang: Language) -> Option<Node> {
         Language::Lua | Language::Luau => &["block"],
         Language::Ocaml => &["let_binding"],
         // Formats extension (2025-09): no function bodies in data/config docs;
-        // log entries have none either.
+        // log entries have none either; markdown documents neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -1798,7 +1801,8 @@ fn find_function_body(func_node: Node, lang: Language) -> Option<Node> {
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => &[],
+        | Language::Log
+        | Language::Markdown => &[],
     };
 
     let mut cursor = func_node.walk();

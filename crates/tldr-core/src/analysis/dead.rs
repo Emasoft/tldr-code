@@ -680,6 +680,7 @@ fn infer_visibility_from_name(
         // Formats extension (2025-09): data/config documents have no private
         // naming convention — a JSON/YAML/TOML key is always "reachable".
         // Log batch: log entries are not code symbols; always reachable.
+        // Markdown batch: headings/code blocks/tables are not code symbols.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -688,7 +689,8 @@ fn infer_visibility_from_name(
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => true,
+        | Language::Log
+        | Language::Markdown => true,
     }
 }
 

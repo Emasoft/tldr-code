@@ -15,6 +15,36 @@
 
 ### Added
 
+- **Markdown format support: `tldr structure README.md`.** Markdown joins the supported formats as
+  language 28 (`Language::Markdown` for `.md`/`.markdown`, signal=false like every other format — a
+  directory of docs must never outvote source code), parsed with `tree-sitter-md =0.5.3`, the
+  actively-maintained tree-sitter-grammars crate (published 2026-02-26; the old `tree-sitter-markdown`
+  0.7.1 is dead and was not used). The crate exports the block and inline grammars as two separate
+  `LanguageFn`s with **no combined language**, so tldr wires the **BLOCK grammar only**: headings, code
+  fences and pipe tables are block nodes — everything the element walker needs — while inline spans
+  (emphasis, code spans, links) stay unparsed opaque text inside `inline` nodes (documented at
+  `ParserPool` and `ast::elements::walk_markdown`; the inline grammar would require injection parsing).
+  The crate's `tree-sitter ^0.26` dependency is optional and gated behind its `parser` feature, which
+  tldr does not enable — the `LanguageFn` exports ride the `tree-sitter-language` bridge and load
+  against the pinned tree-sitter 0.25 runtime, same as luau/latex (build-verified: `parser.c` +
+  `scanner.c` ship for both grammars). Elements: **headings** — ATX (`#`…`######`) and setext
+  (`text` + `===`/`---`) — emit `kind: "heading"` named after the heading text (the `#` markers and the
+  underline are separate grammar children and never enter the name); the region is the heading node
+  itself, NOT content-spanning (unlike LaTeX, the markdown grammar keeps section content in sibling
+  nodes). **Code blocks** — fenced (backtick/tilde) and indented (a dedicated node kind in this
+  grammar) — emit `kind: "code-block"`, named after the info string's `language` token (```rust →
+  `rust`) or `"code-block"` when there is none; the region spans both fence lines. **Pipe tables** emit
+  `kind: "table"` named after the header-row cells joined with `" | "` (whitespace-collapsed; the
+  delimiter row never contributes); the region is the whole table. Paragraphs, lists, block quotes,
+  thematic breaks, HTML blocks and link reference definitions never emit (future-batch candidates).
+  Every element carries exact line spans plus `byte_start`/`byte_end`. This batch also **fixes a
+  measured mislabel**: `tldr structure README.md` previously reported `language: "rust"` (`.md` did not
+  resolve, so the single-file run fell back to directory autodetect); `from_path` now resolves `.md`
+  directly and the CLI pin in `formats_streaming_v1.rs` locks `language: "markdown"` in place.
+  Verified by `grammar_stability_test` (9 suites' node-kind gate), the markdown smoke tests in
+  `formats_grammar_test`, the exact-span pins in `element_extraction_v1`/`symbol_fidelity_v1`, and the
+  CLI pin above.
+
 - **OOXML container support: `tldr structure` on `.docx` / `.xlsx` / `.pptx`.** Office documents join the
   analyzable formats without a new `Language` variant — the container is a ZIP package, not a tree-sitter file
   (documented decision: a `.docx` is not "written in" a language, so `language` reports `null`; the XML parts

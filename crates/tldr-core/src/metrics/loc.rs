@@ -478,6 +478,11 @@ fn is_single_line_comment(trimmed: &str, lang: Language) -> bool {
         // Log batch: `.log` lines are event text — a leading `#` or `//`
         // in a log line is log CONTENT, not a comment, so nothing counts.
         Language::Log => false,
+        // Markdown batch: no line-comment syntax. The only comment form is
+        // the HTML `<!-- … -->` block; like Xml/Html (whose `<!--` never
+        // matches the generic `/* */` multi-line markers either) it is left
+        // to the consumer's judgement rather than half-modelled here.
+        Language::Markdown => false,
         // why: OCaml has no single-line comment syntax — every comment is a
         // `(* ... *)` block (possibly spanning one line). Treating a line
         // that merely starts with "(*" as already-closed single-line

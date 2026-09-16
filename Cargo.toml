@@ -69,6 +69,27 @@ tree-sitter-bash = "=0.23.3"
 # `cargo test -p tldr-core --test grammar_stability_test` + the latex parse
 # smoke test in tests/formats_grammar_test.rs.
 codebook-tree-sitter-latex = "=0.6.1"
+# Markdown (2026-09): document markup (.md/.markdown) — headings, fenced and
+# indented code blocks, and pipe tables surface as element definitions (see
+# `ast::elements::walk_markdown`). Pinned to the tree-sitter-grammars org
+# crate `tree-sitter-md =0.5.3` (published 2026-02-26, actively maintained —
+# the old `tree-sitter-markdown` 0.7.1 is dead and NOT used). CRITICAL crate
+# fact (read off bindings/rust/lib.rs): it exports TWO grammars, `LANGUAGE`
+# (block structure) and `INLINE_LANGUAGE` (inline content) — there is NO
+# combined markdown language. We wire the BLOCK grammar: headings/code
+# fences/tables are block nodes, which is what the element walker needs; the
+# inline grammar would require injection parsing and is deliberately not
+# wired, so inline spans stay as opaque `inline` nodes (documented at
+# walk_markdown). The crate declares `tree-sitter ^0.26` as an OPTIONAL dep
+# activated only by its `parser` feature; consumed WITHOUT that feature the
+# `LANGUAGE`/`INLINE_LANGUAGE` LanguageFn exports ride the tree-sitter-language
+# bridge (0.1, already in the tree for luau/latex) and load against the pinned
+# tree-sitter 0.25 runtime. Build-verified: parser.c + scanner.c for BOTH
+# grammars ship in the package and compile via its build.rs (unlike the
+# unbuildable tree-sitter-latex 0.1.0 precedent). Gated by
+# grammar_stability_test + the markdown parse smoke test in
+# tests/formats_grammar_test.rs.
+tree-sitter-md = "=0.5.3"
 # NOTE: tree-sitter-sql dropped — crates.io only publishes 0.0.2 (DerekStride
 # grammar is source-only); revisit if a maintained sql crate targets ts 0.25.
 # Phase 3: Ruby grammar

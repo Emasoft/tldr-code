@@ -79,6 +79,7 @@ tree-sitter-html = { workspace = true }
 tree-sitter-css = { workspace = true }
 tree-sitter-bash = { workspace = true }
 codebook-tree-sitter-latex = { workspace = true }
+tree-sitter-md = { workspace = true }
 streaming-iterator = "0.1"
 
 # Difftastic L1/L2 graft - Phase 1

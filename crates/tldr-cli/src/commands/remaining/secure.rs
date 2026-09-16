@@ -404,6 +404,7 @@ fn is_supported_secure_file(path: &std::path::Path, lang: Option<Language>) -> b
         Some(Language::Bash) => matches!(ext, "sh" | "bash"),
         Some(Language::Latex) => matches!(ext, "tex" | "sty" | "cls"),
         Some(Language::Log) => ext == "log",
+        Some(Language::Markdown) => matches!(ext, "md" | "markdown"),
         None => matches!(ext, "py" | "rs"),
     }
 }

@@ -807,6 +807,7 @@ pub fn get_patterns(language: Language) -> &'static LanguagePatterns {
         // Formats extension (2025-09): data/config documents carry no taint
         // sources/sinks — empty pattern set (see ast_utils formats_langs!).
         // Log files join them: log text is not executable input syntax.
+        // Markdown joins them (2026-09): document text is not input syntax.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -815,7 +816,8 @@ pub fn get_patterns(language: Language) -> &'static LanguagePatterns {
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => &FORMATS_PATTERNS,
+        | Language::Log
+        | Language::Markdown => &FORMATS_PATTERNS,
     }
 }
 
@@ -3925,7 +3927,8 @@ fn get_ast_patterns(language: Language) -> AstLanguagePatterns {
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => AstLanguagePatterns {
+        | Language::Log
+        | Language::Markdown => AstLanguagePatterns {
             sources: &[],
             sinks: &[],
             sanitizers: &[],
@@ -3995,7 +3998,8 @@ pub fn fastpath_pattern_strings(language: Language) -> &'static [&'static str] {
         Language::Elixir => fastpath_static!(EX, Language::Elixir),
         Language::Ocaml => fastpath_static!(OCAML, Language::Ocaml),
         // Formats extension: no taint needles in data/config documents;
-        // log files have none either (never parsed as source).
+        // log files have none either (never parsed as source); markdown
+        // documents neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -4004,7 +4008,8 @@ pub fn fastpath_pattern_strings(language: Language) -> &'static [&'static str] {
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => &[],
+        | Language::Log
+        | Language::Markdown => &[],
     }
 }
 

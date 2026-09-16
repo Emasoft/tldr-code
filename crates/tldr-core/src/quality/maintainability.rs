@@ -358,6 +358,9 @@ fn count_loc(source: &str, language: Language) -> usize {
         Language::Latex => vec!["%"],
         // Log batch: log lines are event text — no comment prefixes.
         Language::Log => vec![],
+        // Markdown batch: the only comment form is the HTML `<!-- … -->`
+        // block; mirror the Xml/Html treatment (line-prefix exclusion).
+        Language::Markdown => vec!["<!--"],
     };
 
     source

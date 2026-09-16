@@ -99,11 +99,15 @@ fn test_grammar_node_types_stable() {
         "Java grammar failed to load"
     );
 
-    // Formats extension - must parse (formats batch + latex)
+    // Formats extension - must parse (formats batch + latex + markdown)
     assert!(
         pool.parse("\\section{Intro}\nbody", Language::Latex)
             .is_ok(),
         "LaTeX grammar failed to load"
+    );
+    assert!(
+        pool.parse("# Heading\n\nbody", Language::Markdown).is_ok(),
+        "Markdown grammar failed to load"
     );
 }
 
@@ -360,6 +364,89 @@ fn test_latex_ast_node_types() {
         Language::Latex,
         "begin",
     );
+}
+
+// =============================================================================
+// Markdown AST Node Types (tree-sitter-md 0.5.3 — BLOCK grammar
+// `tree_sitter_md::LANGUAGE`; the crate also ships INLINE_LANGUAGE, which is
+// deliberately not wired — see ParserPool + ast::elements::walk_markdown)
+// =============================================================================
+
+#[test]
+fn test_markdown_ast_node_types() {
+    // Headings: ATX (markers are separate `atx_hN_marker` children, the text
+    // lives in the `heading_content` field) and setext (the `heading_content`
+    // field is the paragraph; the underline is a sibling child). The element
+    // walker (ast::elements::walk_markdown) keys on exactly these names.
+    assert_node_type_exists("# Title\n\nbody", Language::Markdown, "atx_heading");
+    assert_node_type_exists("### Deep\n\nbody", Language::Markdown, "atx_h3_marker");
+    assert_node_type_exists(
+        "Setext\n======\n\nbody",
+        Language::Markdown,
+        "setext_heading",
+    );
+    assert_node_type_exists(
+        "Setext\n======\n\nbody",
+        Language::Markdown,
+        "setext_h1_underline",
+    );
+
+    // Code blocks: fenced (open delimiter + info_string with a named
+    // `language` child) and indented (a dedicated kind in this grammar —
+    // 4-space indented code emits its own node).
+    assert_node_type_exists(
+        "```rust\nfn main() {}\n```\n\nbody",
+        Language::Markdown,
+        "fenced_code_block",
+    );
+    assert_node_type_exists(
+        "```rust\nfn main() {}\n```\n\nbody",
+        Language::Markdown,
+        "info_string",
+    );
+    assert_node_type_exists(
+        "```rust\nfn main() {}\n```\n\nbody",
+        Language::Markdown,
+        "language",
+    );
+    assert_node_type_exists(
+        "```rust\nfn main() {}\n```\n\nbody",
+        Language::Markdown,
+        "fenced_code_block_delimiter",
+    );
+    assert_node_type_exists(
+        "# T\n\n    indented code\n",
+        Language::Markdown,
+        "indented_code_block",
+    );
+
+    // Tables: pipe_table with a header row (cells), delimiter row, body rows.
+    assert_node_type_exists(
+        "| A | B |\n| - | - |\n| 1 | 2 |\n",
+        Language::Markdown,
+        "pipe_table",
+    );
+    assert_node_type_exists(
+        "| A | B |\n| - | - |\n| 1 | 2 |\n",
+        Language::Markdown,
+        "pipe_table_header",
+    );
+    assert_node_type_exists(
+        "| A | B |\n| - | - |\n| 1 | 2 |\n",
+        Language::Markdown,
+        "pipe_table_cell",
+    );
+    assert_node_type_exists(
+        "| A | B |\n| - | - |\n| 1 | 2 |\n",
+        Language::Markdown,
+        "pipe_table_delimiter_row",
+    );
+
+    // Block structure: the root is `document`; content nests inside
+    // `section` wrappers (one per top-level heading).
+    assert_node_type_exists("# Title\n\nbody", Language::Markdown, "document");
+    assert_node_type_exists("# Title\n\nbody", Language::Markdown, "section");
+    assert_node_type_exists("# Title\n\nbody", Language::Markdown, "inline");
 }
 
 // =============================================================================

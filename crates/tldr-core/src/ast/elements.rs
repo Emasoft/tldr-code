@@ -23,6 +23,9 @@
 //! | CSS      | `at-rule`   | every BLOCK-bearing at-rule (`at_rule`, `media_statement`, `supports_statement`, `keyframes_statement`) | the at-keyword (`@media`, `@keyframes`, `@font-face`, …) | the whole statement incl. its block |
 //! | LaTeX    | `section`   | every sectioning command (`part`, `chapter`, `section`, `subsection`, `subsubsection`, `paragraph`, `subparagraph` — starred variants and KOMA `\addsec`/`\addchap`/`\addpart` fold into the same node kinds) | the heading text: the braced group after the command, whitespace-collapsed; when the heading embeds commands the raw braced text is kept; with no braced heading, the command token | the whole sectioning node — the grammar nests the section's content inside it, so it spans to the next sectioning command of equal-or-higher level (or `\end{document}`/EOF) |
 //! | LaTeX    | `environment` | every `\begin{env} … \end{env}` block (`generic_environment` plus the grammar's specialized `math`/`verbatim`/`listing`/`minted`/`comment`/`luacode`/`pycode`/`sageblock`/`sagesilent`/`asy`/`asydef` environment kinds); nested environments recurse | the environment name from `\begin{env}` | the whole environment node (`begin` → `end` incl. content) |
+//! | Markdown | `heading`   | every ATX heading (`#`…`######`) and setext heading (`text` + `===`/`---` underline) | the heading text (inline content collapsed; the `#`/underline markers are separate grammar children and never enter the name) | the heading node itself — setext = the heading lines + underline, ATX = the marker line; NOT content-spanning (see `walk_markdown`) |
+//! | Markdown | `code-block` | every fenced code block (backtick/tilde fences); indented code blocks (4-space) emit too — the block grammar gives them their own node kind | the info string's first `language` token (a ```rust fence → `rust`); `"code-block"` when there is no language token (plain fences, indented blocks) | the whole code-block node incl. both fence lines |
+//! | Markdown | `table`     | every pipe table | the header-row cell texts joined with `" \| "` (whitespace-collapsed; the delimiter row is never part of the name) | the whole `pipe_table` node |
 //!
 //! # SVG (and other XML dialects)
 //!
@@ -41,6 +44,18 @@
 //! environment-DEFINING commands (`environment_definition` = `\newenvironment`,
 //! `theorem_definition` = `\newtheorem`) and the brace/dollar math zones
 //! (`displayed_equation`, `inline_formula` — no begin/end pair) never emit.
+//!
+//! Markdown non-elements (markdown batch, 2026-09): paragraphs, lists and
+//! list items (incl. task-list markers), block quotes, thematic breaks
+//! (`---`/`***`), HTML blocks, link reference definitions, YAML front matter
+//! (`minus_metadata`/`plus_metadata`) and the grammar's bookkeeping nodes
+//! (`section`, `block_continuation`, markers) never emit — they are
+//! candidates for a future batch, not definitions today. Markdown also
+//! parses through the tree-sitter-md BLOCK grammar ONLY: the crate ships the
+//! block and inline grammars as two separate LanguageFns with no combined
+//! language, so inline content stays as opaque `inline` node text (emphasis,
+//! code spans and links are not individually parsed; heading names are their
+//! raw inline text, whitespace-collapsed).
 //!
 //! # Spans
 //!
@@ -90,6 +105,10 @@ pub fn extract_elements(language: Language, tree: &Tree, source: &str) -> Vec<De
         // LaTeX batch (2025-11): document markup joins the same engine
         // (kinds `section` / `environment`).
         Language::Latex => walk_latex(root, source, &mut elements),
+        // Markdown batch (2026-09): document markup joins the same engine
+        // (kinds `heading` / `code-block` / `table`) via the tree-sitter-md
+        // BLOCK grammar.
+        Language::Markdown => walk_markdown(root, source, &mut elements),
         // Code languages never had elements.
         _ => {}
     }
@@ -782,6 +801,152 @@ fn latex_environment_name(environment: &Node, source: &str) -> Option<String> {
     }
 }
 
+// =============================================================================
+// Markdown — kind "heading" per ATX/setext heading, kind "code-block" per
+// fenced/indented code block, kind "table" per pipe table
+// =============================================================================
+
+/// Markdown (`tree_sitter_md::LANGUAGE`, the BLOCK grammar of the
+/// tree-sitter-grammars crate `tree-sitter-md 0.5.3`; serves .md/.markdown).
+/// Three element kinds, all shape-given by the grammar (verified against
+/// `tree-sitter-md-0.5.3/tree-sitter-markdown/src/node-types.json` — the
+/// BLOCK grammar's node types, exposed by the crate's `NODE_TYPES_BLOCK`):
+///
+/// - `heading`: ATX headings are dedicated `atx_heading` nodes whose `#`
+///   markers are separate `atx_h1_marker`…`atx_h6_marker` children and whose
+///   text is the (optional) `heading_content` field — an `inline` node — so
+///   taking only the content naturally strips the markers. Setext headings
+///   are dedicated `setext_heading` nodes whose text is the `heading_content`
+///   field (a `paragraph` node spanning the heading lines) and whose
+///   `setext_h1_underline`/`setext_h2_underline` children are siblings of
+///   that paragraph — so the heading NODE spans text + underline while the
+///   NAME comes from the paragraph alone. Regions are the heading nodes
+///   themselves, NOT content-spanning: unlike LaTeX (where the grammar nests
+///   section content inside the sectioning node), the markdown block grammar
+///   keeps the content in SIBLING nodes (`section` wrappers hold heading +
+///   content as separate children), so a heading region is exactly its own
+///   line(s).
+/// - `code-block`: `fenced_code_block` nodes span open fence → close fence
+///   (both `fenced_code_block_delimiter` children included); the info string
+///   is an `info_string` child whose named `language` child (when present)
+///   names the block (```rust → `rust`). Plain fences and
+///   `indented_code_block` nodes (a dedicated kind in this grammar, so they
+///   are included) carry no language and name `"code-block"`.
+/// - `table`: `pipe_table` nodes span header → last row. The header row is a
+///   `pipe_table_header` child holding one `pipe_table_cell` per column; the
+///   name joins those cell texts with `" | "` (whitespace-collapsed). The
+///   `pipe_table_delimiter_row` (the `|---|---|` line) is a separate child
+///   and never contributes to the name.
+///
+/// Everything else (paragraphs, lists, block quotes, thematic breaks, HTML
+/// blocks, link reference definitions, front matter) never emits — see the
+/// module doc for the future-batch list. INLINE SPANS ARE NOT PARSED: the
+/// crate exposes the block and inline grammars as two separate LanguageFns
+/// (`LANGUAGE` / `INLINE_LANGUAGE`) with no combined language; `ParserPool`
+/// wires the block grammar only, so `inline` nodes are opaque text and
+/// heading names keep their raw inline spelling (emphasis markers, backticks
+/// and link syntax inside a heading survive verbatim in the name).
+fn walk_markdown(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
+    match node.kind() {
+        "atx_heading" | "setext_heading" => {
+            let name = markdown_heading_name(&node, source);
+            if !name.is_empty() {
+                out.push(element_def("heading", name, node, source));
+            }
+        }
+        "fenced_code_block" => {
+            let name = markdown_fenced_code_name(&node, source)
+                .unwrap_or_else(|| "code-block".to_string());
+            out.push(element_def("code-block", name, node, source));
+        }
+        "indented_code_block" => {
+            // The block grammar emits dedicated nodes for 4-space-indented
+            // code (verified against node-types.json) — include them under
+            // the same kind, always named "code-block" (no info string
+            // exists for the indented form).
+            out.push(element_def(
+                "code-block",
+                "code-block".to_string(),
+                node,
+                source,
+            ));
+        }
+        "pipe_table" => {
+            let name = markdown_table_name(&node, source);
+            if !name.is_empty() {
+                out.push(element_def("table", name, node, source));
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_markdown(child, source, out);
+    }
+}
+
+/// Heading text: the `heading_content` field's source text, whitespace-
+/// collapsed. For ATX headings the field is an `inline` node (the `#`
+/// markers are separate children, so they never reach the name); for setext
+/// headings it is a `paragraph` node spanning the heading lines (the
+/// underline is a sibling child of the setext node, so it never reaches the
+/// name either). Degenerate headings with no content (`#` alone) name the
+/// element with their first token below; empty names suppress the element.
+fn markdown_heading_name(heading: &Node, source: &str) -> String {
+    match heading.child_by_field_name("heading_content") {
+        Some(content) => collapse_whitespace(&source[content.byte_range()]),
+        None => String::new(),
+    }
+}
+
+/// Code-block name from the fenced form's `info_string` child: the info
+/// string's first named `language` child (per node-types.json the
+/// `info_string` rule parses a leading language token into a dedicated
+/// `language` node, with `backslash_escape`/`entity_reference`/
+/// `numeric_character_reference` as the other possible children). Returns
+/// `None` when there is no info string or no language token — the caller
+/// falls back to `"code-block"`.
+fn markdown_fenced_code_name(block: &Node, source: &str) -> Option<String> {
+    let mut cursor = block.walk();
+    for child in block.children(&mut cursor) {
+        if child.kind() == "info_string" {
+            let mut info_cursor = child.walk();
+            for token in child.children(&mut info_cursor) {
+                if token.kind() == "language" {
+                    let name = collapse_whitespace(&source[token.byte_range()]);
+                    if !name.is_empty() {
+                        return Some(name);
+                    }
+                }
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// Table name: the `pipe_table_header` child's `pipe_table_cell` texts,
+/// whitespace-collapsed and joined with `" | "` in source order. The
+/// delimiter row (`|---|---|`) is a separate `pipe_table_delimiter_row`
+/// child and is ignored.
+fn markdown_table_name(table: &Node, source: &str) -> String {
+    let mut cursor = table.walk();
+    for child in table.children(&mut cursor) {
+        if child.kind() == "pipe_table_header" {
+            let mut cells = Vec::new();
+            let mut header_cursor = child.walk();
+            for cell in child.children(&mut header_cursor) {
+                if cell.kind() == "pipe_table_cell" {
+                    cells.push(collapse_whitespace(&source[cell.byte_range()]));
+                }
+            }
+            return cells.join(" | ");
+        }
+    }
+    String::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -887,6 +1052,56 @@ mod tests {
         }
         let kinds: Vec<&str> = elements.iter().map(|e| e.kind.as_str()).collect();
         assert_eq!(kinds, vec!["key", "key", "key", "section", "key"]);
+    }
+
+    #[test]
+    fn markdown_headings_code_blocks_and_tables() {
+        // ATX names strip the `#` markers (separate grammar children); the
+        // ```rust fence names by its info-string language token; the plain
+        // fence and the indented block fall back to "code-block"; the table
+        // name joins header cells with " | " and ignores the delimiter row.
+        let src = "# Top\n\n```rust\nfn main() {}\n```\n\n```\nplain\n```\n\n| Col A | Col B |\n| ----- | ----- |\n| a     | b     |\n";
+        let tree = parse(src, Language::Markdown).unwrap();
+        let elements = extract_elements(Language::Markdown, &tree, src);
+        let sequence: Vec<(String, String)> = elements
+            .iter()
+            .map(|e| (e.kind.clone(), e.name.clone()))
+            .collect();
+        assert_eq!(
+            sequence,
+            vec![
+                ("heading".to_string(), "Top".to_string()),
+                ("code-block".to_string(), "rust".to_string()),
+                ("code-block".to_string(), "code-block".to_string()),
+                ("table".to_string(), "Col A | Col B".to_string()),
+            ]
+        );
+
+        // The heading region is the heading node only (NOT content-spanning):
+        // exactly the `# Top` line.
+        let heading = &elements[0];
+        assert_eq!(heading.line_start, 1);
+        assert_eq!(heading.line_end, 1);
+        let slice = &src[heading.byte_start.unwrap() as usize..heading.byte_end.unwrap() as usize];
+        // The heading node's byte range ends with the line's newline (the
+        // line-end attribution trims that phantom line; the byte span does
+        // not).
+        assert_eq!(slice, "# Top\n");
+
+        // The fenced code-block region spans BOTH fence lines, and its slice
+        // opens with the opening fence.
+        let code = &elements[1];
+        assert_eq!(code.line_start, 3);
+        assert_eq!(code.line_end, 5);
+        let slice = &src[code.byte_start.unwrap() as usize..code.byte_end.unwrap() as usize];
+        assert!(slice.starts_with("```rust"), "slice: {slice:?}");
+
+        // The table region spans header through the last body row.
+        let table = &elements[3];
+        assert_eq!(table.line_start, 11);
+        assert_eq!(table.line_end, 13);
+        let slice = &src[table.byte_start.unwrap() as usize..table.byte_end.unwrap() as usize];
+        assert!(slice.starts_with("| Col A |"), "slice: {slice:?}");
     }
 
     #[test]

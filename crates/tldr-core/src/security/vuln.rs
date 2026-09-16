@@ -373,7 +373,8 @@ fn descriptions_for(source_type: TaintSourceType, language: Language) -> &'stati
         // Formats extension (2025-09): JSON/YAML/TOML/XML(SVG)/HTML/CSS/Bash
         // define no taint sources (see taint::get_patterns), so this arm only
         // exists for exhaustiveness — a description is never rendered for
-        // them in practice. Log files likewise define no taint sources.
+        // them in practice. Log files likewise define no taint sources, as do
+        // markdown documents (markdown batch, 2026-09).
         (_, Language::Json)
         | (_, Language::Yaml)
         | (_, Language::Toml)
@@ -382,7 +383,8 @@ fn descriptions_for(source_type: TaintSourceType, language: Language) -> &'stati
         | (_, Language::Css)
         | (_, Language::Bash)
         | (_, Language::Latex)
-        | (_, Language::Log) => "Untrusted input",
+        | (_, Language::Log)
+        | (_, Language::Markdown) => "Untrusted input",
     }
 }
 

@@ -488,6 +488,8 @@ pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<S
         // source-code functions. Log files neither — log entries are NOT
         // functions; they surface as `kind: "entry"` definitions from the
         // `ast::logs` scanner via the `get_code_structure` early-return.
+        // Markdown joins them (2026-09): headings/code blocks/tables are
+        // elements, not functions.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -496,7 +498,8 @@ pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<S
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => {}
+        | Language::Log
+        | Language::Markdown => {}
     }
 
     functions
@@ -2550,7 +2553,7 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
 
         Language::Lua | Language::Luau | Language::Ocaml => None,
         // Formats extension: no constants in data/config/markup documents;
-        // log entries carry no constants either.
+        // log entries carry no constants either; markdown documents neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -2559,7 +2562,8 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => None,
+        | Language::Log
+        | Language::Markdown => None,
     }
 }
 
@@ -2801,7 +2805,7 @@ fn anonymous_callable_kinds(language: Language) -> &'static [&'static str] {
         Language::Ocaml => &["fun_expression"],
         Language::C => &[],
         // Formats extension: no lambdas in data/config/markup documents;
-        // log entries are not lambdas.
+        // log entries are not lambdas; markdown documents neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -2810,7 +2814,8 @@ fn anonymous_callable_kinds(language: Language) -> &'static [&'static str] {
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => &[],
+        | Language::Log
+        | Language::Markdown => &[],
     }
 }
 

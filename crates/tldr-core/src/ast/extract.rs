@@ -272,6 +272,8 @@ pub(crate) fn extract_functions_detailed(
         Language::Ocaml => extract_ocaml_functions_detailed(&root, source, &mut functions),
         // Formats extension (2025-09): JSON/YAML/TOML/XML(SVG)/HTML/CSS/Bash
         // are data/config/markup documents — no source-code functions.
+        // Markdown joins them (2026-09): headings/code blocks/tables are
+        // elements, not functions (see `ast::elements`).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -280,7 +282,8 @@ pub(crate) fn extract_functions_detailed(
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => {}
+        | Language::Log
+        | Language::Markdown => {}
     }
 
     functions
@@ -319,7 +322,7 @@ pub(crate) fn extract_classes_detailed(
         Language::Swift => extract_swift_classes_detailed(&root, source, &mut classes),
         Language::C | Language::Lua | Language::Luau | Language::Ocaml => {} // No classes
         // Formats extension: no classes in data/config/markup documents;
-        // log entries are not classes either.
+        // log entries are not classes either; markdown documents neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -328,7 +331,8 @@ pub(crate) fn extract_classes_detailed(
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => {}
+        | Language::Log
+        | Language::Markdown => {}
     }
 
     classes
@@ -764,7 +768,8 @@ fn extract_module_constants(tree: &Tree, source: &str, language: Language) -> Ve
         Language::Elixir => extract_elixir_module_constants(&root, source),
         Language::Ocaml => extract_ocaml_module_constants(&root, source),
         // Formats extension: no module constants in data/config/markup
-        // documents (JSON keys are not constants); log entries neither.
+        // documents (JSON keys are not constants); log entries neither;
+        // markdown documents neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -773,7 +778,8 @@ fn extract_module_constants(tree: &Tree, source: &str, language: Language) -> Ve
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => Vec::new(),
+        | Language::Log
+        | Language::Markdown => Vec::new(),
     }
 }
 

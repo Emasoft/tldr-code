@@ -49,6 +49,8 @@ tree-sitter-html = { workspace = true }
 tree-sitter-css = { workspace = true }
 tree-sitter-bash = { workspace = true }
 codebook-tree-sitter-latex = { workspace = true }
+# Markdown block grammar (2026-09) — see root Cargo.toml for the crate audit.
+tree-sitter-md = { workspace = true }
 
 # File system traversal - Phase 2: tree command
 # M12: Use ignore crate for gitignore pattern handling

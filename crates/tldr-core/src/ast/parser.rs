@@ -170,6 +170,22 @@ impl ParserPool {
             // (like the formats above), so it loads against the pinned
             // tree-sitter 0.25 runtime.
             TldrLanguage::Latex => Some(codebook_tree_sitter_latex::LANGUAGE.into()),
+            // Markdown batch (2026-09): document markup joins the format
+            // tier. tree-sitter-md 0.5.3 exports TWO LanguageFns — `LANGUAGE`
+            // (the BLOCK grammar) and `INLINE_LANGUAGE` (inline content) —
+            // with no combined language. We wire the BLOCK grammar only:
+            // headings, code fences and pipe tables are block nodes, which is
+            // everything the element walker (`ast::elements::walk_markdown`)
+            // consumes. The inline grammar would require injection parsing
+            // (parse every `inline` node a second time under INLINE_LANGUAGE
+            // and splice the trees); until that exists, inline spans remain
+            // opaque text inside `inline` nodes — the documented trade-off.
+            // The crate's `tree-sitter ^0.26` dep is optional and only
+            // activated by its `parser` feature, which we do NOT enable, so
+            // the LanguageFn rides the tree-sitter-language bridge and loads
+            // against the pinned ts 0.25 runtime (verified by
+            // grammar_stability_test).
+            TldrLanguage::Markdown => Some(tree_sitter_md::LANGUAGE.into()),
             // Log batch: NO grammar. No maintained log grammar exists on
             // crates.io (404 audit), so `Language::Log` deliberately has no
             // tree-sitter mapping — a direct `parse(source, Log)` call is

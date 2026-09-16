@@ -31,11 +31,12 @@ use std::path::{Path, PathBuf};
 // Language Support
 // =============================================================================
 
-/// Supported programming languages (27 variants — see `test_language_all_27_variants`)
+/// Supported programming languages (28 variants — see `test_language_all_28_variants`)
 // why: comment said 17, but OCaml (added later) brought the enum to 18,
 // and the formats extension (2025-09, "all tree-sitter formats" directive)
 // brought it to 25 with the data/config/markup/web/shell batch below; the
-// LaTeX batch (2025-11) brought it to 26, and the log batch brought it to 27.
+// LaTeX batch (2025-11) brought it to 26, the log batch to 27, and the
+// markdown batch brought it to 28.
 //
 // Priority levels:
 // - P0: Python, TypeScript, JavaScript, Go (full support)
@@ -121,6 +122,13 @@ pub enum Language {
     /// timestamps / level tokens — see the `ast::logs` module docs for the
     /// full heuristic table.
     Log,
+    /// Markdown (.md, .markdown) — document markup format (markdown batch,
+    /// 2026-09). Headings (ATX + setext), fenced/indented code blocks and
+    /// pipe tables surface as element definitions (see `ast::elements`).
+    /// Parsed with the tree-sitter-md 0.5.3 BLOCK grammar — the crate ships
+    /// block and inline grammars separately with no combined language, so
+    /// inline spans remain opaque text (see `ast::elements::walk_markdown`).
+    Markdown,
 }
 
 impl Language {
@@ -165,6 +173,7 @@ impl Language {
             Language::Bash => &[".sh", ".bash"],
             Language::Latex => &[".tex", ".sty", ".cls"],
             Language::Log => &[".log"],
+            Language::Markdown => &[".md", ".markdown"],
         }
     }
 
@@ -263,6 +272,12 @@ impl Language {
             // `ParserPool` (see `parse_file_with_lang`'s Log branch); the
             // native scanner in `ast::logs` is the only consumer.
             ".log" => Some(Language::Log),
+            // Markdown batch: `.md`/`.markdown` resolve to Language::Markdown.
+            // Before this batch `.md` resolved to None, so single-file
+            // structure runs on a README fell back to directory autodetect
+            // and mislabeled the file (measured: `tldr structure README.md`
+            // reported "rust"); `from_path` now resolves it directly.
+            ".md" | ".markdown" => Some(Language::Markdown),
             ".swift" => Some(Language::Swift),
             ".cs" => Some(Language::CSharp),
             ".scala" => Some(Language::Scala),
@@ -640,6 +655,7 @@ impl Language {
             Language::Bash => "bash",
             Language::Latex => "latex",
             Language::Log => "log",
+            Language::Markdown => "markdown",
         }
     }
 
@@ -658,8 +674,9 @@ impl Language {
 
     /// Can this language act as a *project-level* signal?
     ///
-    /// Returns `false` for exactly the 8 "formats" variants (Json, Yaml, Toml,
-    /// Xml, Html, Css, Bash, Latex) and `true` for the 18 source-code languages.
+    /// Returns `false` for exactly the 10 "formats" variants (Json, Yaml,
+    /// Toml, Xml, Html, Css, Bash, Latex, Log, Markdown) and `true` for the
+    /// 18 source-code languages.
     ///
     /// Rationale: the formats variants are first-class for **per-file**
     /// analysis — `Language::from_path` resolves them, `tldr structure
@@ -692,6 +709,13 @@ impl Language {
     /// the code the logs came from. Fully supported per-file (native scanner,
     /// see `ast::logs`).
     ///
+    /// Markdown joins the formats block (markdown batch, 2026-09):
+    /// `.md`/`.markdown` files are documentation — every code project ships
+    /// them regardless of the implementation language (same false-dominance
+    /// argument as the other formats). Fully supported per-file: `tldr
+    /// structure README.md` reports `language: "markdown"` and surfaces
+    /// headings/code blocks/tables as elements.
+    ///
     /// Sites that MUST consult this predicate (kept consistent):
     /// - `Language::from_directory` Stage-1 extension tally (project
     ///   dominant-language detection),
@@ -710,6 +734,7 @@ impl Language {
                 | Language::Bash
                 | Language::Latex
                 | Language::Log
+                | Language::Markdown
         )
     }
 
@@ -743,6 +768,7 @@ impl Language {
             Language::Bash,
             Language::Latex,
             Language::Log,
+            Language::Markdown,
         ]
     }
 }
@@ -3542,13 +3568,14 @@ mod tests {
     }
 
     #[test]
-    fn test_language_all_27_variants() {
+    fn test_language_all_28_variants() {
         // formats-extension-v1 (2025-09): 18 source languages + 7
         // tree-sitter data/config/markup formats (JSON, YAML, TOML, XML/SVG,
         // HTML, CSS, Bash) = 25; latex-formats-v1 (2025-11) added LaTeX
         // (.tex/.sty/.cls) = 26; the log batch added Log (.log, native
-        // scanner, no tree-sitter grammar) = 27.
-        assert_eq!(Language::all().len(), 27);
+        // scanner, no tree-sitter grammar) = 27; the markdown batch added
+        // Markdown (.md/.markdown, tree-sitter-md block grammar) = 28.
+        assert_eq!(Language::all().len(), 28);
     }
 
     #[test]

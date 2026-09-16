@@ -60,7 +60,8 @@ pub fn extract_imports_from_tree(
         Language::Kotlin => extract_kotlin_imports(&root, source),
         Language::Swift => extract_swift_imports(&root, source),
         // Formats extension: JSON/YAML/TOML/XML(SVG)/HTML/CSS/Bash have no
-        // import statements in the source-code sense; log entries neither.
+        // import statements in the source-code sense; log entries neither;
+        // markdown documents neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -69,7 +70,8 @@ pub fn extract_imports_from_tree(
         | Language::Css
         | Language::Bash
         | Language::Latex
-        | Language::Log => Vec::new(),
+        | Language::Log
+        | Language::Markdown => Vec::new(),
     };
 
     Ok(imports)
