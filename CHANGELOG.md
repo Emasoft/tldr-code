@@ -347,6 +347,20 @@
   resolve the language from the file's extension first, so `config.json` reports `json` instead of
   falling through to the parent directory's dominant language (which now excludes the formats) or
   Python.
+- **Large-file byte-accuracy e2e suite for the formats tranche** (`crates/tldr-core/tests/large_file_accuracy_v1.rs`).
+  One `#[ignore]`-gated test per format — json, yaml, toml, xml, html, css, bash, latex, markdown,
+  csv, tsv, log, text — each assembling a ≥100 MiB fixture from a small deterministic unit and
+  asserting that probed definition bodies reproduce the generated source **byte for byte**, through
+  both the element byte spans (`source[byte_start..byte_end]` must BE the element) and the
+  line-span path (`line_start..line_end` sliced over a line-starts table minus one trailing `\n`),
+  plus per-fixture invariants: `files_skipped == 0`, no warnings, the size-policy class
+  (`u64::MAX` for the streamed `.log`/`.csv`/`.tsv`, `u32::MAX` otherwise) and a definition-count
+  floor. The whole generated source is kept in memory and sliced directly, so a span bug can never
+  hide behind a re-read. Opt-in, sequential (one fixture's peak RAM at a time):
+  `timeout 3600 cargo test -p tldr-core --test large_file_accuracy_v1 --release -- --ignored --test-threads=1`
+  (default `cargo test` runs must stay `13 ignored; 0 failed`). Twelve of the thirteen run green
+  (~220 s total); the yaml test is gated on an engine defect the suite discovered — pinned in the
+  test file.
 
 ## v0.4.1-fork.1 — 2026-09-05
 
