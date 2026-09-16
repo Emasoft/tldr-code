@@ -11,7 +11,7 @@ TLDR (Token-efficient Language-agnostic Data Representation) is a Rust-based cod
 
 - **Token Efficiency**: 95% token savings vs raw source code
 - **5-Layer Analysis Stack**: AST → Call Graph → CFG → DFG → PDG
-- **Multi-language Support**: 18 languages via tree-sitter
+- **Multi-language Support**: 25 languages via tree-sitter
 - **Fast Static Analysis**: No LSP required, syntactic analysis only
 
 ### Design Philosophy
@@ -261,6 +261,7 @@ Source Code
 | 2 | TypeScript, Rust, Ruby, Java | Full support |
 | 3 | C#, Kotlin, Swift | Full support |
 | 4 | Scala, PHP, Lua, Luau, Elixir, OCaml | Full support |
+| formats | JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash | Parsed via tree-sitter; basic structural extraction (no functions/classes); excluded from project-language detection |
 
 ---
 

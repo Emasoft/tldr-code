@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`tldr explain --depth` actually scopes the project-callers traversal now.** It was declared in
+  `--help` but ignored — the graph walk used a hard-coded depth 1, so `--depth 3` silently behaved
+  like `--depth 1`.
+- **`tldr explain` scoping flags.** `--scope <dir>` overrides project-root detection
+  (existence-checked, fails fast on a bad path) and `--no-callers` skips caller enrichment
+  entirely — the escape hatch when a ~0.1 s single-file explain balloons to minutes on a huge
+  repo or vendor tree. Under `--no-callers` the `callers` array stays present but empty, so
+  schema consumers don't break.
+
+### Added
+
+- **7 new formats parsed with tree-sitter** — JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash —
+  bringing the total to 25 languages. They are first-class for per-file analysis
+  (`tldr structure app.config.toml`), but deliberately excluded from project-language *detection*
+  and health's "supported files" gate (`Language::is_project_language_signal`): a directory of
+  config files must never fabricate a dominant language, and a bare `package.json` in a monorepo
+  root must not outvote real source files.
+- **JSONL/NDJSON row-streaming through `tldr structure`.** `.jsonl`/`.ndjson` files are parsed
+  row-by-row (1 MB buffered reads, one row in memory at a time, per-row tree-sitter-json) and a
+  single bad row never aborts the file. The report carries a `jsonl_stream` summary (rows
+  valid/invalid/blank, first invalid row + error, bytes processed, parse ms), so a malformed line
+  is a data point, not a failure. Size caps do not apply to them — streamed means size is never a
+  memory risk.
+- **Size-cap stretch.** Max file size 10 MB → 2 GiB, autogen cap 512 KB → 64 MiB, parse cap
+  5 MB → 4 GiB — which also kills the old (5, 10] MB dual-cap hard-fail gap — and `.jsonl` is
+  uncapped. The daemon warm pass's cap is injectable via `DaemonConfig.max_file_size` (default
+  unchanged).
+- **Single-file language resolution.** `tldr structure <file>` and `tldr search <root> <file>`
+  resolve the language from the file's extension first, so `config.json` reports `json` instead of
+  falling through to the parent directory's dominant language (which now excludes the formats) or
+  Python.
+
 ## v0.4.1-fork.1 — 2026-09-05
 
 Fork release (Emasoft/tldr-code). The `-fork.N` pre-release tag keeps `tldr --version`

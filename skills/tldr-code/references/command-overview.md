@@ -6,7 +6,7 @@ Token-efficient code analysis for LLMs. 40+ commands across AST, call graph, dat
 
 LLMs waste context on raw source dumps. tldr extracts the signal: function signatures, call graphs, taint flows, complexity metrics, dead code — as structured JSON that fits in a fraction of the tokens.
 
-**18 languages**: Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, Kotlin, Swift, C#, Scala, PHP, Lua, Luau, Elixir, OCaml.
+**25 languages**: Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, Kotlin, Swift, C#, Scala, PHP, Lua, Luau, Elixir, OCaml, JSON, YAML, TOML, XML, HTML, CSS, Bash.
 
 ## Installation
 
