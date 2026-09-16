@@ -143,6 +143,24 @@ pub struct SecureArgs {
     /// precedent (opt-in for noisy categories).
     #[arg(long)]
     pub include_tests: bool,
+
+    /// Test-only oversize-cap injection seam (NOT a CLI flag).
+    ///
+    /// Mirrors the daemon warm precedent (`DaemonConfig::max_file_size`,
+    /// daemon-warm-v2): `None` — the production default — keeps secure's
+    /// oversize-skip decision on the shared per-path size policy in
+    /// `tldr_core::fs::oversize` (2 GiB for normal source files, 64 MiB
+    /// for `.d.ts`/`.min.*`/`.bundle.*` auto-generated artefacts,
+    /// unlimited for streamed `.jsonl`/`.ndjson`), byte-identical to the
+    /// pre-seam behaviour. When set, `partition_utf8_clean` skips every
+    /// file larger than this flat cap via `check_size_with_override`
+    /// regardless of category, so tests can exercise the oversize-skip
+    /// path end-to-end with KB-sized fixtures instead of multi-megabyte
+    /// ones. `#[arg(skip)]` keeps it out of the CLI surface (`--help`
+    /// unchanged); `SecureArgs` is never serialized, so no serde attrs
+    /// are needed.
+    #[arg(skip)]
+    pub max_file_size_override: Option<u64>,
 }
 
 impl SecureArgs {
@@ -244,7 +262,11 @@ pub fn run(args: SecureArgs, format: OutputFormat) -> anyhow::Result<()> {
     // `pm.luau`, `sort.luau`) intentionally embeds raw 0xFF/0xFE bytes —
     // pre-fix `tldr secure --lang luau /tmp/repos/luau-luau` aborted with
     // `Error: stream did not contain valid UTF-8` on the first such file.
-    let (files, warnings, files_skipped) = partition_utf8_clean(&candidate_files);
+    // SECURE-OVERSIZE-SEAM-V1: thread the test-only cap override (None in
+    // production) into the skip decision; mirrors the daemon warm
+    // precedent (`check_size_with_override(path, config.max_file_size)`).
+    let (files, warnings, files_skipped) =
+        partition_utf8_clean(&candidate_files, args.max_file_size_override);
 
     // Run sub-analyses and collect findings
     let mut all_findings = Vec::new();
@@ -400,7 +422,7 @@ fn is_rust_file(path: &std::path::Path) -> bool {
 /// Two-stage filter:
 ///
 /// 1. **Oversize / auto-gen pre-filter** (SECURE-FASTPATH-V1, M-Z8):
-///    defer to `tldr_core::fs::oversize::check_size` before reading the
+///    defer to `tldr_core::fs::oversize` before reading the
 ///    file. The 6 sub-analyses each iterate this file set and read the
 ///    full content into memory; without a cap, a 2.3 MB
 ///    `dom.generated.d.ts` (TypeScript DOM-gen baselines) dominates
@@ -433,8 +455,21 @@ fn is_rust_file(path: &std::path::Path) -> bool {
 /// Genuine I/O errors (file vanished mid-scan) drop the file with a
 /// warning but are NOT counted as a skip — the `secure` walk is
 /// best-effort and one transient failure should not lose the rest.
-fn partition_utf8_clean(candidates: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>, u32) {
-    use tldr_core::fs::oversize::{check_size, format_oversize_warning, SizeCheck};
+///
+/// SECURE-OVERSIZE-SEAM-V1: `max_file_size_override` is the test-only
+/// cap injection from `SecureArgs::max_file_size_override` (mirrors
+/// `DaemonConfig::max_file_size` in the daemon warm pass). `None` —
+/// the production default — routes through the unchanged per-path
+/// policy (`check_size`); `Some(cap)` replaces it with a flat cap via
+/// `check_size_with_override`, the single shared decision point, so
+/// the injected cap and the default policy can never diverge.
+fn partition_utf8_clean(
+    candidates: &[PathBuf],
+    max_file_size_override: Option<u64>,
+) -> (Vec<PathBuf>, Vec<String>, u32) {
+    use tldr_core::fs::oversize::{
+        check_size_with_override, format_oversize_warning, SizeCheck,
+    };
 
     let mut clean: Vec<PathBuf> = Vec::with_capacity(candidates.len());
     let mut warnings: Vec<String> = Vec::new();
@@ -449,11 +484,15 @@ fn partition_utf8_clean(candidates: &[PathBuf]) -> (Vec<PathBuf>, Vec<String>, u
         // (which then falls through to the existing read path and is
         // handled there).
         // WithinLimit | Unknown: proceed to the UTF-8 read below.
+        // SECURE-OVERSIZE-SEAM-V1: `check_size_with_override` with the
+        // test-only cap (`None` in production = unchanged per-path
+        // policy) is the single shared skip decision, identical to the
+        // daemon warm hook.
         if let SizeCheck::Oversize {
             size_bytes,
             max_bytes,
             is_autogen,
-        } = check_size(file)
+        } = check_size_with_override(file, max_file_size_override)
         {
             skipped += 1;
             warnings.push(format_oversize_warning(file, size_bytes, max_bytes, is_autogen));
@@ -1151,6 +1190,7 @@ fn format_text_report(report: &SecureReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tldr_core::fs::oversize::MAX_AUTOGEN_FILE_SIZE_BYTES;
     use tempfile::TempDir;
     use tree_sitter::Parser;
 
@@ -1171,6 +1211,8 @@ mod tests {
             output: None,
             no_default_ignore: false,
             include_tests: false,
+            // Production default: no cap injection, per-path policy.
+            max_file_size_override: None,
         };
         assert!(!args.quick);
         assert!(!args.include_tests);
@@ -1446,38 +1488,52 @@ fn risky(user: &str) {
     /// times (once per sub-analysis) and parsed 6 times into a
     /// tree-sitter AST. The fastpath skips it on the FIRST stat call.
     ///
-    /// Test fixture: a synthetic `.d.ts` file padded over the auto-gen
-    /// cap (`MAX_AUTOGEN_FILE_SIZE_BYTES`, 64 MiB). Asserts:
-    /// 1. The file is dropped from the kept set.
-    /// 2. `files_skipped` is incremented.
-    /// 3. The warning carries the documented oversize shape so
-    ///    consumers can distinguish oversize from UTF-8 skips.
+    /// SECURE-OVERSIZE-SEAM-V1: the per-path caps (2 GiB source / 64 MiB
+    /// auto-gen) are far too high to hit with a reasonable fixture, so
+    /// this test injects a flat 1 KB cap through
+    /// `SecureArgs::max_file_size_override` (a test hook; `None` in
+    /// production keeps the per-path policy) and asserts the same skip
+    /// behaviour on a 4 KB fixture — exactly the daemon-warm precedent
+    /// (`test_warm_skips_oversize_files` in daemon.rs). Asserts:
+    /// 1. Exit behavior: `secure::run` succeeds (no abort on skip).
+    /// 2. `files_skipped` counts the oversize drop (both via the direct
+    ///    partition decision and via the end-to-end report JSON).
+    /// 3. The warning carries the documented oversize shape ("exceeds N
+    ///    cap for auto-generated/minified files") so consumers can
+    ///    distinguish oversize from UTF-8 skips.
+    /// 4. Findings shape: the oversize file contributes no findings and
+    ///    the partition continues past the skip (the small in-policy
+    ///    file is preserved).
     #[test]
     fn test_secure_skips_oversize_files() {
-        use tldr_core::fs::oversize::MAX_AUTOGEN_FILE_SIZE_BYTES;
-
         let temp = TempDir::new().unwrap();
 
-        // Padded content that exceeds the auto-gen cap. Use a `.d.ts`
-        // suffix so the auto-gen cap (64 MiB) applies (rather than the
-        // 2 GiB source-file cap, which would force a multi-GiB fixture).
-        let mut padded = String::with_capacity(MAX_AUTOGEN_FILE_SIZE_BYTES as usize + 1024);
+        // Padded `.d.ts` fixture that exceeds the INJECTED 1 KB cap. It
+        // stays far below every per-path policy cap (2 GiB source /
+        // 64 MiB auto-gen), so only the injected override can be what
+        // skips it — the assertion below pins that invariant.
+        const INJECTED_CAP: u64 = 1024;
+        let mut padded = String::with_capacity(4 * 1024 + 128);
         padded.push_str("export type Generated = {\n");
         // A line that is harmless but heavy enough to cross the cap.
-        let line = "  member_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx: string;\n";
-        while (padded.len() as u64) < MAX_AUTOGEN_FILE_SIZE_BYTES + 1024 {
+        let line = "  member_xxxxxxxxxxxxxxxxxxxx: string;\n";
+        while (padded.len() as u64) < 4 * 1024 {
             padded.push_str(line);
         }
         padded.push_str("};\n");
         let big = create_test_file(&temp, "dom.generated.d.ts", &padded);
 
-        // Sanity: confirm we actually exceeded the cap (otherwise the
-        // test would be a no-op false-positive).
+        // Sanity: the fixture sits strictly between the injected cap and
+        // the per-path auto-gen cap (otherwise the test would be a no-op
+        // false-positive — skipped by the default policy or not skipped
+        // at all).
         let size = std::fs::metadata(&big).unwrap().len();
         assert!(
-            size > MAX_AUTOGEN_FILE_SIZE_BYTES,
-            "fixture must exceed auto-gen cap (size={}, cap={})",
+            size > INJECTED_CAP && size < MAX_AUTOGEN_FILE_SIZE_BYTES,
+            "fixture must exceed the injected cap but stay below the \
+             default auto-gen cap (size={}, injected={}, autogen={})",
             size,
+            INJECTED_CAP,
             MAX_AUTOGEN_FILE_SIZE_BYTES
         );
 
@@ -1490,10 +1546,11 @@ fn risky(user: &str) {
             "export function f(x: string): string { return x; }\n",
         );
 
+        // ---- Phase 1: the direct skip decision with the injected cap.
         let (kept, warnings, files_skipped) =
-            partition_utf8_clean(&[big.clone(), small.clone()]);
+            partition_utf8_clean(&[big.clone(), small.clone()], Some(INJECTED_CAP));
 
-        // 1. Oversize file is dropped from the kept set.
+        // 4a. Oversize file is dropped from the kept set.
         assert!(
             !kept.iter().any(|p| p == &big),
             "oversize .d.ts must be dropped from kept set: kept={:?}",
@@ -1506,15 +1563,15 @@ fn risky(user: &str) {
             kept
         );
 
-        // 2. files_skipped reflects the oversize drop.
+        // 4b. files_skipped reflects the oversize drop.
         assert_eq!(
             files_skipped, 1,
             "files_skipped must count the oversize drop (got {})",
             files_skipped
         );
 
-        // 3. Warning carries the documented oversize shape, distinct
-        //    from the UTF-8 "invalid UTF-8 at byte" shape.
+        // 4c. Warning carries the documented oversize shape, distinct
+        //     from the UTF-8 "invalid UTF-8 at byte" shape.
         let oversize_warning = warnings
             .iter()
             .find(|w| w.contains("dom.generated.d.ts"))
@@ -1526,6 +1583,73 @@ fn risky(user: &str) {
             "oversize warning must use the format_oversize_warning shape \
              (got: {})",
             oversize_warning
+        );
+
+        // ---- Phase 2: end-to-end through the SecureArgs seam.
+        // `max_file_size_override: Some(1024)` must thread through
+        // `run` -> `partition_utf8_clean` -> `check_size_with_override`,
+        // and the run must complete with the skip counted and reported.
+        let out_dir = TempDir::new().unwrap();
+        let out_path = out_dir.path().join("report.json");
+        let args = SecureArgs {
+            path: temp.path().to_path_buf(),
+            lang: Some(Language::TypeScript),
+            detail: None,
+            // Quick mode: skip the contract/behavioral/mutability passes;
+            // the oversize-skip assertion only needs the partition step.
+            quick: true,
+            output: Some(out_path.clone()),
+            no_default_ignore: false,
+            include_tests: false,
+            max_file_size_override: Some(INJECTED_CAP),
+        };
+        run(args, OutputFormat::Json).expect("secure::run must succeed (skip is not fatal)");
+
+        let raw = fs::read_to_string(&out_path).expect("report file must exist");
+        let report: Value = serde_json::from_str(&raw).expect("report must be valid JSON");
+
+        // 2 (end-to-end). files_skipped surfaces in the report.
+        assert_eq!(
+            report["files_skipped"].as_u64(),
+            Some(1),
+            "report must count exactly the oversize skip, got: {}",
+            report["files_skipped"]
+        );
+
+        // 3 (end-to-end). The skip reason carries the documented shape.
+        let report_warnings = report["warnings"].as_array().cloned().unwrap_or_default();
+        let reported = report_warnings
+            .iter()
+            .find(|w| w.as_str().is_some_and(|s| s.contains("dom.generated.d.ts")))
+            .and_then(|w| w.as_str())
+            .expect("report warnings must mention the oversize file");
+        assert!(
+            reported.contains("exceeds")
+                && reported.contains("cap for")
+                && reported.contains("auto-generated/minified files"),
+            "report warning must use the format_oversize_warning shape (got: {})",
+            reported
+        );
+        // The small file produced no skip warning.
+        assert!(
+            !report_warnings
+                .iter()
+                .any(|w| w.as_str().is_some_and(|s| s.contains("ok.ts"))),
+            "in-policy file must not be skipped/warned, got: {:?}",
+            report_warnings
+        );
+
+        // 4 (end-to-end). Findings shape: a findings array in which the
+        // oversize file contributes nothing.
+        let findings = report["findings"].as_array().expect("findings array");
+        assert!(
+            findings
+                .iter()
+                .all(|f| !f["file"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("dom.generated.d.ts"))),
+            "oversize file must contribute no findings, got: {:?}",
+            findings
         );
     }
 
@@ -1553,6 +1677,8 @@ fn risky(user: &str) {
             output: Some(out_path.clone()),
             no_default_ignore: false,
             include_tests,
+            // Production default: no cap injection, per-path policy.
+            max_file_size_override: None,
         };
         run(args, OutputFormat::Json).expect("secure::run should succeed");
         let raw = fs::read_to_string(&out_path).expect("report file must exist");
