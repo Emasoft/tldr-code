@@ -425,6 +425,32 @@ pub fn format_structure_text(structure: &tldr_core::CodeStructure) -> String {
             }
         }
 
+        // element-extraction-v1 (Phase E): data/config formats surface their
+        // structural elements as definition kinds (see `ast::elements` for the
+        // taxonomy). Text mode lists them here so the human view agrees with
+        // the JSON `definitions` array. Like every other section in this
+        // formatter (none of which applies a cap), it renders all rows —
+        // `--max-results` caps FILES upstream, not rows within a file.
+        let elements: Vec<&tldr_core::types::DefinitionInfo> = file
+            .definitions
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.kind.as_str(),
+                    "key" | "section" | "document" | "element" | "selector" | "at-rule"
+                )
+            })
+            .collect();
+        if !elements.is_empty() {
+            output.push_str("  Elements:\n");
+            for e in elements {
+                output.push_str(&format!(
+                    "    - {} {} (L{}-L{})\n",
+                    e.kind, e.name, e.line_start, e.line_end
+                ));
+            }
+        }
+
         output.push('\n');
     }
 

@@ -1378,7 +1378,10 @@ pub struct DefinitionInfo {
     pub name: String,
     /// Kind: "function", "method", "class", "struct", "call" (an anonymous callable passed to a
     /// call — `suiteSetup(async function () {…})`, `it "x" do … end` — named after its callee;
-    /// the line range spans the whole call, which is the unit that can be read or replaced).
+    /// the line range spans the whole call, which is the unit that can be read or replaced),
+    /// plus the format element kinds from `ast::elements` (element-extraction-v1):
+    /// "key" (JSON/YAML/TOML object property or key/value pair), "section" (TOML
+    /// `[table.path]`/`[[table.path]]` header), "document" (YAML `---` document).
     /// The authoritative full set is the whitelist in `tests/bench_l1_multilang.rs`.
     pub kind: String,
     /// Start line (1-indexed)
@@ -1399,6 +1402,25 @@ pub struct DefinitionInfo {
     /// unaffected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub definition_line: Option<u32>,
+    /// Byte offset of the element's FIRST byte in the source (0-indexed).
+    ///
+    /// element-extraction-v1 (Phase E): populated only by the format element
+    /// extractors (`ast::elements`) — JSON/YAML/TOML keys, TOML sections, YAML
+    /// documents — where the byte range IS the addressable region (a fastedit
+    /// target). Code-language definitions keep this `None` for now; populating
+    /// them comes later.
+    ///
+    /// Additive field: skipped in JSON when absent, mirroring
+    /// `definition_line`, so caches written before it existed and schema
+    /// consumers that pin the definition key set are unaffected.
+    /// `byte_end` is EXCLUSIVE: `source[byte_start..byte_end]` is the element.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byte_start: Option<u64>,
+    /// Byte offset ONE PAST the element's last byte (exclusive end, 0-indexed)
+    /// — see `byte_start`. Always `Some` when `byte_start` is `Some`, and
+    /// `> byte_start` (elements are never empty).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byte_end: Option<u64>,
     /// Signature line (e.g., "pub fn foo(x: i32) -> bool")
     pub signature: String,
 }

@@ -277,7 +277,27 @@ fn extract_file_structure(
 
     let classes = extract_classes(&tree, &source, language);
     let imports = extract_imports_from_tree(&tree, &source, language)?;
-    let definitions = extract_definitions(&tree, &source, language);
+    let mut definitions = extract_definitions(&tree, &source, language);
+
+    // element-extraction-v1 (Phase E): formats carry no function/class
+    // symbols, so `extract_definitions` comes back EMPTY for JSON/YAML/TOML —
+    // and for Bash it misses the one thing bash actually defines. Append the
+    // element-level definitions (kind = key / section / document / function,
+    // see `ast::elements` for the taxonomy) so structure, the daemon and every
+    // downstream consumer receive them through the same `definitions` array.
+    // The JSONL early-return above is untouched: streamed rows never reach
+    // this path.
+    //
+    // Bash nuance: the language-agnostic `classify_definition_node` already
+    // classifies bash `function_definition` nodes as function-like, so the
+    // legacy walk emits them WITHOUT byte spans. The element engine is the
+    // canonical emitter for format-tier languages, so drop those legacy
+    // copies before appending the element versions (same kind/name/span,
+    // plus byte_start/byte_end) — bash never appears twice.
+    if language == Language::Bash {
+        definitions.retain(|d| d.kind != "function");
+    }
+    definitions.extend(super::elements::extract_elements(language, &tree, &source));
 
     // schema-unification-v1 BUG-21: derive `method_infos` from `definitions`
     // (which already carry line + signature for kind="method" entries) so
@@ -2058,6 +2078,10 @@ fn collect_definitions(
                 line_start,
                 line_end,
                 definition_line: Some(definition_line),
+                // element-extraction-v1: byte spans are format-element-only
+                // for now (`ast::elements`); code languages keep None.
+                byte_start: None,
+                byte_end: None,
                 signature,
             });
         }
@@ -2420,6 +2444,8 @@ fn make_constant_def(node: Node, name: String, source: &str) -> DefinitionInfo {
         // Constants carry no attached-trivia extension, so the declaration
         // line equals the (unextended) span start.
         definition_line: Some(line_start),
+        byte_start: None,
+        byte_end: None,
         signature,
     }
 }
@@ -2507,6 +2533,8 @@ fn try_field_definition(
                             line_start,
                             line_end,
                             definition_line: Some(definition_line),
+                            byte_start: None,
+                            byte_end: None,
                             signature: signature.clone(),
                         });
                     }
@@ -2528,6 +2556,8 @@ fn try_field_definition(
                                     line_start,
                                     line_end,
                                     definition_line: Some(definition_line),
+                                    byte_start: None,
+                                    byte_end: None,
                                     signature: signature.clone(),
                                 });
                             }
@@ -2552,6 +2582,8 @@ fn try_field_definition(
                                     line_start,
                                     line_end,
                                     definition_line: Some(definition_line),
+                                    byte_start: None,
+                                    byte_end: None,
                                     signature: signature.clone(),
                                 });
                             }
@@ -2588,6 +2620,8 @@ fn try_field_definition(
                     line_start,
                     line_end,
                     definition_line: Some(definition_line),
+                    byte_start: None,
+                    byte_end: None,
                     signature,
                 });
             }
@@ -2923,6 +2957,8 @@ pub(crate) fn try_callback_call_definition(
         line_end: call.end_position().row as u32 + 1,
         // Callback calls carry no attached-trivia extension.
         definition_line: Some(call.start_position().row as u32 + 1),
+        byte_start: None,
+        byte_end: None,
         signature: format!("{callee}(…)"),
     })
 }
@@ -2974,6 +3010,8 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
                     // The def call node starts at the `def` keyword itself —
                     // no modifiers — so pre-extension == the raw call row.
                     definition_line: Some(node.start_position().row as u32 + 1),
+                    byte_start: None,
+                    byte_end: None,
                     signature,
                 });
             }
@@ -2993,6 +3031,8 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
                     line_start,
                     line_end,
                     definition_line: Some(node.start_position().row as u32 + 1),
+                    byte_start: None,
+                    byte_end: None,
                     signature,
                 });
             }

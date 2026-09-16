@@ -12,6 +12,10 @@ fn test_definition_info_serde_roundtrip() {
         // line). Round-trips through serde when present, absent from JSON
         // when `None` (skip_serializing_if).
         definition_line: Some(1),
+        // element-extraction-v1: additive byte spans — Some for format
+        // elements (`ast::elements`), None for code languages for now.
+        byte_start: None,
+        byte_end: None,
         signature: "pub fn foo(x: i32) -> bool".to_string(),
     };
     let json = serde_json::to_string(&def).unwrap();
@@ -21,6 +25,48 @@ fn test_definition_info_serde_roundtrip() {
     );
     let back: DefinitionInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(def, back);
+}
+
+#[test]
+fn test_definition_info_byte_spans_additive_serde() {
+    // element-extraction-v1: the additive byte_start/byte_end pair follows the
+    // jsonl_stream/definition_line rule — serialize when present, omit when
+    // None, and absent keys must deserialize back to None.
+    let element = DefinitionInfo {
+        name: "settings".to_string(),
+        kind: "key".to_string(),
+        line_start: 1,
+        line_end: 1,
+        definition_line: None,
+        byte_start: Some(2),
+        byte_end: Some(13),
+        signature: "\"settings\": {".to_string(),
+    };
+    let json = serde_json::to_string(&element).unwrap();
+    assert!(
+        json.contains("\"byte_start\":2") && json.contains("\"byte_end\":13"),
+        "byte spans must serialize when present, got {json}"
+    );
+    let back: DefinitionInfo = serde_json::from_str(&json).unwrap();
+    assert_eq!(element, back);
+
+    let code_fn = DefinitionInfo {
+        name: "foo".to_string(),
+        kind: "function".to_string(),
+        line_start: 1,
+        line_end: 1,
+        definition_line: None,
+        byte_start: None,
+        byte_end: None,
+        signature: String::new(),
+    };
+    let json = serde_json::to_string(&code_fn).unwrap();
+    assert!(
+        !json.contains("byte_start") && !json.contains("byte_end"),
+        "absent byte spans must be omitted from JSON (skip_serializing_if), got {json}"
+    );
+    let back: DefinitionInfo = serde_json::from_str(&json).unwrap();
+    assert_eq!(code_fn, back);
 }
 
 #[test]

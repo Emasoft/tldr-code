@@ -15,6 +15,18 @@
 
 ### Added
 
+- **Element-level extraction for JSON/YAML/TOML (+ Bash functions) via `tldr structure`.** The
+  formats previously reported only empty `definitions` arrays; a new element engine
+  (`tldr-core/src/ast/elements.rs`) now walks the same tree-sitter trees and emits structural
+  elements as definitions, so structure, the daemon, and every downstream consumer see them
+  automatically: JSON object properties as `kind: "key"` (any nesting depth; array items are not
+  elements), TOML `[table.path]`/`[[table.path]]` headers as `"section"` plus every key/value pair
+  as `"key"`, YAML `---` documents as `"document"` (named `document-N`) plus each document's
+  top-level keys as `"key"`, and Bash `function_definition`s as real `"function"` entries. Names
+  are unquoted, output is in source order, and every element carries exact line spans — plus new
+  additive `byte_start`/`byte_end` fields (omitted when absent, so existing JSON consumers and
+  caches are unaffected) that address the element's bytes directly. Text mode lists the new kinds
+  under an `Elements:` section. XML/HTML/CSS keep their empty baseline until the next batch.
 - **7 new formats parsed with tree-sitter** — JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash —
   bringing the total to 25 languages. They are first-class for per-file analysis
   (`tldr structure app.config.toml`), but deliberately excluded from project-language *detection*

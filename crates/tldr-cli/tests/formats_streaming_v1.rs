@@ -204,6 +204,23 @@ fn structure_on_json_reports_language() {
     assert_eq!(json["language"], "json");
     // jsonl_stream stays absent for a non-JSONL file (additive-field rule).
     assert!(json.get("jsonl_stream").is_none());
+    // element-extraction-v1: JSON surfaces its object properties as element
+    // definitions (kind="key") through the same definitions array. The nested
+    // key is its own definition; the array-less fixture pins 3 keys total.
+    let defs = json["files"][0]["definitions"]
+        .as_array()
+        .expect("definitions array");
+    let kinds: Vec<&str> = defs.iter().filter_map(|d| d["kind"].as_str()).collect();
+    assert_eq!(
+        kinds,
+        vec!["key", "key", "key"],
+        "expected key:nested, key:ok, key:name elements, got {defs:?}"
+    );
+    assert!(
+        defs.iter()
+            .all(|d| d["byte_start"].is_u64() && d["byte_end"].is_u64()),
+        "format elements must carry byte_start/byte_end, got {defs:?}"
+    );
 }
 
 /// (4b) Sibling pin for the whole formats class: a lone `.toml` file reports
@@ -226,6 +243,50 @@ fn structure_on_toml_reports_language() {
     assert_eq!(json["language"], "toml");
     // jsonl_stream stays absent for a non-JSONL file (additive-field rule).
     assert!(json.get("jsonl_stream").is_none());
+    // element-extraction-v1: TOML sections + keys ride definitions too.
+    let defs = json["files"][0]["definitions"]
+        .as_array()
+        .expect("definitions array");
+    let kinds: Vec<&str> = defs.iter().filter_map(|d| d["kind"].as_str()).collect();
+    assert_eq!(
+        kinds,
+        vec!["section", "key", "key"],
+        "expected section:package + key:name + key:version elements, got {defs:?}"
+    );
+}
+
+/// (4c) YAML sibling: element kinds flow through the CLI for yaml as well
+/// (document + top-level keys), completing the json/yaml/toml trio of the
+/// element-extraction-v1 batch.
+#[test]
+fn structure_on_yaml_reports_language() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.yaml");
+    fs::write(&path, "name: tldr\nmode: fast\n").expect("write yaml");
+
+    let output = tldr_cmd()
+        .args(["structure", path.to_str().unwrap(), "-f", "json"])
+        .output()
+        .expect("run tldr structure on yaml");
+
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    assert_eq!(json["language"], "yaml");
+    assert!(json.get("jsonl_stream").is_none());
+    let defs = json["files"][0]["definitions"]
+        .as_array()
+        .expect("definitions array");
+    let kinds: Vec<&str> = defs.iter().filter_map(|d| d["kind"].as_str()).collect();
+    assert_eq!(
+        kinds,
+        vec!["document", "key", "key"],
+        "expected document-1 + key:name + key:mode elements, got {defs:?}"
+    );
+    assert!(
+        defs.iter()
+            .any(|d| d["name"] == "document-1" && d["kind"] == "document"),
+        "the yaml document element must be named document-1, got {defs:?}"
+    );
 }
 
 /// (5) `tldr order` on an out-of-MVP format answers instantly (no full-file

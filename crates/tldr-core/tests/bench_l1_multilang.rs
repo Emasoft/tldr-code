@@ -840,6 +840,14 @@ mod structure_tests {
             "field",
             // anonymous-callback-definitions-v1: a callback region named after its callee.
             "call",
+            // element-extraction-v1 (Phase E): format element kinds from
+            // `ast::elements` — JSON/YAML/TOML keys, TOML sections, YAML
+            // documents. This test's fixtures are code languages only, so
+            // these kinds never occur here; the list is kept authoritative
+            // for the whole `definitions` channel.
+            "key",
+            "section",
+            "document",
         ];
         let cases: Vec<(&str, Language)> = vec![
             ("test_python.py", Language::Python),

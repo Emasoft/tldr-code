@@ -1033,28 +1033,80 @@ let lone a = a
 }
 
 // =============================================================================
-// Formats sanity — the element-engine phase needs this pinned baseline: structural
-// extraction on data/config/markup formats must return EMPTY definitions.
+// Formats — element-extraction-v1 (Phase E) baseline.
+//
+// json/yaml/toml now emit ELEMENT definitions (kind = key / section /
+// document; bash emits real `function` definitions) via `ast::elements`,
+// appended inside `extract_file_structure`. Their exact spans live in the
+// dedicated `element_extraction_v1` suite; here we pin only the transition:
+// the four formats carry their element kinds, while xml/html/css keep the
+// EMPTY-definitions baseline until their element batch (E2).
 // =============================================================================
 
 #[test]
-fn formats_return_empty_definitions() {
-    let cases: &[(&str, &str, Language)] = &[
+fn json_yaml_toml_bash_definitions_are_elements() {
+    let cases: &[(&str, &str, Language, &[&str])] = &[
         (
             "pinned.toml",
             "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
             Language::Toml,
+            &["section", "key", "key"],
         ),
         (
             "pinned.json",
             "{\"name\": \"demo\", \"items\": [1, 2, 3]}\n",
             Language::Json,
+            &["key", "key"],
         ),
         (
             "pinned.yaml",
             "name: demo\nitems:\n  - one\n  - two\n",
             Language::Yaml,
+            &["document", "key", "key"],
         ),
+        (
+            "pinned.sh",
+            "build() {\n  echo building\n}\n",
+            Language::Bash,
+            &["function"],
+        ),
+    ];
+
+    for (filename, content, language, expected_kinds) in cases {
+        let dir =
+            TempDir::new().unwrap_or_else(|e| panic!("symbol-fidelity-v1: tempdir failed: {e}"));
+        let path = dir.path().join(filename);
+        fs::write(&path, content)
+            .unwrap_or_else(|e| panic!("symbol-fidelity-v1: write {filename} failed: {e}"));
+        let structure = get_code_structure(&path, *language, 0, None)
+            .unwrap_or_else(|e| panic!("symbol-fidelity-v1: {filename} extraction failed: {e}"));
+        assert_eq!(
+            structure.files.len(),
+            1,
+            "symbol-fidelity-v1 [{filename}]: expected exactly one FileStructure"
+        );
+        let defs = &structure.files[0].definitions;
+        let kinds: Vec<&str> = defs.iter().map(|d| d.kind.as_str()).collect();
+        assert_eq!(
+            kinds, *expected_kinds,
+            "symbol-fidelity-v1 [{filename}]: expected element-kind sequence (source order), \
+             got {defs:#?}"
+        );
+        // Element byte spans are populated (code languages keep None).
+        for d in defs {
+            assert!(
+                d.byte_start.is_some() && d.byte_end.is_some(),
+                "symbol-fidelity-v1 [{filename}]: element {}:`{}` must carry byte spans",
+                d.kind,
+                d.name
+            );
+        }
+    }
+}
+
+#[test]
+fn xml_html_css_still_return_empty_definitions() {
+    let cases: &[(&str, &str, Language)] = &[
         (
             "pinned.html",
             "<!DOCTYPE html>\n<html>\n  <body>\n    <p>hello</p>\n  </body>\n</html>\n",
@@ -1084,8 +1136,8 @@ fn formats_return_empty_definitions() {
         let defs = &structure.files[0].definitions;
         assert!(
             defs.is_empty(),
-            "symbol-fidelity-v1 [{filename}]: formats must return EMPTY definitions \
-             (pinned baseline), got {defs:#?}"
+            "symbol-fidelity-v1 [{filename}]: xml/html/css must return EMPTY definitions \
+             (baseline until the E2 element batch), got {defs:#?}"
         );
     }
 }

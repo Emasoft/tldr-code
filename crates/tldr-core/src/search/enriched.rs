@@ -1392,6 +1392,8 @@ fn disambiguate_structure_entry_call_names(entries: &mut [StructureEntry]) {
             // Name-disambiguation shim only: `StructureEntry` carries no
             // attribution line, and the values here are never serialized.
             definition_line: None,
+            byte_start: None,
+            byte_end: None,
             signature: e.signature.clone(),
         })
         .collect();

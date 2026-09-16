@@ -6,9 +6,11 @@
 //! - `parser` - Tree-sitter parser pool for efficient parsing
 //! - `extractor` - Extract code structure (functions, classes, imports)
 //! - `extract` - Full module extraction with call graph
+//! - `elements` - Element extraction for data/config formats (JSON/YAML/TOML/Bash)
 //! - `imports` - Language-specific import parsing
 
 pub mod count;
+pub mod elements;
 pub mod extract;
 pub mod extractor;
 pub mod function_finder;
@@ -17,6 +19,7 @@ pub mod jsonl;
 pub mod parser;
 
 pub use count::{count_functions_canonical, count_functions_canonical_from_modules};
+pub use elements::extract_elements;
 pub use extract::{extract_file, extract_file_with_lang, extract_from_tree};
 pub use extractor::get_code_structure;
 pub use imports::get_imports;
