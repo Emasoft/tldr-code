@@ -135,7 +135,9 @@ pub use search::{
 pub type TldrResult<T> = Result<T, TldrError>;
 
 // Re-export validation functions (P4: DRY validators)
-pub use validation::{detect_or_parse_language, validate_file_path};
+// extensionless-targets-v1: `resolve_target_language` is the one single-file
+// language-resolution helper every command routes through.
+pub use validation::{detect_or_parse_language, resolve_target_language, validate_file_path};
 
 // Phase 7: Context & Analysis
 pub mod context;

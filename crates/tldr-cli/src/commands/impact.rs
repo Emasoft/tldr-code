@@ -13,7 +13,7 @@ use tldr_core::analysis::doc_impact::{document_impact, is_doc_language};
 use tldr_core::types::ImpactReport;
 use tldr_core::{
     build_project_call_graph, enrich_impact_with_references, impact_analysis_with_ast_fallback,
-    Language,
+    resolve_target_language, Language,
 };
 
 use crate::commands::daemon_router::{params_with_func_depth, try_daemon_route};
@@ -117,12 +117,22 @@ impl ImpactArgs {
         // below are identifier-based and equally meaningless for documents,
         // so the doc path returns before reaching either. `--file` and
         // `--type-aware` stay registered but do not apply on the doc path.
+        //
+        // extensionless-targets-v1: language resolution goes through the ONE
+        // shared helper `resolve_target_language` instead of a bare
+        // `from_path` — a doc link written from an extensionless file
+        // (`LICENSE` referencing `./docs/x.md`, a sniffed `.bashrc` sourcing
+        // a script) must reach this closure too, and a binary file in either
+        // slot is a clean structured error rather than a silent fall-through
+        // to the Python call-graph. Known-extension behavior is unchanged
+        // (`Ok(None)` for unknown-extension text keeps the pre-feature
+        // not-a-doc fall-through).
         let doc_target: Option<(PathBuf, PathBuf, Language)> = if self.path.is_file() {
-            Language::from_path(&self.path)
+            resolve_target_language(&self.path)?
                 .filter(|l| is_doc_language(*l))
                 .map(|l| (self.path.clone(), analysis_root.clone(), l))
         } else if Path::new(&self.function).is_file() {
-            Language::from_path(Path::new(&self.function))
+            resolve_target_language(Path::new(&self.function))?
                 .filter(|l| is_doc_language(*l))
                 .map(|l| {
                     (

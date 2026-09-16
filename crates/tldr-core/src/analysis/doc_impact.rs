@@ -54,6 +54,7 @@ use std::path::{Path, PathBuf};
 use crate::analysis::impact::build_caller_tree_visited;
 use crate::ast::imports::get_imports;
 use crate::error::TldrError;
+use crate::fs::sniff::sniff_extensionless_files;
 use crate::fs::tree::{collect_files, get_file_tree};
 use crate::types::{IgnoreSpec, ImpactReport, Language};
 use crate::TldrResult;
@@ -149,7 +150,24 @@ pub fn document_impact(
         true,
         Some(&IgnoreSpec::default()),
     )?;
-    let files = collect_files(&tree, &canonical_root);
+    let mut files = collect_files(&tree, &canonical_root);
+
+    // extensionless-targets-v1: the extension walk above cannot see
+    // extensionless files at all (the walker's extension filter drops them),
+    // so `LICENSE` / `Makefile` / `.bashrc` were invisible to the document
+    // link graph. Probe them now: `sniff_extensionless_files` re-walks for
+    // exactly that population (hidden files INCLUDED — dotfiles are the
+    // flagship extensionless population and are otherwise unreachable) and
+    // sniffs each with one bounded ≤4 KiB read; binary content and
+    // unsupported shebangs drop out and contribute no node. Sniffed Text and
+    // Bash targets both carry reference surfaces (`get_imports`), so they
+    // join the graph like any doc-language file. Code-language walks are
+    // untouched.
+    let sniffed = sniff_extensionless_files(&canonical_root, Some(&IgnoreSpec::default()));
+    let sniffed_langs: HashMap<PathBuf, Language> = sniffed.iter().cloned().collect();
+    for (path, _) in &sniffed {
+        files.push(path.clone());
+    }
 
     // Reverse link graph: (linked-to file, DOC) -> [(linking file, DOC)].
     type FunctionKey = (PathBuf, String);
@@ -162,7 +180,15 @@ pub fn document_impact(
         if !canonical_file.starts_with(&canonical_root) {
             continue;
         }
-        let file_lang = Language::from_path(&canonical_file).unwrap_or(language);
+        // extensionless-targets-v1: a sniffed extensionless file must be
+        // parsed as its SNIFFED language — the `language` fallback below is
+        // the TARGET's hint and would misread a sniffed `.bashrc` as, say,
+        // the markdown target's language.
+        let file_lang = sniffed_langs
+            .get(&canonical_file)
+            .copied()
+            .or_else(|| Language::from_path(&canonical_file))
+            .unwrap_or(language);
         let imports = match get_imports(&canonical_file, file_lang) {
             Ok(imports) => imports,
             // why: same recovery contract as `find_importers` — parse
@@ -505,6 +531,34 @@ mod tests {
         let tree = report.targets.values().next().unwrap();
         assert_eq!(tree.caller_count, 1);
         assert!(tree.callers[0].file.ends_with("page.html"));
+    }
+
+    // extensionless-targets-v1: a sniffed extensionless shell script joins
+    // the doc graph — a `.bashrc` (hidden file, shebang-sniffed to Bash)
+    // sourcing an extensionless `env.sh` is the only way this closure can
+    // have a caller, and before the probe BOTH files were invisible.
+    #[test]
+    fn document_impact_sniffed_extensionless_files_join_the_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // A project marker so the impact doc-root resolves to the tempdir
+        // (the same pattern the doclinks config fixture uses).
+        fs::write(root.join("package.json"), "{\"name\": \"probe\"}\n").unwrap();
+        // Hidden extensionless file with a shebang → Bash.
+        fs::write(root.join(".bashrc"), "#!/bin/bash\nsource ./lib/env.sh\n").unwrap();
+        // Extensionless prose target (no shebang) → Text.
+        fs::create_dir_all(root.join("lib")).unwrap();
+        fs::write(root.join("lib/env.sh"), "export TLDR_EDITOR=vim\n").unwrap();
+
+        let report = document_impact(root, &root.join("lib/env.sh"), Language::Text, 5)
+            .expect("document_impact");
+        let tree = report.targets.values().next().unwrap();
+        assert_eq!(tree.caller_count, 1, "the sniffed .bashrc must be a caller");
+        assert!(
+            tree.callers[0].file.ends_with(".bashrc"),
+            "caller = {:?}",
+            tree.callers[0].file
+        );
     }
 
     #[test]

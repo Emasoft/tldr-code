@@ -118,7 +118,16 @@ pub fn get_code_structure(
     // STANDARD size policy (the TOC scan holds the whole source in memory —
     // the honest bound — so a giant text file is a skip-with-warning, not a
     // streaming case).
-    if root.is_file() && crate::ast::toc::is_text_path(root) {
+    //
+    // extensionless-targets-v1: the predicate no longer keys on the `.txt`
+    // path alone — a caller that has RESOLVED the language to Text (the
+    // content sniffer's verdict for an extensionless file like `LICENSE`)
+    // must take the same native-scanner path, or `tldr structure LICENSE`
+    // would report `language: "text"` with zero definitions (the placeholder
+    // tree walks to nothing). `.log`/jsonl keep their path-only predicates:
+    // the sniffer can never produce Log (its ladder is shebang/xml/Text) and
+    // `.jsonl` targets always arrive with their extension.
+    if root.is_file() && (crate::ast::toc::is_text_path(root) || language == Language::Text) {
         let source = crate::ast::toc::parse_text_file(root)?;
         let definitions = crate::ast::toc::scan_toc(&source);
         let file_structure = crate::types::FileStructure {

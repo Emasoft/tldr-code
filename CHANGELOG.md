@@ -15,6 +15,42 @@
 
 ### Added
 
+- **Extensionless text files are first-class tldr targets (extensionless-targets-v1).** Before this,
+  a file without a recognized extension was invisible: `Language::from_path` returned `None` (no
+  arm for "no extension at all"), `tldr structure Makefile` mislabeled it with the parent
+  directory's dominant language or Python, `tldr imports` errored, and every directory walk
+  filtered by extension lists — so `LICENSE`, `Makefile`, `.bashrc` never joined structure,
+  imports, importers or the document link graph. Now the content decides, through a bounded
+  **binary-vs-text sniffer** (`fs::sniff::is_probably_binary`, sample = first min(64 KiB, len):
+  any NUL in the first 8 KiB → binary; >10% non-text control bytes (excl. TAB/LF/VT/FF/CR/BS/ESC,
+  plus DEL) → binary; invalid UTF-8 → binary; a UTF-16/UTF-32 BOM is NOT binary — the parser's
+  wide-encoding path owns those, while BOM-less UTF-16's interleaved NULs make it binary) and a
+  **language ladder** for extensionless files only (`fs::sniff::sniff_language`, ≤4 KiB read):
+  shebang interpreter (`bash`/`sh`/`zsh`/`ash`/`dash` → Bash, `python`/`pypyN` → Python,
+  `node`/`deno` → JavaScript, `ruby` → Ruby; an unsupported interpreter is honestly undetectable,
+  not prose) → `<?xml` after BOM/whitespace → Xml → otherwise Text (an empty file is Text). All
+  single-file target resolution goes through ONE shared helper, `validation::resolve_target_language`
+  (`detect_or_parse_language` routes through it too, so imports and the daemon inherit the
+  feature): known extension → unchanged byte-identical behavior; extensionless text → the sniffed
+  language; binary content (extensionless OR unrecognized extension, `data.bin` included) → a
+  clean structured `UnsupportedLanguage` error with "binary file" wording and the standard exit
+  code 11 instead of a Python mislabel; unknown-extension text (`.xyz`) keeps its unsupported
+  verdict. The doc-graph walks join in: `analysis::doc_impact::document_impact` and the
+  doc-language arms of `analysis::importers::find_importers` now probe the tree's extensionless
+  files after their extension walk (`fs::sniff::sniff_extensionless_files`, hidden files INCLUDED
+  because dotfiles are the flagship extensionless population and are otherwise unreachable;
+  vendor/generated dirs, doxygen sentinels and gitignore patterns skipped exactly like the
+  extension walk) — each probe costs one ≤4 KiB read per extensionless file, binary content drops
+  out unparsed, and sniffed Text/Bash files carry the same path-matching semantics, so a `.bashrc`
+  sourcing `./lib/env.sh` is a real caller of `tldr impact lib/env.sh`. Code-language walks are
+  untouched. `get_code_structure`'s Text early-return also fires when the language (not just the
+  path) is Text, so `tldr structure LICENSE` reports the TOC headings instead of zero definitions.
+  Unit tests: 13 in `fs::sniff` (every rule + negatives), 11 new in `validation` (the resolution
+  contract incl. the `.xyz` negative and missing-path preservation), 1 each in `doc_impact` and
+  `importers` (sniffed files join the graph); new CLI integration suite `extensionless_targets_v1`
+  (9 cases: LICENSE/Makefile/`.bashrc`/`lib/env.sh`/`sitemap` end-to-end, the `data.bin` binary
+  rejections with exit-code pins, and the unknown-extension negative).
+
 - **Plain-text support: `Language::Text` — heuristic TOC + URL/path references from prose.** `.txt`/`.text`
   files join the supported formats as language 29 (`Language::Text`, signal=false like every other
   format — a directory of notes must never outvote source code), with the `Log` no-grammar twist

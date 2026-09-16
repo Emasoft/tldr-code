@@ -3,6 +3,7 @@
 //! This module provides file tree traversal and ignore pattern handling.
 
 pub mod oversize;
+pub mod sniff;
 pub mod tree;
 
 use std::io;
@@ -12,6 +13,7 @@ pub use oversize::{
     check_size, format_oversize_warning, is_autogen_file, max_size_for, SizeCheck,
     MAX_AUTOGEN_FILE_SIZE_BYTES, MAX_FILE_SIZE_BYTES,
 };
+pub use sniff::{is_probably_binary, sniff_extensionless_files, sniff_language};
 pub use tree::get_file_tree;
 
 /// How far into a file to look for the NUL byte that marks a wide encoding.

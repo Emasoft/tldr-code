@@ -9,7 +9,7 @@ use anyhow::Result;
 use clap::Args;
 
 use tldr_core::types::CodeStructure;
-use tldr_core::{get_code_structure, IgnoreSpec, Language};
+use tldr_core::{get_code_structure, resolve_target_language, IgnoreSpec, Language};
 
 use crate::commands::daemon_router::{params_with_path_lang, try_daemon_route};
 use crate::output::{format_structure_text, OutputFormat, OutputWriter};
@@ -45,7 +45,12 @@ impl StructureArgs {
         // Determine language (auto-detect from directory, default to Python)
         //
         // Resolution order:
-        // - Single FILE input: `from_path` first (formats-extension-v1).
+        // - Single FILE input: `resolve_target_language` (extensionless-
+        //   targets-v1) — the ONE single-file helper: known extension →
+        //   `from_path` (formats-extension-v1, byte-identical), extensionless
+        //   existing file → content sniff (shebang → `<?xml` → Text; a
+        //   binary file is a structured error, NOT a Python mislabel),
+        //   missing/directory/unrecognized-extension → `Ok(None)`.
         //   `from_directory` deliberately filters the 7 formats languages
         //   (Json/Yaml/Toml/Xml/Html/Css/Bash) via
         //   `is_project_language_signal`, so a lone `config.json` /
@@ -56,20 +61,24 @@ impl StructureArgs {
         //   anchors single-file runs on the parent), then to the
         //   historical Python default.
         // - DIRECTORY input: `from_directory` dominant-language detection.
-        let language = self.lang.unwrap_or_else(|| {
-            if self.path.is_file() {
-                Language::from_path(&self.path)
-                    .or_else(|| {
-                        self.path
+        let language = match self.lang {
+            Some(lang) => lang,
+            None => {
+                if self.path.is_file() {
+                    match resolve_target_language(&self.path)? {
+                        Some(lang) => lang,
+                        None => self
+                            .path
                             .parent()
                             .filter(|p| !p.as_os_str().is_empty())
                             .and_then(Language::from_directory)
-                    })
-                    .unwrap_or(Language::Python)
-            } else {
-                Language::from_directory(&self.path).unwrap_or(Language::Python)
+                            .unwrap_or(Language::Python),
+                    }
+                } else {
+                    Language::from_directory(&self.path).unwrap_or(Language::Python)
+                }
             }
-        });
+        };
 
         // Try daemon first for cached result
         if let Some(structure) = try_daemon_route::<CodeStructure>(

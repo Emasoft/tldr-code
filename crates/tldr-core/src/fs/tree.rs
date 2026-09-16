@@ -325,6 +325,85 @@ fn collect_files_recursive(tree: &FileTree, root: &Path, files: &mut Vec<PathBuf
     }
 }
 
+/// Collect the EXTENSIONLESS files under `root` as a flat, sorted list
+/// (extensionless-targets-v1).
+///
+/// The extension filter in [`get_file_tree`] drops every file without an
+/// extension (the filter compares against a set of dotted extensions, and an
+/// extensionless file's computed extension is the empty string), so the
+/// doc-graph walks that start from an extension-filtered walk can never see
+/// `Makefile` / `LICENSE` / `.bashrc`. This walker exists to surface exactly
+/// that population; the caller (`fs::sniff::sniff_extensionless_files`) sniffs
+/// each file with one bounded ≤4 KiB read.
+///
+/// # Walk parity with `get_file_tree` — and one deliberate widening
+///
+/// Shared (same helper constants and predicates): `DEFAULT_SKIP_DIRS`,
+/// generated-output sentinels, symlink cycles are physically impossible
+/// (`follow_links(false)`), and gitignore patterns from `ignore_spec`.
+///
+/// Widened ON PURPOSE: hidden files and hidden directories are NOT excluded.
+/// Dotfiles (`.bashrc`, `.npmrc`, `.gitconfig`) are the flagship
+/// extensionless population — `get_file_tree`'s default `exclude_hidden`
+/// would keep them invisible forever, and the callers of this probe run their
+/// extension walk with exactly that default. The cost of the widening is
+/// bounded: directory-entry reads during the walk plus one bounded content
+/// read per extensionless file afterwards; binary content drops out in the
+/// sniffer without ever being parsed. `.git` and the other generated/vendor
+/// directories remain skipped via `DEFAULT_SKIP_DIRS`.
+pub fn collect_extensionless_files(
+    root: &Path,
+    ignore_spec: Option<&IgnoreSpec>,
+) -> TldrResult<Vec<PathBuf>> {
+    if !root.exists() {
+        return Err(TldrError::PathNotFound(root.to_path_buf()));
+    }
+    let canonical =
+        dunce::canonicalize(root).map_err(|_| TldrError::PathNotFound(root.to_path_buf()))?;
+    let gitignore = build_gitignore(&canonical, ignore_spec);
+
+    let walker = WalkDir::new(&canonical)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            // Walk parity: never filter the root itself (a tempdir root can
+            // be hidden-named), skip DEFAULT_SKIP_DIRS, generated-output
+            // sentinels and gitignore matches — but NOT hidden entries.
+            if e.depth() == 0 {
+                return true;
+            }
+            let name = e.file_name().to_string_lossy();
+            if e.file_type().is_dir() {
+                if DEFAULT_SKIP_DIRS.contains(&name.as_ref()) {
+                    return false;
+                }
+                if dir_has_generated_sentinel(e.path()) {
+                    return false;
+                }
+            }
+            if let Some(gi) = gitignore.as_ref() {
+                if gi.matched(e.path(), e.file_type().is_dir()).is_ignore() {
+                    return false;
+                }
+            }
+            true
+        });
+
+    let mut files = Vec::new();
+    for entry in walker.filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry.path().extension().is_none() {
+            files.push(entry.path().to_path_buf());
+        }
+    }
+    // Deterministic order: the extension walk yields sorted trees; this
+    // walker must not introduce a different ordering contract.
+    files.sort();
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

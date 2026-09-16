@@ -9,14 +9,25 @@
 //! - Works with Python, TypeScript, Go
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use crate::analysis::doc_impact::is_doc_language;
 use crate::ast::imports::get_imports;
+use crate::fs::sniff::sniff_extensionless_files;
 use crate::fs::tree::{collect_files, get_file_tree};
 use crate::types::{IgnoreSpec, ImporterInfo, ImportersReport, Language};
 use crate::TldrResult;
 
 /// Find all files that import a given module.
+///
+/// extensionless-targets-v1: when `language` is a document language (the
+/// path-matching arm of `module_matches`), the extension walk is followed by
+/// a bounded probe of the tree's EXTENSIONLESS files — `fs::sniff::
+/// sniff_extensionless_files` (≤4 KiB read per file) — and files that sniff
+/// to a language join the scan with their SNIFFED language (Text/Bash carry
+/// the same path-matching semantics, so a sniffed `.bashrc` sourcing
+/// `./lib/env.sh` is found by a `--lang text` query for `lib/env.sh`).
+/// Code-language walks are unchanged.
 ///
 /// # Arguments
 /// * `root` - Project root directory
@@ -37,12 +48,26 @@ pub fn find_importers(
         .collect();
 
     let tree = get_file_tree(root, Some(&extensions), true, Some(&IgnoreSpec::default()))?;
-    let files = collect_files(&tree, root);
+    // (file, language-to-parse-it-with): extension-walk files keep the query
+    // language (the extension filter selected them for it); sniffed
+    // extensionless files carry their sniffed language.
+    let mut files: Vec<(PathBuf, Language)> = collect_files(&tree, root)
+        .into_iter()
+        .map(|p| (p, language))
+        .collect();
+
+    // extensionless-targets-v1: doc-language arms only — see fn docs.
+    if is_doc_language(language) {
+        files.extend(sniff_extensionless_files(
+            root,
+            Some(&IgnoreSpec::default()),
+        ));
+    }
 
     let mut importers = Vec::new();
 
-    for file_path in files {
-        match find_import_in_file(&file_path, module, language) {
+    for (file_path, file_lang) in files {
+        match find_import_in_file(&file_path, module, file_lang) {
             Ok(Some(info)) => importers.push(info),
             Ok(None) => {}
             Err(e) => {
@@ -494,6 +519,27 @@ mod tests {
         assert_eq!(normalize_doc_path("a.md?q=1"), "a.md");
         assert_eq!(normalize_doc_path("dir/"), "dir");
         assert_eq!(normalize_doc_path("a.md"), "a.md");
+    }
+
+    // extensionless-targets-v1: a sniffed extensionless file joins the
+    // importers scan on a doc-language query — a hidden `.bashrc` sourcing
+    // `./lib/env.sh` is found by a Text query for `lib/env.sh`, with the
+    // sniffed Bash language supplying the `source` edge.
+    #[test]
+    fn find_importers_probes_sniffed_extensionless_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".bashrc"),
+            "#!/bin/bash\nsource ./lib/env.sh\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("lib")).unwrap();
+        std::fs::write(dir.path().join("lib/env.sh"), "export TLDR_EDITOR=vim\n").unwrap();
+
+        let report = find_importers(dir.path(), "lib/env.sh", Language::Text).unwrap();
+        assert_eq!(report.total, 1, "the sniffed .bashrc must be an importer");
+        assert!(report.importers[0].file.ends_with(".bashrc"));
+        assert!(report.importers[0].import_statement.contains("source"));
     }
 
     #[test]
