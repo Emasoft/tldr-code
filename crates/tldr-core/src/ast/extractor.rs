@@ -2011,8 +2011,17 @@ fn collect_definitions(
 
     if (is_func || is_class) && !is_bodyless_c_specifier {
         if let Some(name) = get_definition_node_name(node, source) {
-            let line_start = node.start_position().row as u32 + 1; // 1-indexed
-            let line_end = node.end_position().row as u32 + 1;
+            // symbol-fidelity-v1: `line_start` is the first line of the
+            // symbol's ATTACHED trivia region (decorators/attributes/contiguous
+            // doc comments — wrapper climb + strict no-blank-line sibling
+            // walk), not the bare declaration row.
+            let (start_row, end_row) = compute_region_span(node, source, language);
+            let line_start = start_row as u32 + 1; // 1-indexed
+            let line_end = end_row as u32 + 1;
+
+            // definition_line (additive): the declaration-keyword line BEFORE
+            // trivia extension — the attribution line (issue #81).
+            let definition_line = declaration_start_row(node) as u32 + 1;
 
             // Extract signature: skip doc comments/attributes, use actual def line
             let signature = extract_def_signature(node, source);
@@ -2048,6 +2057,7 @@ fn collect_definitions(
                 kind: entry_kind.to_string(),
                 line_start,
                 line_end,
+                definition_line: Some(definition_line),
                 signature,
             });
         }
@@ -2407,6 +2417,9 @@ fn make_constant_def(node: Node, name: String, source: &str) -> DefinitionInfo {
         kind: "constant".to_string(),
         line_start,
         line_end,
+        // Constants carry no attached-trivia extension, so the declaration
+        // line equals the (unextended) span start.
+        definition_line: Some(line_start),
         signature,
     }
 }
@@ -2461,6 +2474,9 @@ fn try_field_definition(
     let mut defs: Vec<DefinitionInfo> = Vec::new();
     let line_start = node.start_position().row as u32 + 1;
     let line_end = node.end_position().row as u32 + 1;
+    // Fields carry no attached-trivia extension, so the declaration line
+    // equals the (unextended) span start.
+    let definition_line = line_start;
     let signature = extract_def_signature(node, source);
 
     match language {
@@ -2490,6 +2506,7 @@ fn try_field_definition(
                             kind: "field".to_string(),
                             line_start,
                             line_end,
+                            definition_line: Some(definition_line),
                             signature: signature.clone(),
                         });
                     }
@@ -2510,6 +2527,7 @@ fn try_field_definition(
                                     kind: "field".to_string(),
                                     line_start,
                                     line_end,
+                                    definition_line: Some(definition_line),
                                     signature: signature.clone(),
                                 });
                             }
@@ -2533,6 +2551,7 @@ fn try_field_definition(
                                     kind: "field".to_string(),
                                     line_start,
                                     line_end,
+                                    definition_line: Some(definition_line),
                                     signature: signature.clone(),
                                 });
                             }
@@ -2568,6 +2587,7 @@ fn try_field_definition(
                     kind: "field".to_string(),
                     line_start,
                     line_end,
+                    definition_line: Some(definition_line),
                     signature,
                 });
             }
@@ -2901,6 +2921,8 @@ pub(crate) fn try_callback_call_definition(
         kind: "call".to_string(),
         line_start: call.start_position().row as u32 + 1,
         line_end: call.end_position().row as u32 + 1,
+        // Callback calls carry no attached-trivia extension.
+        definition_line: Some(call.start_position().row as u32 + 1),
         signature: format!("{callee}(…)"),
     })
 }
@@ -2925,8 +2947,14 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
                 } else {
                     first_arg.utf8_text(source.as_bytes()).ok()?
                 };
-                let line_start = node.start_position().row as u32 + 1;
-                let line_end = node.end_position().row as u32 + 1;
+                // symbol-fidelity-v1: the elixir region includes attached
+                // trivia — a contiguous `comment` sibling or a contiguous
+                // `@doc "…"` call sibling above the def call. This path only
+                // runs for `Language::Elixir` (dispatch in
+                // `collect_definitions`), so the language is fixed.
+                let (start_row, end_row) = compute_region_span(node, source, Language::Elixir);
+                let line_start = start_row as u32 + 1;
+                let line_end = end_row as u32 + 1;
                 let signature = extract_def_signature(node, source);
                 // elixir-method-infos-v1: def/defp inside a `defmodule … do … end`
                 // block are emitted with kind="method" so the `method_infos` view
@@ -2943,20 +2971,28 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
                     kind: kind_str.to_string(),
                     line_start,
                     line_end,
+                    // The def call node starts at the `def` keyword itself —
+                    // no modifiers — so pre-extension == the raw call row.
+                    definition_line: Some(node.start_position().row as u32 + 1),
                     signature,
                 });
             }
             "defmodule" => {
                 let first_arg = args.child(0)?;
                 let name = first_arg.utf8_text(source.as_bytes()).ok()?;
-                let line_start = node.start_position().row as u32 + 1;
-                let line_end = node.end_position().row as u32 + 1;
+                // symbol-fidelity-v1: same attached-trivia rule as def/defp
+                // (`@moduledoc "…"` / contiguous comment above the defmodule
+                // call belong to the module region).
+                let (start_row, end_row) = compute_region_span(node, source, Language::Elixir);
+                let line_start = start_row as u32 + 1;
+                let line_end = end_row as u32 + 1;
                 let signature = extract_def_signature(node, source);
                 return Some(DefinitionInfo {
                     name: name.to_string(),
                     kind: "module".to_string(),
                     line_start,
                     line_end,
+                    definition_line: Some(node.start_position().row as u32 + 1),
                     signature,
                 });
             }
@@ -3036,6 +3072,228 @@ fn classify_definition_node(kind: &str, _language: Language) -> (bool, bool) {
     );
 
     (is_func, is_class)
+}
+
+// =============================================================================
+// Symbol region spans (symbol-fidelity-v1)
+// =============================================================================
+//
+// `DefinitionInfo::line_start` is the first line of the symbol's ATTACHED
+// TRIVIA region: decorators/attributes/annotations plus an
+// immediately-contiguous comment block above. Detached trivia (a blank line
+// between the trivia and the definition) must NOT be absorbed. Two grammar
+// shapes are handled:
+//
+//   1. WRAPPER nodes that own the trivia (climbed to the wrapper):
+//      - python-0.23.6 `decorated_definition` (field `definition`) wraps
+//        decorator+`function_definition`/`class_definition`;
+//      - typescript-0.23.2 (also used for JavaScript — parser.rs routes
+//        `Language::JavaScript` to `LANGUAGE_TYPESCRIPT`)
+//        `export_statement = SEQ(REPEAT(decorator), 'export', declaration…)`:
+//        decorators written ABOVE `export` are INSIDE the wrapper.
+//   2. SIBLING trivia (contiguous previous-sibling walk): rust-0.23.3
+//      `attribute_item` + doc `line_comment` are siblings of `function_item`;
+//      ts/js class-body method `decorator`s are previous siblings of
+//      `method_definition` (`class_body` member = SEQ(repeat(decorator),
+//      method_definition…)); c/cpp/lua/luau/elixir/ocaml/go/ruby comments and
+//      elixir `@doc …` calls are siblings.
+
+/// Wrapper kinds that own the trivia ABOVE their declaration child, per
+/// language. The climb only happens when the definition node is the wrapper's
+/// declaration-field child, so a wrapper that does not wrap exactly one
+/// declaration (e.g. `export { a, b }` re-exports, which have no `declaration`
+/// field) is never climbed.
+fn wrapper_span_applies(child: Node, parent: Node, language: Language) -> bool {
+    match language {
+        // tree-sitter-python 0.23.6 node-types.json: `decorated_definition`
+        // (fields: definition) — `decorator` named children + the wrapped
+        // definition. Precedent for the unwrap: tldr-cli contracts/specs.rs
+        // (`decorated_definition` → `child_by_field_name("definition")`).
+        Language::Python => {
+            parent.kind() == "decorated_definition"
+                && parent
+                    .child_by_field_name("definition")
+                    .is_some_and(|d| d.id() == child.id())
+        }
+        // tree-sitter-typescript 0.23.2 node-types.json (JavaScript uses the
+        // same grammar): `export_statement` (fields: decorator, declaration) —
+        // the single `declaration`-field child is the wrapped declaration, so
+        // being that child IS "wraps exactly one declaration".
+        Language::TypeScript | Language::JavaScript => {
+            parent.kind() == "export_statement"
+                && parent
+                    .child_by_field_name("declaration")
+                    .is_some_and(|d| d.id() == child.id())
+        }
+        _ => false,
+    }
+}
+
+/// Per-language attached-trivia SIBLING kinds (node-types.json verified; see
+/// the block comment above and the grammar facts in
+/// `tests/symbol_fidelity_v1.rs`):
+/// - rust-0.23.3: `attribute_item`, `line_comment`, `block_comment`
+/// - typescript/javascript-0.23.2: `decorator`, `comment`, `line_comment`,
+///   `block_comment`, `jsx_comment`
+/// - java/kotlin-ng/swift/c-sharp/php/scala: comments only — annotations live
+///   INSIDE the declaration node (java `modifiers`, kotlin `modifiers`, swift
+///   `attribute`, c-sharp/php `attribute_list`, scala `annotation`), so they
+///   need no sibling walk
+/// - c/cpp-0.23.4, lua-0.2.0, luau-1.2.0, go-0.23.4, ruby-0.23.1,
+///   ocaml-0.24.2: `comment`
+/// - elixir-0.3.4: `comment` plus the `@doc "…"` special case in
+///   [`sibling_is_attached_trivia`]
+/// - python-0.23.6: `comment` (decorators are never siblings — they live in
+///   the `decorated_definition` wrapper)
+fn is_attached_trivia_kind(kind: &str, language: Language) -> bool {
+    match language {
+        Language::Rust => matches!(kind, "attribute_item" | "line_comment" | "block_comment"),
+        Language::TypeScript | Language::JavaScript => matches!(
+            kind,
+            "decorator" | "comment" | "line_comment" | "block_comment" | "jsx_comment"
+        ),
+        Language::Java
+        | Language::Kotlin
+        | Language::Swift
+        | Language::CSharp
+        | Language::Php
+        | Language::Scala => {
+            matches!(
+                kind,
+                "comment" | "line_comment" | "block_comment" | "multiline_comment"
+            )
+        }
+        Language::C
+        | Language::Cpp
+        | Language::Lua
+        | Language::Luau
+        | Language::Go
+        | Language::Ruby
+        | Language::Ocaml
+        | Language::Elixir
+        | Language::Python => matches!(kind, "comment"),
+        _ => false,
+    }
+}
+
+/// Elixir special case: documentation attributes (`@doc "…"`, `@spec …`,
+/// `@impl true`, `@moduledoc …`) are the sibling trivia of `def`/`defp`
+/// calls. Empirically (tree-sitter-elixir 0.3.4, verified against the parsed
+/// tree) `@doc "…"` parses as a `unary_operator` node — an anonymous `@`
+/// token plus a `call` child. A bare `call` sibling whose `target` text
+/// starts with `@` is accepted too, for grammars that fold the `@` into the
+/// target identifier.
+fn sibling_is_attached_trivia(sibling: Node, source: &str, language: Language) -> bool {
+    if is_attached_trivia_kind(sibling.kind(), language) {
+        return true;
+    }
+    if language == Language::Elixir {
+        if sibling.kind() == "unary_operator" {
+            if let Some(first) = sibling.child(0) {
+                if first.kind() == "@" {
+                    return true;
+                }
+            }
+        } else if sibling.kind() == "call" {
+            if let Some(target) = sibling.child_by_field_name("target") {
+                if let Ok(text) = target.utf8_text(source.as_bytes()) {
+                    if text.starts_with('@') {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Compute the symbol's region span `(start_row, end_row)` — 0-indexed tree
+/// rows, `end_row` inclusive — whose 1-indexed form becomes
+/// `line_start`/`line_end`.
+///
+/// Mechanism (see the block comment above):
+///   (a) climb to the per-language wrapper node that owns the trivia,
+///   (b) walk contiguous previous siblings whose kind is attached trivia AND
+///       which end on the line immediately above the current start
+///       (`sibling.end_row + 1 == current_start_row`) — a blank line stops
+///       the walk, so DETACHED comments stay excluded.
+///
+/// `source` is needed only for the elixir `@doc` target-text check.
+pub(crate) fn compute_region_span(node: Node, source: &str, language: Language) -> (usize, usize) {
+    // (a) Wrapper climb.
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        if wrapper_span_applies(current, parent, language) {
+            current = parent;
+        } else {
+            break;
+        }
+    }
+
+    let end_row = current.end_position().row;
+    let mut start_row = current.start_position().row;
+
+    // (b) Contiguous previous-sibling attached-trivia walk. Strict contiguity:
+    // the sibling must visually END on the row directly above the current
+    // start, so a blank line between trivia and definition stops the walk.
+    while let Some(sibling) = current.prev_sibling() {
+        if !sibling_is_attached_trivia(sibling, source, language) {
+            break;
+        }
+        // Visual end row: some grammars keep the trailing newline INSIDE the
+        // trivia token — rust-0.23.3 `line_comment`'s `doc_comment` child ends
+        // one row PAST the line the `///` comment visually occupies — so a
+        // sibling whose text ends with '\n' visually ends on `end_row - 1`.
+        let bytes = source.as_bytes();
+        let ends_with_newline = sibling.end_byte() > 0 && bytes[sibling.end_byte() - 1] == b'\n';
+        let visual_end_row = if ends_with_newline {
+            sibling.end_position().row - 1
+        } else {
+            sibling.end_position().row
+        };
+        if visual_end_row + 1 != start_row {
+            break;
+        }
+        start_row = sibling.start_position().row;
+        current = sibling;
+    }
+
+    (start_row, end_row)
+}
+
+/// Annotation/attribute/modifier node kinds that can OPEN a declaration node
+/// and make its raw `start_position()` land on an annotation line instead of
+/// the declaration line:
+/// - java-0.23.5 / kotlin-ng-1.1.0 / scala-0.24.0 `modifiers` (annotations
+///   live inside),
+/// - scala `annotation`, java `marker_annotation`,
+/// - swift-0.7.1 `attribute` (inside `_bodyless_function_declaration`'s
+///   optional `modifiers`),
+/// - c-sharp-0.23.1 / php-0.23.11 `attribute_list`,
+/// - typescript-0.23.2 `decorator` (field child of `class_declaration`).
+const LEADING_ANNOTATION_KINDS: &[&str] = &[
+    "modifiers",
+    "annotation",
+    "marker_annotation",
+    "attribute",
+    "attribute_list",
+    "decorator",
+];
+
+/// The row the symbol is DECLARED on (0-indexed): the first child that is not
+/// an annotation/attribute/modifier holder — i.e. the definition keyword or
+/// the first plain modifier token before it. Issue #81: attribution that used
+/// the raw `node.start_position()` drifted onto `@Override`/`[Fact]`/
+/// `@JvmStatic` lines for java/kotlin/swift/scala/c#.
+pub(crate) fn declaration_start_row(node: Node) -> usize {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if LEADING_ANNOTATION_KINDS.contains(&child.kind()) {
+            continue;
+        }
+        return child.start_position().row;
+    }
+    node.start_position().row
 }
 
 /// Extract the name from a function/class definition node.
@@ -3201,33 +3459,42 @@ fn is_inside_class_or_impl(node: &Node, language: Language) -> bool {
 /// Extract the actual definition signature from a tree-sitter node,
 /// skipping doc comments, attributes, and decorators.
 /// Mirrors `search/enriched.rs::extract_definition_signature`.
+///
+/// symbol-fidelity-v1: the signature is the CLEAN keyword view — it starts
+/// with the definition keyword where the language has one and never carries
+/// decorators/attributes/annotations (no leading `@`, `#[`, `[`, `///`, `/*`).
+/// For java/kotlin/scala the leading `modifiers` child holds both plain
+/// modifier tokens (public/static/…) and nested annotations: the signature
+/// starts at the first NON-annotation child inside it (plain tokens are
+/// kept); when the node holds only annotations it is skipped entirely.
 fn extract_def_signature(node: Node, source: &str) -> String {
     // Strategy: find the first child node that isn't a comment or attribute,
     // then use its start position as the beginning of the actual definition.
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         let ckind = child.kind();
-        // Skip doc comments and attributes/decorators
-        if ckind == "line_comment"
-            || ckind == "block_comment"
-            || ckind == "comment"
-            || ckind == "attribute_item"    // Rust #[...]
-            || ckind == "attribute"         // Rust #[...]
-            || ckind == "decorator"         // Python @decorator
-            || ckind == "decorator_list"
-        // Python
-        {
+        // Skip doc comments and attributes/decorators/annotations
+        if SIGNATURE_NOISE_KINDS.contains(&ckind) {
             continue;
         }
+        if ckind == "modifiers" {
+            // java/kotlin/scala `modifiers`: keep plain modifier tokens, drop
+            // nested annotations.
+            match first_non_annotation_child(child) {
+                Some(inner) => {
+                    let sig = signature_line_at(inner.start_byte(), source);
+                    if !sig.is_empty() {
+                        return sig;
+                    }
+                    continue;
+                }
+                // Only annotations inside → the signature starts at the next
+                // sibling.
+                None => continue,
+            }
+        }
         // Found the first non-comment child -- extract its line as signature
-        let start_byte = child.start_byte();
-        let line_from_start = &source[start_byte..];
-        let sig = line_from_start
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let sig = signature_line_at(child.start_byte(), source);
         if !sig.is_empty() {
             return sig;
         }
@@ -3253,6 +3520,47 @@ fn extract_def_signature(node: Node, source: &str) -> String {
 
     // Last resort: use the first line
     source[node.start_byte()..]
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// Kinds that never start the clean signature view: doc comments plus
+/// decorator/attribute/annotation nodes (tree-sitter node kinds across the
+/// supported grammars).
+const SIGNATURE_NOISE_KINDS: &[&str] = &[
+    "line_comment",
+    "block_comment",
+    "multiline_comment",
+    "comment",
+    "attribute_item",    // Rust #[...]
+    "attribute",         // Swift @objc, inside attribute_list
+    "attribute_list",    // C# / PHP [Fact] / #[Attribute]
+    "annotation",        // Scala
+    "marker_annotation", // Java
+    "decorator",         // Python @decorator, TS/JS
+    "decorator_list",    // Python
+];
+
+/// First child of a `modifiers` node that is not an annotation/attribute —
+/// the plain modifier tokens (`public`, `static`, `override`, …) are anonymous
+/// keyword children. Returns `None` when the node holds only annotations.
+fn first_non_annotation_child(node: Node) -> Option<Node> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if SIGNATURE_NOISE_KINDS.contains(&child.kind()) {
+            continue;
+        }
+        return Some(child);
+    }
+    None
+}
+
+/// The single source line starting at `start_byte`, trimmed.
+fn signature_line_at(start_byte: usize, source: &str) -> String {
+    source[start_byte..]
         .lines()
         .next()
         .unwrap_or("")

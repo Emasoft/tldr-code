@@ -958,8 +958,16 @@ pub fn find_function_bounds(
     let tree = crate::ast::parser::parse(source, language).ok()?;
     let root = tree.root_node();
     let node = find_function_node(root, function_name, language, source)?;
-    let start = node.start_position().row as u32 + 1;
-    let end = node.end_position().row as u32 + 1;
+    // symbol-fidelity-v1 (body agreement): `tldr body`/`chop` bounds must
+    // match the structure extractor's region span — the symbol's attached
+    // trivia (decorators, attributes, contiguous doc comments) is part of the
+    // readable/replacable unit, so a decorated python function's bounds start
+    // at the first `@deco` line, not at `def`. Same computation as
+    // `collect_definitions` (wrapper climb + strict no-blank-line sibling
+    // walk), living in one place so the two cannot drift.
+    let (start_row, end_row) = crate::ast::extractor::compute_region_span(node, source, language);
+    let start = start_row as u32 + 1;
+    let end = end_row as u32 + 1;
     if end < start {
         return None;
     }
@@ -1927,5 +1935,42 @@ class Inner:
         let root = tree.root_node();
         let result = find_class_node(root, "Anything", Language::C, source);
         assert!(result.is_none(), "C has no class kinds — must return None");
+    }
+
+    // -- symbol-fidelity-v1: body/chop bounds agree with the structure
+    //    extractor's attached-trivia region span --
+
+    #[test]
+    fn test_find_function_bounds_python_decorated_starts_at_decorator() {
+        // L1 blank | L2 @deco_a | L3 @deco2(arg) | L4 def foo(): | L5 return
+        let source = r#"
+@deco_a
+@deco2(arg)
+def foo():
+    return 42
+"#;
+        let (start, end) = find_function_bounds(source, "foo", Language::Python)
+            .expect("decorated python function bounds must resolve");
+        // Bounds must start at the FIRST decorator line, matching the
+        // structure extractor's `line_start` for the same symbol.
+        assert_eq!(start, 2, "bounds must start at the first decorator line");
+        assert_eq!(end, 5);
+    }
+
+    #[test]
+    fn test_find_function_bounds_rust_attributes_included() {
+        // L1 blank | L2 /// doc | L3 #[test] | L4 fn foo | L5 body | L6 }
+        let source = r#"
+/// Doc comment for foo.
+#[test]
+fn foo() -> u32 {
+    42
+}
+"#;
+        let (start, end) = find_function_bounds(source, "foo", Language::Rust)
+            .expect("rust function bounds must resolve");
+        // Contiguous doc comment + attribute block belong to the region.
+        assert_eq!(start, 2, "bounds must start at the attached doc comment");
+        assert_eq!(end, 6);
     }
 }

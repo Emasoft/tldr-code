@@ -1385,6 +1385,20 @@ pub struct DefinitionInfo {
     pub line_start: u32,
     /// End line (1-indexed, inclusive)
     pub line_end: u32,
+    /// The attribution line (1-indexed): the line the symbol is DECLARED on —
+    /// the definition keyword (`def`/`fn`/`func`/`class`/…) or, for languages
+    /// whose declaration node opens with modifiers, the first plain modifier
+    /// token before that keyword. Unlike `line_start` (the first line of the
+    /// symbol's attached trivia region — decorators, attributes, doc comments),
+    /// this never moves onto annotation/trivia lines, so callers that attribute
+    /// metrics or "where is this defined" prose to a line stay on the
+    /// declaration itself (issue #81).
+    ///
+    /// Additive field: skipped in JSON when absent so caches written before it
+    /// existed, and schema consumers that pin the definition key set, are
+    /// unaffected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub definition_line: Option<u32>,
     /// Signature line (e.g., "pub fn foo(x: i32) -> bool")
     pub signature: String,
 }

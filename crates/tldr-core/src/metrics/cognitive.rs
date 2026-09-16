@@ -404,7 +404,13 @@ fn find_all_functions(
                 functions.push(FunctionCognitive {
                     name,
                     file: file_path.to_string(),
-                    line: node.start_position().row as u32 + 1,
+                    // Issue #81 attribution: raw `node.start_position()` lands
+                    // on the leading annotation/attribute line for
+                    // java/kotlin/swift/scala/c# (`modifiers` holding
+                    // `@Override`, c-sharp `attribute_list`, …). Attribute to
+                    // the first NON-trivia child instead — the declaration
+                    // line. Same helper backs `DefinitionInfo::definition_line`.
+                    line: crate::ast::extractor::declaration_start_row(node) as u32 + 1,
                     cognitive,
                     cyclomatic,
                     max_nesting,
@@ -1440,6 +1446,38 @@ pub fn merge_cognitive_reports(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #81 attribution: a java method decorated with annotations must be
+    /// attributed to the `method` line, not the annotation line. The
+    /// `method_declaration` node starts at its `modifiers` child
+    /// (`@Override`), but `FunctionCognitive.line` must point at the
+    /// declaration itself.
+    #[test]
+    fn test_java_annotated_method_attributes_to_method_line() {
+        // L1 blank | L2 class | L3 @Override | L4 public int compute | L5 return | L6 } | L7 }
+        let source = r#"
+public class Foo {
+    @Override
+    public int compute(int x) {
+        return x;
+    }
+}
+"#;
+        let options = CognitiveOptions::new();
+        let report =
+            analyze_cognitive_source(source, Language::Java, "Foo.java", &options).unwrap();
+
+        let compute = report
+            .functions
+            .iter()
+            .find(|f| f.name == "compute")
+            .expect("annotated java method must be reported");
+        assert_eq!(
+            compute.line, 4,
+            "cognitive attribution must land on the method declaration line, \
+             not the @Override annotation line"
+        );
+    }
 
     /// Test simple function with no control flow (cognitive = 0)
     #[test]

@@ -8,9 +8,17 @@ fn test_definition_info_serde_roundtrip() {
         kind: "function".to_string(),
         line_start: 1,
         line_end: 10,
+        // symbol-fidelity-v1: additive attribution line (declaration-keyword
+        // line). Round-trips through serde when present, absent from JSON
+        // when `None` (skip_serializing_if).
+        definition_line: Some(1),
         signature: "pub fn foo(x: i32) -> bool".to_string(),
     };
     let json = serde_json::to_string(&def).unwrap();
+    assert!(
+        json.contains("\"definition_line\":1"),
+        "definition_line must serialize when present, got {json}"
+    );
     let back: DefinitionInfo = serde_json::from_str(&json).unwrap();
     assert_eq!(def, back);
 }
