@@ -98,7 +98,7 @@ pub enum Language {
     Toml,
     /// XML family (.xml, .svg, .xsd, .xsl) — SVG is XML
     Xml,
-    /// HTML (.html, .htm)
+    /// HTML (.html, .htm, .xhtml) — XHTML rides the HTML grammar
     Html,
     /// CSS (.css)
     Css,
@@ -143,7 +143,7 @@ impl Language {
             Language::Yaml => &[".yaml", ".yml"],
             Language::Toml => &[".toml"],
             Language::Xml => &[".xml", ".svg", ".xsd", ".xsl"],
-            Language::Html => &[".html", ".htm"],
+            Language::Html => &[".html", ".htm", ".xhtml"],
             Language::Css => &[".css"],
             Language::Bash => &[".sh", ".bash"],
         }
@@ -235,7 +235,7 @@ impl Language {
             ".yaml" | ".yml" => Some(Language::Yaml),
             ".toml" => Some(Language::Toml),
             ".xml" | ".svg" | ".xsd" | ".xsl" => Some(Language::Xml),
-            ".html" | ".htm" => Some(Language::Html),
+            ".html" | ".htm" | ".xhtml" => Some(Language::Html),
             ".css" => Some(Language::Css),
             ".sh" | ".bash" => Some(Language::Bash),
             ".swift" => Some(Language::Swift),

@@ -15,18 +15,29 @@
 
 ### Added
 
-- **Element-level extraction for JSON/YAML/TOML (+ Bash functions) via `tldr structure`.** The
+- **Element-level extraction for JSON/YAML/TOML/XML/SVG/HTML/CSS (+ Bash functions) via `tldr
+  structure`.** The
   formats previously reported only empty `definitions` arrays; a new element engine
   (`tldr-core/src/ast/elements.rs`) now walks the same tree-sitter trees and emits structural
   elements as definitions, so structure, the daemon, and every downstream consumer see them
   automatically: JSON object properties as `kind: "key"` (any nesting depth; array items are not
   elements), TOML `[table.path]`/`[[table.path]]` headers as `"section"` plus every key/value pair
   as `"key"`, YAML `---` documents as `"document"` (named `document-N`) plus each document's
-  top-level keys as `"key"`, and Bash `function_definition`s as real `"function"` entries. Names
+  top-level keys as `"key"`, and Bash `function_definition`s as real `"function"` entries. Markup
+  and stylesheets flow through the same engine: XML/SVG elements (paired and self-closing, any
+  nesting depth — SVG `g`/`path`/`defs`/`style` surface as ordinary nested elements) and HTML
+  elements (`element`, `script_element`, `style_element`; doctype/comments skipped) both emit
+  `kind: "element"`, named after the tag with a `#id` suffix when an `id` attribute exists
+  (XML additionally falls back to `tag.<first-class>` from a `class` attribute); CSS rule sets
+  emit `kind: "selector"` with the full selector text whitespace-collapsed (`h1, .card`), CSS
+  block at-rules (`@media`, `@keyframes`, `@supports`, …) emit `kind: "at-rule"` named after the
+  at-keyword, and rules nested inside an at-rule block (media-query inner rules) surface as their
+  own selectors while declarations and `;`-terminated statements never emit. XHTML (`.xhtml`)
+  now classifies as HTML and rides the HTML grammar. Names
   are unquoted, output is in source order, and every element carries exact line spans — plus new
   additive `byte_start`/`byte_end` fields (omitted when absent, so existing JSON consumers and
   caches are unaffected) that address the element's bytes directly. Text mode lists the new kinds
-  under an `Elements:` section. XML/HTML/CSS keep their empty baseline until the next batch.
+  under an `Elements:` section.
 - **7 new formats parsed with tree-sitter** — JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash —
   bringing the total to 25 languages. They are first-class for per-file analysis
   (`tldr structure app.config.toml`), but deliberately excluded from project-language *detection*

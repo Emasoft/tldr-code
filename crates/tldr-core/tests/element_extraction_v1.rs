@@ -18,6 +18,15 @@
 //!   subtree)
 //! - Bash  → `function` per `function_definition` (bash is format-tier but
 //!   has real functions)
+//! - XML/SVG → `element` per `element` node (paired + self-closing), named
+//!   `tag`, `tag#id` (id attribute wins) or `tag.<first-class>` (class attr);
+//!   SVG needs no special casing — g/path/defs/style surface as ordinary
+//!   nested elements
+//! - HTML  → `element` per `element`/`script_element`/`style_element` node,
+//!   named `tag` or `tag#id`; doctype/comments skipped
+//! - CSS   → `selector` per `rule_set` (whitespace-collapsed selector text,
+//!   incl. rules nested inside at-rules) + `at-rule` per block at-rule
+//!   (named after its at-keyword)
 //!
 //! Every element pins:
 //! 1. EXACT `kind` / `name` / `line_start` / `line_end` (1-indexed), and
@@ -25,8 +34,8 @@
 //!    `source[byte_start..byte_end]` starts with the element's first token.
 //!
 //! Code languages keep `byte_start`/`byte_end` = `None` for now (populating
-//! them is a later batch); XML/HTML/CSS keep the empty-definitions baseline
-//! (pinned in `symbol_fidelity_v1.rs`) until their element batch.
+//! them is a later batch); the format engine — markup formats included —
+//! always populates them.
 
 use std::fs;
 
@@ -348,6 +357,244 @@ fn bash_functions() {
 }
 
 // =============================================================================
+// XML — nested elements, id/class naming, self-closing children
+// =============================================================================
+
+const XML_FIXTURE: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                           <catalog id=\"cat1\">\n\
+                           \x20 <book id=\"bk101\">\n\
+                           \x20   <title>Language</title>\n\
+                           \x20 </book>\n\
+                           \x20 <book class=\"ref manual\">\n\
+                           \x20   <isbn/>\n\
+                           \x20 </book>\n\
+                           </catalog>\n";
+
+#[test]
+fn xml_nested_elements_with_id_and_class_naming() {
+    let defs = extract_elements("pinned.xml", XML_FIXTURE, Language::Xml);
+    assert_element_invariants(&defs, "pinned.xml");
+
+    // EXACT source-order element set: the prolog never emits, nested children
+    // are their own definitions, id wins over class, class keeps its FIRST
+    // value, and self-closing elements are elements too.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("element", "catalog#cat1"),
+        ("element", "book#bk101"),
+        ("element", "title"),
+        ("element", "book.ref"),
+        ("element", "isbn"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [pinned.xml]: expected exact element sequence"
+    );
+
+    // The catalog element spans its whole subtree.
+    let catalog = find_element(&defs, "pinned.xml", "element", "catalog#cat1");
+    assert_span(catalog, "pinned.xml", "element:catalog#cat1", 2, 9);
+    assert_byte_slice(catalog, XML_FIXTURE, "pinned.xml", "<catalog");
+
+    let title = find_element(&defs, "pinned.xml", "element", "title");
+    assert_span(title, "pinned.xml", "element:title", 4, 4);
+    assert_byte_slice(title, XML_FIXTURE, "pinned.xml", "<title>");
+
+    let isbn = find_element(&defs, "pinned.xml", "element", "isbn");
+    assert_span(isbn, "pinned.xml", "element:isbn", 7, 7);
+    assert_byte_slice(isbn, XML_FIXTURE, "pinned.xml", "<isbn/>");
+}
+
+// =============================================================================
+// SVG — plain XML: g/path/defs/style surface as ordinary nested elements
+// =============================================================================
+
+const SVG_FIXTURE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\">\n\
+                           \x20 <defs>\n\
+                           \x20   <linearGradient id=\"grad\"/>\n\
+                           \x20 </defs>\n\
+                           \x20 <g id=\"grp\" class=\"shapes\">\n\
+                           \x20   <path d=\"M0 0\"/>\n\
+                           \x20   <circle cx=\"5\" cy=\"5\" r=\"4\"/>\n\
+                           \x20 </g>\n\
+                           \x20 <style>.a { fill: red; }</style>\n\
+                           </svg>\n";
+
+#[test]
+fn svg_groups_paths_defs_and_style_are_nested_elements() {
+    let defs = extract_elements("icon.svg", SVG_FIXTURE, Language::Xml);
+    assert_element_invariants(&defs, "icon.svg");
+
+    // No SVG special-casing: every nested element is an ordinary `element`
+    // definition in source order, `#id`-named wherever an id exists.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("element", "svg"),
+        ("element", "defs"),
+        ("element", "linearGradient#grad"),
+        ("element", "g#grp"),
+        ("element", "path"),
+        ("element", "circle"),
+        ("element", "style"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [icon.svg]: expected exact nested element sequence"
+    );
+
+    let g = find_element(&defs, "icon.svg", "element", "g#grp");
+    assert_span(g, "icon.svg", "element:g#grp", 5, 8);
+    assert_byte_slice(g, SVG_FIXTURE, "icon.svg", "<g");
+
+    let style = find_element(&defs, "icon.svg", "element", "style");
+    assert_span(style, "icon.svg", "element:style", 9, 9);
+    assert_byte_slice(style, SVG_FIXTURE, "icon.svg", "<style>");
+}
+
+// =============================================================================
+// HTML — element tree incl. script/style elements and id naming
+// =============================================================================
+
+const HTML_FIXTURE: &str = "<!DOCTYPE html>\n\
+                            <html lang=\"en\">\n\
+                            \x20 <head>\n\
+                            \x20   <title>Page</title>\n\
+                            \x20   <style>body { color: red; }</style>\n\
+                            \x20 </head>\n\
+                            \x20 <body id=\"main\">\n\
+                            \x20   <script src=\"app.js\"></script>\n\
+                            \x20   <p>Hello</p>\n\
+                            \x20   <br/>\n\
+                            \x20 </body>\n\
+                            </html>\n";
+
+#[test]
+fn html_element_tree_with_script_style_and_id_naming() {
+    let defs = extract_elements("pinned.html", HTML_FIXTURE, Language::Html);
+    assert_element_invariants(&defs, "pinned.html");
+
+    // Doctype is skipped; script_element/style_element are `element` kinds;
+    // the void `<br/>` is an element; `body` carries its `#id` name.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("element", "html"),
+        ("element", "head"),
+        ("element", "title"),
+        ("element", "style"),
+        ("element", "body#main"),
+        ("element", "script"),
+        ("element", "p"),
+        ("element", "br"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [pinned.html]: expected exact element sequence"
+    );
+
+    let body = find_element(&defs, "pinned.html", "element", "body#main");
+    assert_span(body, "pinned.html", "element:body#main", 7, 11);
+    assert_byte_slice(body, HTML_FIXTURE, "pinned.html", "<body");
+
+    let script = find_element(&defs, "pinned.html", "element", "script");
+    assert_span(script, "pinned.html", "element:script", 8, 8);
+    assert_byte_slice(script, HTML_FIXTURE, "pinned.html", "<script");
+
+    let br = find_element(&defs, "pinned.html", "element", "br");
+    assert_span(br, "pinned.html", "element:br", 10, 10);
+    assert_byte_slice(br, HTML_FIXTURE, "pinned.html", "<br/>");
+}
+
+// =============================================================================
+// CSS — selectors (incl. comma lists) + at-rules with nested rule recursion
+// =============================================================================
+
+const CSS_FIXTURE: &str = "/* base */\n\
+                           body {\n\
+                           \x20 color: red;\n\
+                           }\n\
+                           \n\
+                           h1, h2 .card {\n\
+                           \x20 margin: 0;\n\
+                           }\n\
+                           \n\
+                           @media (min-width: 40em) {\n\
+                           \x20 .inner {\n\
+                           \x20   color: blue;\n\
+                           \x20 }\n\
+                           }\n\
+                           \n\
+                           @keyframes spin {\n\
+                           \x20 from { opacity: 0; }\n\
+                           }\n";
+
+#[test]
+fn css_selectors_at_rules_and_at_rule_recursion() {
+    let defs = extract_elements("pinned.css", CSS_FIXTURE, Language::Css);
+    assert_element_invariants(&defs, "pinned.css");
+
+    // EXACT sequence: two top-level rules (comma selector whitespace-
+    // collapsed), the @media at-rule, ITS inner rule as a nested selector,
+    // and the @keyframes at-rule (its `from` is a keyframe block, not a
+    // rule_set). Declarations never emit.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("selector", "body"),
+        ("selector", "h1, h2 .card"),
+        ("at-rule", "@media"),
+        ("selector", ".inner"),
+        ("at-rule", "@keyframes"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [pinned.css]: expected exact selector/at-rule sequence"
+    );
+
+    let body = find_element(&defs, "pinned.css", "selector", "body");
+    assert_span(body, "pinned.css", "selector:body", 2, 4);
+    assert_byte_slice(body, CSS_FIXTURE, "pinned.css", "body");
+
+    let comma = find_element(&defs, "pinned.css", "selector", "h1, h2 .card");
+    assert_span(comma, "pinned.css", "selector:h1, h2 .card", 6, 8);
+    assert_byte_slice(comma, CSS_FIXTURE, "pinned.css", "h1");
+
+    let media = find_element(&defs, "pinned.css", "at-rule", "@media");
+    assert_span(media, "pinned.css", "at-rule:@media", 10, 14);
+    assert_byte_slice(media, CSS_FIXTURE, "pinned.css", "@media");
+
+    let inner = find_element(&defs, "pinned.css", "selector", ".inner");
+    assert_span(inner, "pinned.css", "selector:.inner", 11, 13);
+    assert_byte_slice(inner, CSS_FIXTURE, "pinned.css", ".inner");
+
+    let keyframes = find_element(&defs, "pinned.css", "at-rule", "@keyframes");
+    assert_span(keyframes, "pinned.css", "at-rule:@keyframes", 16, 18);
+    assert_byte_slice(keyframes, CSS_FIXTURE, "pinned.css", "@keyframes");
+}
+
+// =============================================================================
 // Cross-format: the JSON shape consumers see is the plain definitions array
 // =============================================================================
 
@@ -358,6 +605,10 @@ fn elements_flow_through_the_definitions_array_of_every_format() {
         ("pinned.toml", TOML_FIXTURE, Language::Toml, 7),
         ("pinned.yaml", YAML_FIXTURE, Language::Yaml, 6),
         ("deploy.sh", BASH_FIXTURE, Language::Bash, 2),
+        ("pinned.xml", XML_FIXTURE, Language::Xml, 5),
+        ("icon.svg", SVG_FIXTURE, Language::Xml, 7),
+        ("pinned.html", HTML_FIXTURE, Language::Html, 8),
+        ("pinned.css", CSS_FIXTURE, Language::Css, 5),
     ] {
         let defs = extract_elements(filename, content, language);
         assert!(

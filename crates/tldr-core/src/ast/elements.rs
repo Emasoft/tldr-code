@@ -17,15 +17,32 @@
 //! | YAML     | `document`  | each `---`-delimited document of the stream                            | `document-N` (N = 1-indexed source-order position) | the `document` node incl. its `---` marker |
 //! | YAML     | `key`       | top-level mapping keys of each document                                | the key, unquoted              | the `block_mapping_pair` (key + whole value subtree) |
 //! | Bash     | `function`  | `function_definition` (`name() {}` and `function name {}`)             | the function name              | the whole `function_definition` node |
+//! | XML/SVG  | `element`   | every `element` node — paired (`STag … ETag`) and self-closing (`EmptyElemTag`) alike, at ANY depth | the tag name; `tag#id` when an `id` attribute exists, else `tag.<first-class>` when a `class` attribute does | the whole `element` node incl. children |
+//! | HTML     | `element`   | every `element` (paired or wrapping a `self_closing_tag`), `script_element`, and `style_element` | the tag name; `tag#id` when an `id` attribute exists | the whole element node incl. children |
+//! | CSS      | `selector`  | every `rule_set` — top level OR nested inside an at-rule block          | the full selector text, whitespace-collapsed (`h1,\n  .card` → `h1, .card`) | the whole `rule_set` |
+//! | CSS      | `at-rule`   | every BLOCK-bearing at-rule (`at_rule`, `media_statement`, `supports_statement`, `keyframes_statement`) | the at-keyword (`@media`, `@keyframes`, `@font-face`, …) | the whole statement incl. its block |
 //!
-//! XML/HTML/CSS (and any code language) return EMPTY here — their element
-//! kinds (`element`, `selector`, `at-rule`) land in a later batch.
+//! # SVG (and other XML dialects)
+//!
+//! SVG needs no special casing beyond the XML walker: `.svg` maps to
+//! `Language::Xml`, so `g`, `path`, `defs`, `style`, `linearGradient`, … all
+//! surface as ordinary nested `element` definitions in source order — that IS
+//! the requested groups/paths/elements/definitions/styles coverage — and each
+//! carries a `#id` name wherever an `id` attribute exists.
+//!
+//! Non-elements never emit: XML prolog/doctypedecl/PIs/comments and HTML
+//! doctype/comments are skipped by kind, CSS `;`-terminated statements
+//! (`import_statement`, `charset_statement`, `namespace_statement`,
+//! `postcss_statement`) have no block and are not regions, and CSS
+//! declarations are not definitions.
 //!
 //! # Spans
 //!
 //! - `byte_start`/`byte_end`: the node's `byte_range()` exactly; `byte_end` is
 //!   EXCLUSIVE, so `source[byte_start..byte_end]` is the element text and
-//!   starts with its first token. These are `None` for code languages.
+//!   starts with its first token. These are `None` for non-format code
+//!   languages (the format engine, XML/HTML/CSS included, always populates
+//!   them).
 //! - `line_start`: first line (1-indexed) containing node bytes.
 //! - `line_end`: last line (1-indexed) containing node bytes — the trailing
 //!   `end_position().row + 1` convention would spill onto a phantom line when
@@ -47,9 +64,9 @@ use crate::types::{DefinitionInfo, Language};
 
 /// Extract format elements as `DefinitionInfo` entries.
 ///
-/// Returns an EMPTY vec for every non-format language (including XML/HTML/CSS
-/// until their batch) — the caller (`extractor::extract_file_structure`) appends
-/// the result to its `definitions` unconditionally.
+/// Returns an EMPTY vec for every non-format (code) language — the caller
+/// (`extractor::extract_file_structure`) appends the result to its
+/// `definitions` unconditionally.
 pub fn extract_elements(language: Language, tree: &Tree, source: &str) -> Vec<DefinitionInfo> {
     let mut elements = Vec::new();
     let root = tree.root_node();
@@ -59,8 +76,12 @@ pub fn extract_elements(language: Language, tree: &Tree, source: &str) -> Vec<De
         Language::Toml => walk_toml(root, source, &mut elements),
         Language::Yaml => walk_yaml(root, source, &mut elements),
         Language::Bash => walk_bash(root, source, &mut elements),
-        // Formats extension: XML/HTML/CSS keep the empty baseline until their
-        // element batch; code languages never had elements.
+        // Formats extension, batch E2: markup/stylesheets flow through the
+        // same element engine (kinds `element` / `selector` / `at-rule`).
+        Language::Xml => walk_xml(root, source, &mut elements),
+        Language::Html => walk_html(root, source, &mut elements),
+        Language::Css => walk_css(root, source, &mut elements),
+        // Code languages never had elements.
         _ => {}
     }
 
@@ -356,6 +377,259 @@ fn walk_bash(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
     }
 }
 
+// =============================================================================
+// XML + SVG — kind "element" per element node (nested elements recurse)
+// =============================================================================
+
+/// XML (`tree_sitter_xml::LANGUAGE_XML`; serves .svg/.xsd/.xsl too): every
+/// element-bearing syntax lives inside an `element` node — the grammar's
+/// `element` rule is `STag content? ETag` or `EmptyElemTag` (self-closing), so
+/// ONE node kind covers paired and self-closing elements alike (verified
+/// against `tree-sitter-xml-0.7.0/xml/src/node-types.json`). Prolog, XML
+/// declaration, doctypedecl, PIs and comments are not `element` nodes and
+/// never emit; nested elements recurse in source order.
+fn walk_xml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
+    if node.kind() == "element" {
+        if let Some(name) = xml_element_name(&node, source) {
+            out.push(element_def("element", name, node, source));
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_xml(child, source, out);
+    }
+}
+
+/// Name of an XML `element`: the tag name from the `Name` child of its start
+/// tag (`STag`/`EmptyElemTag`), refined to `tag#id` when an `id` attribute
+/// exists, else `tag.<first-class>` when a `class` attribute does. Attributes
+/// are the `Attribute` named children of the start tag; their value is the
+/// quoted `AttValue` text with its surrounding `"`/`'` stripped.
+fn xml_element_name(element: &Node, source: &str) -> Option<String> {
+    let mut tag = None;
+    let mut id = None;
+    let mut class = None;
+
+    let mut cursor = element.walk();
+    for child in element.children(&mut cursor) {
+        if child.kind() != "STag" && child.kind() != "EmptyElemTag" {
+            continue; // `content` / `ETag` carry no naming information
+        }
+        let mut tag_cursor = child.walk();
+        for part in child.children(&mut tag_cursor) {
+            match part.kind() {
+                "Name" if tag.is_none() => tag = Some(source[part.byte_range()].to_string()),
+                // NB: the xml grammar uses PascalCase kinds (Attribute,
+                // AttValue) where html uses snake_case.
+                "Attribute" => {
+                    let (name, value) = xml_attribute(&part, source);
+                    match (name.as_str(), value) {
+                        ("id", v) if id.is_none() => id = v,
+                        ("class", v) if class.is_none() => class = v,
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let tag = tag?;
+    if let Some(id) = id {
+        return Some(format!("{tag}#{id}"));
+    }
+    if let Some(first_class) = class.as_deref().and_then(|c| c.split_whitespace().next()) {
+        return Some(format!("{tag}.{first_class}"));
+    }
+    Some(tag)
+}
+
+/// (name, value) of an XML `Attribute` node (`Name = AttValue`); the value is
+/// `None` for the (grammar-illegal but error-recovery possible) valueless
+/// form. `AttValue` wraps the raw quoted text, so strip one quote pair.
+fn xml_attribute(attribute: &Node, source: &str) -> (String, Option<String>) {
+    let mut name = String::new();
+    let mut value = None;
+    let mut cursor = attribute.walk();
+    for child in attribute.children(&mut cursor) {
+        match child.kind() {
+            "Name" if name.is_empty() => name = source[child.byte_range()].to_string(),
+            "AttValue" => value = Some(unquote(&source[child.byte_range()])),
+            _ => {}
+        }
+    }
+    (name, value)
+}
+
+// =============================================================================
+// HTML — kind "element" per element / script_element / style_element
+// =============================================================================
+
+/// HTML (`tree_sitter_html::LANGUAGE`; serves .xhtml too): the element-bearing
+/// node kinds are `element` (paired via `start_tag … end_tag`, or wrapping a
+/// lone `self_closing_tag` for void/self-closed tags), plus `script_element`
+/// and `style_element` (each `start_tag raw_text? end_tag`) — verified against
+/// `tree-sitter-html-0.23.2/src/node-types.json`. `doctype` and `comment` are
+/// skipped by kind; nested elements recurse in source order.
+fn walk_html(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
+    match node.kind() {
+        "element" | "script_element" | "style_element" => {
+            if let Some(name) = html_element_name(&node, source) {
+                out.push(element_def("element", name, node, source));
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_html(child, source, out);
+    }
+}
+
+/// Name of an HTML element: the `tag_name` of its `start_tag` (or of its
+/// `self_closing_tag`), suffixed `#id` when an `id` attribute is present.
+/// Attribute values come from `attribute_value` — either a direct child of
+/// `attribute` (unquoted syntax) or wrapped in `quoted_attribute_value` (the
+/// grammar already strips the quotes).
+fn html_element_name(element: &Node, source: &str) -> Option<String> {
+    let mut cursor = element.walk();
+    for child in element.children(&mut cursor) {
+        if child.kind() == "start_tag" || child.kind() == "self_closing_tag" {
+            return html_start_tag_name(&child, source);
+        }
+    }
+    None
+}
+
+fn html_start_tag_name(tag: &Node, source: &str) -> Option<String> {
+    let mut name = None;
+    let mut id = None;
+    let mut cursor = tag.walk();
+    for child in tag.children(&mut cursor) {
+        match child.kind() {
+            "tag_name" if name.is_none() => name = Some(source[child.byte_range()].to_string()),
+            "attribute" => {
+                let (attr, value) = html_attribute(&child, source);
+                if attr == "id" && id.is_none() {
+                    id = value;
+                }
+            }
+            _ => {}
+        }
+    }
+    name.map(|tag| match id {
+        Some(id) => format!("{tag}#{id}"),
+        None => tag,
+    })
+}
+
+/// (name, value) of an HTML `attribute` node (`attribute_name (= value)?`);
+/// the value is surfaced verbatim — the grammar keeps it unquoted inside
+/// `quoted_attribute_value`.
+fn html_attribute(attribute: &Node, source: &str) -> (String, Option<String>) {
+    let mut name = None;
+    let mut value = None;
+    let mut cursor = attribute.walk();
+    for child in attribute.children(&mut cursor) {
+        match child.kind() {
+            "attribute_name" => name = Some(source[child.byte_range()].to_string()),
+            "attribute_value" => value = Some(source[child.byte_range()].to_string()),
+            "quoted_attribute_value" => {
+                let mut inner = child.walk();
+                for quoted in child.children(&mut inner) {
+                    if quoted.kind() == "attribute_value" {
+                        value = Some(source[quoted.byte_range()].to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (name.unwrap_or_default(), value)
+}
+
+// =============================================================================
+// CSS — kind "selector" per rule_set + kind "at-rule" per block at-rule
+// =============================================================================
+
+/// CSS (`tree_sitter_css::LANGUAGE`): `rule_set` nodes (prelude `selectors` +
+/// `block`) emit kind `selector`; BLOCK-bearing at-rules emit kind `at-rule`.
+/// tree-sitter-css 0.23.2 gives the common at-rules dedicated statement kinds
+/// (`media_statement`, `supports_statement`, `keyframes_statement`) with the
+/// keyword baked in as an anonymous token, while every other block at-rule
+/// parses as generic `at_rule` with a named `at_keyword` child (verified
+/// against `tree-sitter-css-0.23.2/src/node-types.json` + `grammar.json`).
+/// `;`-terminated statements (`import_statement`, `charset_statement`,
+/// `namespace_statement`, `postcss_statement`) have no block and never emit;
+/// declarations are not definitions. Rules nested inside an at-rule block —
+/// the media-query case, CSS nesting — recurse and emit their own selectors.
+fn walk_css(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
+    match node.kind() {
+        "rule_set" => {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "selectors" {
+                    let name = collapse_whitespace(&source[child.byte_range()]);
+                    out.push(element_def("selector", name, node, source));
+                    break;
+                }
+            }
+        }
+        "media_statement" | "supports_statement" | "keyframes_statement" => {
+            let name = css_at_rule_name(&node, source);
+            out.push(element_def("at-rule", name, node, source));
+        }
+        "at_rule" => {
+            // Generic at-rules may also terminate with `;` (no block); only
+            // block-bearing ones are structural at-rule regions.
+            let mut has_block = false;
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "block" {
+                    has_block = true;
+                    break;
+                }
+            }
+            if has_block {
+                let name = css_at_rule_name(&node, source);
+                out.push(element_def("at-rule", name, node, source));
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_css(child, source, out);
+    }
+}
+
+/// Name of a CSS at-rule: the `at_keyword` child when the grammar exposes one
+/// (`at_rule`, `keyframes_statement`), else the statement's first token — for
+/// `media_statement`/`supports_statement` the keyword is an anonymous literal
+/// at the node's start (`@media`/`@supports`).
+fn css_at_rule_name(rule: &Node, source: &str) -> String {
+    let mut cursor = rule.walk();
+    for child in rule.children(&mut cursor) {
+        if child.kind() == "at_keyword" {
+            return source[child.byte_range()].to_string();
+        }
+    }
+    source[rule.byte_range()]
+        .split(|c: char| c.is_whitespace() || c == '{')
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+/// CSS selector text: collapse every whitespace run to one space and trim, so
+/// `h1,\n  .card` reads as `h1, .card`.
+fn collapse_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,18 +644,38 @@ mod tests {
     }
 
     #[test]
-    fn html_css_xml_return_empty_until_their_batch() {
-        for (src, lang) in [
-            ("<html><body></body></html>", Language::Html),
-            ("body { color: red; }", Language::Css),
-            ("<?xml version=\"1.0\"?><root/>", Language::Xml),
-        ] {
-            let tree = parse(src, lang).unwrap();
-            assert!(
-                extract_elements(lang, &tree, src).is_empty(),
-                "{lang:?} must keep the empty baseline until its element batch"
-            );
+    fn markup_formats_emit_elements_with_id_and_class_naming() {
+        // HTML: paired elements, a script_element, a style_element, an id
+        // name, and a void (self-closing) element.
+        let src = "<html><head><title>Page</title><style>a{}</style></head>\
+                   <body><script src=\"app.js\"></script><br/></body></html>";
+        let tree = parse(src, Language::Html).unwrap();
+        let elements = extract_elements(Language::Html, &tree, src);
+        let names: Vec<&str> = elements.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["html", "head", "title", "style", "body", "script", "br"]
+        );
+        for e in &elements {
+            assert_eq!(e.kind, "element");
         }
+
+        // XML: id-naming and class-naming on nested elements.
+        let src = "<?xml version=\"1.0\"?><root id=\"r\"><child/></root>";
+        let tree = parse(src, Language::Xml).unwrap();
+        let elements = extract_elements(Language::Xml, &tree, src);
+        let names: Vec<&str> = elements.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["root#r", "child"]);
+
+        // CSS: selectors and at-rules, with the media-query inner rule
+        // surfacing as its own nested selector.
+        let src = "body { color: red; }\n@media (min-width: 1px) { b { color: blue } }\n";
+        let tree = parse(src, Language::Css).unwrap();
+        let elements = extract_elements(Language::Css, &tree, src);
+        let kinds: Vec<&str> = elements.iter().map(|e| e.kind.as_str()).collect();
+        let names: Vec<&str> = elements.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(kinds, vec!["selector", "at-rule", "selector"]);
+        assert_eq!(names, vec!["body", "@media", "b"]);
     }
 
     #[test]

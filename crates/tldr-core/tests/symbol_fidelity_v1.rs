@@ -1033,14 +1033,15 @@ let lone a = a
 }
 
 // =============================================================================
-// Formats — element-extraction-v1 (Phase E) baseline.
+// Formats — element-extraction-v1 baseline.
 //
-// json/yaml/toml now emit ELEMENT definitions (kind = key / section /
-// document; bash emits real `function` definitions) via `ast::elements`,
-// appended inside `extract_file_structure`. Their exact spans live in the
-// dedicated `element_extraction_v1` suite; here we pin only the transition:
-// the four formats carry their element kinds, while xml/html/css keep the
-// EMPTY-definitions baseline until their element batch (E2).
+// json/yaml/toml emit ELEMENT definitions (kind = key / section / document;
+// bash emits real `function` definitions) via `ast::elements`, appended
+// inside `extract_file_structure`. Their exact spans live in the dedicated
+// `element_extraction_v1` suite; here we pin only the transition:
+// the four formats carry their element kinds, and since batch E2 the markup
+// formats flow through the same engine (xml/svg/html → `element`,
+// css → `selector`/`at-rule`).
 // =============================================================================
 
 #[test]
@@ -1105,22 +1106,31 @@ fn json_yaml_toml_bash_definitions_are_elements() {
 }
 
 #[test]
-fn xml_html_css_still_return_empty_definitions() {
-    let cases: &[(&str, &str, Language)] = &[
+fn xml_html_css_definitions_are_elements() {
+    let cases: &[(&str, &str, Language, &[&str])] = &[
         (
             "pinned.html",
             "<!DOCTYPE html>\n<html>\n  <body>\n    <p>hello</p>\n  </body>\n</html>\n",
             Language::Html,
+            &["element", "element", "element"],
         ),
-        ("pinned.css", "body {\n  color: red;\n}\n", Language::Css),
+        (
+            "pinned.css",
+            "body {\n  color: red;\n}\n",
+            Language::Css,
+            &["selector"],
+        ),
         (
             "pinned.xml",
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<root>\n  <item id=\"1\"/>\n</root>\n",
             Language::Xml,
+            // `item` carries an id attribute → its name is `item#1` in the
+            // dedicated suite; here we pin the KIND sequence only.
+            &["element", "element"],
         ),
     ];
 
-    for (filename, content, language) in cases {
+    for (filename, content, language, expected_kinds) in cases {
         let dir =
             TempDir::new().unwrap_or_else(|e| panic!("symbol-fidelity-v1: tempdir failed: {e}"));
         let path = dir.path().join(filename);
@@ -1134,10 +1144,20 @@ fn xml_html_css_still_return_empty_definitions() {
             "symbol-fidelity-v1 [{filename}]: expected exactly one FileStructure"
         );
         let defs = &structure.files[0].definitions;
-        assert!(
-            defs.is_empty(),
-            "symbol-fidelity-v1 [{filename}]: xml/html/css must return EMPTY definitions \
-             (baseline until the E2 element batch), got {defs:#?}"
+        let kinds: Vec<&str> = defs.iter().map(|d| d.kind.as_str()).collect();
+        assert_eq!(
+            kinds, *expected_kinds,
+            "symbol-fidelity-v1 [{filename}]: expected element-kind sequence (source order), \
+             got {defs:#?}"
         );
+        // Element byte spans are populated (code languages keep None).
+        for d in defs {
+            assert!(
+                d.byte_start.is_some() && d.byte_end.is_some(),
+                "symbol-fidelity-v1 [{filename}]: element {}:`{}` must carry byte spans",
+                d.kind,
+                d.name
+            );
+        }
     }
 }
