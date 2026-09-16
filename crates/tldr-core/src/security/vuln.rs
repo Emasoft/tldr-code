@@ -358,6 +358,18 @@ fn descriptions_for(source_type: TaintSourceType, language: Language) -> &'stati
 
         // File reads
         (TaintSourceType::FileRead, _) => "Untrusted file read",
+
+        // Formats extension (2025-09): JSON/YAML/TOML/XML(SVG)/HTML/CSS/Bash
+        // define no taint sources (see taint::get_patterns), so this arm only
+        // exists for exhaustiveness — a description is never rendered for
+        // them in practice.
+        (_, Language::Json)
+        | (_, Language::Yaml)
+        | (_, Language::Toml)
+        | (_, Language::Xml)
+        | (_, Language::Html)
+        | (_, Language::Css)
+        | (_, Language::Bash) => "Untrusted input",
     }
 }
 

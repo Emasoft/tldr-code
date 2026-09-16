@@ -40,6 +40,14 @@ tree-sitter-lua = { workspace = true }
 tree-sitter-luau = { workspace = true }
 tree-sitter-elixir = { workspace = true }
 tree-sitter-ocaml = { workspace = true }
+# Formats extension: data/config/markup/web/shell/db grammars (2025-09)
+tree-sitter-json = { workspace = true }
+tree-sitter-yaml = { workspace = true }
+tree-sitter-toml-ng = { workspace = true }
+tree-sitter-xml = { workspace = true }
+tree-sitter-html = { workspace = true }
+tree-sitter-css = { workspace = true }
+tree-sitter-bash = { workspace = true }
 
 # File system traversal - Phase 2: tree command
 # M12: Use ignore crate for gitignore pattern handling

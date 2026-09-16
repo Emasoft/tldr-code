@@ -309,6 +309,22 @@ pub fn format_structure_text(structure: &tldr_core::CodeStructure) -> String {
         structure.root.display().to_string().bold(),
         structure.files.len()
     ));
+    // formats-extension-v1 (2025-09): surface the JSONL row-stream stats in
+    // text mode too (JSON mode carries the structured `jsonl_stream` field).
+    if let Some(js) = &structure.jsonl_stream {
+        output.push_str(&format!(
+            "jsonl: {} rows ({} valid, {} invalid, {} blank), streamed {} bytes in {}ms\n",
+            js.rows_total,
+            js.rows_valid,
+            js.rows_invalid,
+            js.rows_blank,
+            js.bytes_processed,
+            js.parse_ms
+        ));
+        if let (Some(row), Some(err)) = (&js.first_invalid_row, &js.first_error) {
+            output.push_str(&format!("jsonl: first invalid row {row}: {err}\n"));
+        }
+    }
     // med-low-schema-cleanup-v1 (N7): `language` is `Option<Language>`
     // and is `None` when the scanned directory contained zero source
     // files. Render that explicitly instead of debug-printing `None`.

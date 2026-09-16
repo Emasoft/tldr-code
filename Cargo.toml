@@ -42,6 +42,20 @@ tree-sitter-rust = "=0.23.3"
 tree-sitter-java = "=0.23.5"
 tree-sitter-c = "=0.23.4"
 tree-sitter-cpp = "=0.23.4"
+# Formats extension (2025-09): data/config/markup/web/shell/db grammars.
+# Each grammar crate must load against tree-sitter 0.25 (ABI 14/15 both
+# accepted at runtime: LANGUAGE_VERSION=15, MIN_COMPATIBLE=13). Verified by
+# `cargo test -p tldr-core --test grammar_stability_test` + the parse smoke
+# tests in ast/parser.rs tests. "All tree-sitter formats" directive (#8b follow-up).
+tree-sitter-json = "=0.24.0"
+tree-sitter-yaml = "=0.7.0"
+tree-sitter-toml-ng = "=0.7.0"
+tree-sitter-xml = "=0.7.0"
+tree-sitter-html = "=0.23.2"
+tree-sitter-css = "=0.23.2"
+tree-sitter-bash = "=0.23.3"
+# NOTE: tree-sitter-sql dropped — crates.io only publishes 0.0.2 (DerekStride
+# grammar is source-only); revisit if a maintained sql crate targets ts 0.25.
 # Phase 3: Ruby grammar
 # Note: tree-sitter-ruby 0.23.1 uses tree-sitter-language crate for ABI compatibility
 tree-sitter-ruby = "=0.23.1"

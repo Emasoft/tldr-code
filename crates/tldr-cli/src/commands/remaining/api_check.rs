@@ -1485,6 +1485,15 @@ fn map_language_to_api_language(lang: Language) -> Option<ApiLanguage> {
         Language::Lua => Some(ApiLanguage::Lua),
         Language::Luau => Some(ApiLanguage::Luau),
         Language::Ocaml => Some(ApiLanguage::Ocaml),
+        // Formats extension (2025-09): no api-check rule pack for data/config
+        // formats — None means "don't filter" (documented caller contract).
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => None,
     }
 }
 

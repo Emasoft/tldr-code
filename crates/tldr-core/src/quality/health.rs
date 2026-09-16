@@ -711,6 +711,13 @@ pub fn run_health(
     // Step 2: Detect language if not specified (T3 mitigation; delegates to
     // the canonical `Language::from_path` / `Language::from_directory`
     // detectors — VAL-002).
+    //
+    // "Supported files" gate: for directories this rides on
+    // `Language::from_directory`, whose Stage-1 tally filters the 7 format
+    // variants via `Language::is_project_language_signal` — config/data
+    // files alone therefore yield `None` → `NoSupportedFiles`, same rule as
+    // project dominant-language detection. Single-file paths keep using
+    // `Language::from_path` (formats ARE analyzable per file).
     let detected_language = match language {
         Some(l) => l,
         None => {

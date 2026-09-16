@@ -603,6 +603,27 @@ fn get_resource_patterns(lang: Language) -> LangResourcePatterns {
             try_kinds: &[],
             cleanup_block_kinds: &[],
         },
+        // Formats extension (2025-09): no resource lifecycle in data/config
+        // documents (JSON has no `open()`).
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => LangResourcePatterns {
+            creators: &[],
+            closers: &[],
+            function_kinds: &[],
+            name_field: "name",
+            body_kinds: &[],
+            assignment_kinds: &[],
+            return_kinds: &[],
+            if_kinds: &[],
+            loop_kinds: &[],
+            try_kinds: &[],
+            cleanup_block_kinds: &[],
+        },
     }
 }
 

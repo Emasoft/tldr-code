@@ -13,10 +13,12 @@ pub mod extract;
 pub mod extractor;
 pub mod function_finder;
 pub mod imports;
+pub mod jsonl;
 pub mod parser;
 
 pub use count::{count_functions_canonical, count_functions_canonical_from_modules};
 pub use extract::{extract_file, extract_file_with_lang, extract_from_tree};
 pub use extractor::get_code_structure;
 pub use imports::get_imports;
+pub use jsonl::{first_row_tree, is_jsonl_path, stream_jsonl, JsonlStreamReport, JsonlStreamSummary};
 pub use parser::ParserPool;

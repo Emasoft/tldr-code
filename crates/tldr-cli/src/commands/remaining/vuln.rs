@@ -570,6 +570,15 @@ fn is_supported_source_file(path: &Path, lang: Option<Language>) -> bool {
         Some(Language::Lua) => ext == "lua",
         Some(Language::Luau) => ext == "luau",
         Some(Language::Ocaml) => matches!(ext, "ml" | "mli"),
+        // Formats extension (2025-09): extension filters per data format.
+        // (taint patterns are empty for these — the scan is a no-op.)
+        Some(Language::Json) => matches!(ext, "json" | "jsonl" | "ndjson"),
+        Some(Language::Yaml) => matches!(ext, "yaml" | "yml"),
+        Some(Language::Toml) => ext == "toml",
+        Some(Language::Xml) => matches!(ext, "xml" | "svg" | "xsd" | "xsl"),
+        Some(Language::Html) => matches!(ext, "html" | "htm"),
+        Some(Language::Css) => ext == "css",
+        Some(Language::Bash) => matches!(ext, "sh" | "bash"),
         // No --lang: preserve historical behavior of scanning py + rs
         // (the two languages the taint analyzer natively handles).
         None => matches!(ext, "py" | "rs"),

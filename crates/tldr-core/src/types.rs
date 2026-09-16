@@ -31,14 +31,21 @@ use std::path::{Path, PathBuf};
 // Language Support
 // =============================================================================
 
-/// Supported programming languages (18 variants — see `test_language_all_18_variants`)
-// why: comment said 17, but OCaml (added later) brings the enum to 18,
-// as the enum's own variant list and Language::all() below confirm.
+/// Supported programming languages (25 variants — see `test_language_all_25_variants`)
+// why: comment said 17, but OCaml (added later) brought the enum to 18,
+// and the formats extension (2025-09, "all tree-sitter formats" directive)
+// brought it to 25 with the data/config/markup/web/shell batch below.
 ///
 /// Priority levels:
 /// - P0: Python, TypeScript, JavaScript, Go (full support)
 /// - P1: Rust, Java (full support)
 /// - P2: C, C++, Ruby, Kotlin, Swift, C#, Scala, PHP, Lua, Luau, Elixir (basic support)
+/// - P3 (formats): JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash — parsed
+///   with their tree-sitter grammars; structural extraction is basic (these
+///   formats have no functions/classes in the source-code sense), and JSONL
+///   streams one JSON document per row (see `ast::jsonl`). tree-sitter-sql
+///   dropped — crates.io only publishes 0.0.2 (DerekStride grammar is
+///   source-only); revisit if a maintained sql crate targets ts 0.25.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
@@ -78,6 +85,25 @@ pub enum Language {
     Elixir,
     /// OCaml (.ml, .mli)
     Ocaml,
+    // -------------------------------------------------------------------------
+    // Formats extension (2025-09): tree-sitter-supported data/config/markup/
+    // web/shell formats. `.jsonl`/`.ndjson` also map to `Json` and stream one
+    // JSON document per row (see `ast::jsonl` + the size-policy exemption).
+    // -------------------------------------------------------------------------
+    /// JSON (.json; also .jsonl/.ndjson row-streamed)
+    Json,
+    /// YAML (.yaml, .yml)
+    Yaml,
+    /// TOML (.toml)
+    Toml,
+    /// XML family (.xml, .svg, .xsd, .xsl) — SVG is XML
+    Xml,
+    /// HTML (.html, .htm)
+    Html,
+    /// CSS (.css)
+    Css,
+    /// Bash/shell (.sh, .bash)
+    Bash,
 }
 
 impl Language {
@@ -110,6 +136,16 @@ impl Language {
             Language::Luau => &[".luau"],
             Language::Elixir => &[".ex", ".exs"],
             Language::Ocaml => &[".ml", ".mli"],
+            // Formats extension: canonical extensions. `.jsonl`/`.ndjson`
+            // resolve to Json via `from_extension` but are intentionally NOT
+            // in the canonical list (they're row-streamed variants of Json).
+            Language::Json => &[".json"],
+            Language::Yaml => &[".yaml", ".yml"],
+            Language::Toml => &[".toml"],
+            Language::Xml => &[".xml", ".svg", ".xsd", ".xsl"],
+            Language::Html => &[".html", ".htm"],
+            Language::Css => &[".css"],
+            Language::Bash => &[".sh", ".bash"],
         }
     }
 
@@ -192,6 +228,16 @@ impl Language {
             }
             ".rb" => Some(Language::Ruby),
             ".kt" | ".kts" => Some(Language::Kotlin),
+            // Formats extension (2025-09): data/config/markup/web/shell.
+            // `.jsonl`/`.ndjson` map to Json — they stream one JSON document
+            // per row (ast::jsonl) with a size-policy exemption.
+            ".json" | ".jsonl" | ".ndjson" => Some(Language::Json),
+            ".yaml" | ".yml" => Some(Language::Yaml),
+            ".toml" => Some(Language::Toml),
+            ".xml" | ".svg" | ".xsd" | ".xsl" => Some(Language::Xml),
+            ".html" | ".htm" => Some(Language::Html),
+            ".css" => Some(Language::Css),
+            ".sh" | ".bash" => Some(Language::Bash),
             ".swift" => Some(Language::Swift),
             ".cs" => Some(Language::CSharp),
             ".scala" => Some(Language::Scala),
@@ -394,6 +440,12 @@ impl Language {
         // project — they are just useless for *deciding what language
         // the project is*. The walker itself does not exclude them
         // (other commands do want to see them).
+        //
+        // Format files (Json/Yaml/Toml/Xml/Html/Css/Bash) are skipped for
+        // identification purposes via `is_project_language_signal`: they are
+        // first-class for per-file analysis but must never fabricate a
+        // project-level dominant language nor count as "supported files"
+        // (see that predicate's docs).
         const NOISE_DIRS: &[&str] = &["docs", "doc", "documentation", "site-docs"];
         let mut counts: HashMap<Language, usize> = HashMap::new();
         for entry in crate::walker::walk_project(path) {
@@ -417,6 +469,9 @@ impl Language {
                 }
             }
             if let Some(lang) = Self::from_path(p) {
+                if !lang.is_project_language_signal() {
+                    continue;
+                }
                 *counts.entry(lang).or_insert(0) += 1;
             }
         }
@@ -452,6 +507,9 @@ impl Language {
                     }
                 }
                 if let Some(lang) = Self::from_path(p) {
+                    if !lang.is_project_language_signal() {
+                        continue;
+                    }
                     *counts.entry(lang).or_insert(0) += 1;
                 }
             }
@@ -550,6 +608,13 @@ impl Language {
             Language::Luau => "luau",
             Language::Elixir => "elixir",
             Language::Ocaml => "ocaml",
+            Language::Json => "json",
+            Language::Yaml => "yaml",
+            Language::Toml => "toml",
+            Language::Xml => "xml",
+            Language::Html => "html",
+            Language::Css => "css",
+            Language::Bash => "bash",
         }
     }
 
@@ -564,6 +629,51 @@ impl Language {
     /// Check if this is a P1 (high priority) language
     pub fn is_p1(&self) -> bool {
         matches!(self, Language::Rust | Language::Java)
+    }
+
+    /// Can this language act as a *project-level* signal?
+    ///
+    /// Returns `false` for exactly the 7 "formats" variants (Json, Yaml, Toml,
+    /// Xml, Html, Css, Bash) and `true` for the 18 source-code languages.
+    ///
+    /// Rationale: the formats variants are first-class for **per-file**
+    /// analysis — `Language::from_path` resolves them, `tldr structure
+    /// <file>` reports them, and the tree-sitter grammars parse them — but
+    /// they must never fabricate a *project-level* dominant language
+    /// (`Language::from_directory`) nor count as "supported files" for
+    /// project health (`run_health`'s auto-detection gate). Config/data
+    /// files (package.json, Cargo.toml, tsconfig.json, .github workflows,
+    /// stylesheets, shell glue) exist in virtually every repository,
+    /// regardless of the language the project is actually written in, so
+    /// letting them vote would drown out real source files and turn
+    /// "language with the MOST source files" into "language with the most
+    /// config files".
+    ///
+    /// Judgment call: Bash is excluded here too, even though it is closer to
+    /// executable code than the other formats. Shell scripts are
+    /// project-peripheral glue (CI wrappers, build scripts, dev tooling)
+    /// that show up in projects of every language, so counting them would
+    /// reintroduce the same false-dominance problem; keeping the whole
+    /// formats block out of detection is the simpler, more predictable
+    /// contract. Bash remains fully supported per-file.
+    ///
+    /// Sites that MUST consult this predicate (kept consistent):
+    /// - `Language::from_directory` Stage-1 extension tally (project
+    ///   dominant-language detection),
+    /// - `run_health`'s "no supported files" auto-detection gate, which
+    ///   delegates to `Language::from_directory` and therefore inherits the
+    ///   same filter.
+    pub fn is_project_language_signal(self) -> bool {
+        !matches!(
+            self,
+            Language::Json
+                | Language::Yaml
+                | Language::Toml
+                | Language::Xml
+                | Language::Html
+                | Language::Css
+                | Language::Bash
+        )
     }
 
     /// Get all supported languages
@@ -587,6 +697,13 @@ impl Language {
             Language::Luau,
             Language::Elixir,
             Language::Ocaml,
+            Language::Json,
+            Language::Yaml,
+            Language::Toml,
+            Language::Xml,
+            Language::Html,
+            Language::Css,
+            Language::Bash,
         ]
     }
 }
@@ -1245,6 +1362,14 @@ pub struct CodeStructure {
     /// <category>`. Omitted from the JSON output when empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// JSONL row-streaming summary (formats-extension, 2025-09).
+    ///
+    /// Populated when the analyzed path is a `.jsonl`/`.ndjson` file: the
+    /// file is streamed **one JSON document per row** with bounded memory
+    /// (`ast::jsonl::stream_jsonl`), and this carries the row health stats.
+    /// Additive field — omitted for every non-JSONL input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jsonl_stream: Option<crate::ast::jsonl::JsonlStreamSummary>,
 }
 
 /// Definition-level information with line ranges and signatures.
@@ -3342,8 +3467,11 @@ mod tests {
     }
 
     #[test]
-    fn test_language_all_18_variants() {
-        assert_eq!(Language::all().len(), 18);
+    fn test_language_all_25_variants() {
+        // formats-extension-v1 (2025-09): 18 source languages + 7
+        // tree-sitter data/config/markup formats (JSON, YAML, TOML, XML/SVG,
+        // HTML, CSS, Bash) = 25.
+        assert_eq!(Language::all().len(), 25);
     }
 
     #[test]

@@ -62,5 +62,14 @@ pub(crate) fn profile_for(language: Language) -> Option<&'static SurfaceLanguage
         Language::Swift => Some(&swift::PROFILE),
         Language::TypeScript => Some(&typescript::PROFILE),
         Language::Luau | Language::Ocaml => None,
+        // Formats extension (2025-09): no API-surface profiles for
+        // data/config formats (a JSON document has no callable surface).
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => None,
     }
 }

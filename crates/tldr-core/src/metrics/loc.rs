@@ -467,6 +467,11 @@ fn is_single_line_comment(trimmed: &str, lang: Language) -> bool {
         | Language::Php => trimmed.starts_with("//"),
         Language::Lua | Language::Luau => trimmed.starts_with("--"),
         Language::Elixir => trimmed.starts_with('#'),
+        // Formats extension (2025-09): line comments per data format.
+        // YAML/TOML/Bash use `#`; JSON has no comments; XML/HTML/CSS are
+        // block-comment styles handled by the block-comment check.
+        Language::Yaml | Language::Toml | Language::Bash => trimmed.starts_with('#'),
+        Language::Json | Language::Xml | Language::Html | Language::Css => false,
         // why: OCaml has no single-line comment syntax — every comment is a
         // `(* ... *)` block (possibly spanning one line). Treating a line
         // that merely starts with "(*" as already-closed single-line

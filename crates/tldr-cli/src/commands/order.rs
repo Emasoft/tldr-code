@@ -69,6 +69,26 @@ impl OrderArgs {
             })?,
         };
 
+        // Formats-extension hardening (2025-09): for languages outside the
+        // definition-order MVP scope (JS/TS/Python), return the explanation
+        // WITHOUT reading the file — a 2 GB .jsonl/.xml/.parquet answers
+        // instantly instead of being read into RAM for a guaranteed
+        // "not supported" outcome.
+        if !matches!(
+            language,
+            Language::JavaScript | Language::TypeScript | Language::Python
+        ) {
+            let mut report = analyze_definition_order("", language);
+            report.file = self.file.display().to_string();
+            if writer.is_text() {
+                let text = format_order_text(&report);
+                writer.write_text(&text)?;
+            } else {
+                writer.write(&report)?;
+            }
+            return Ok(());
+        }
+
         // Not a byte-faithfulness command: plain read is fine here.
         let source = std::fs::read_to_string(&self.file)
             .map_err(|e| anyhow::anyhow!("Failed to read '{}': {}", self.file.display(), e))?;

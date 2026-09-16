@@ -1452,6 +1452,15 @@ pub fn language_profile(language: crate::types::Language) -> Option<LanguageProf
         crate::types::Language::Swift => Some(languages::swift::profile()),
         crate::types::Language::Scala => Some(languages::scala::profile()),
         crate::types::Language::Ocaml => Some(languages::ocaml::profile()),
+        // Formats extension (2025-09): no pattern profiles for data/config
+        // formats yet — `None` is the documented "no profile" outcome.
+        crate::types::Language::Json
+        | crate::types::Language::Yaml
+        | crate::types::Language::Toml
+        | crate::types::Language::Xml
+        | crate::types::Language::Html
+        | crate::types::Language::Css
+        | crate::types::Language::Bash => None,
     }
 }
 

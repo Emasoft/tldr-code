@@ -596,6 +596,14 @@ fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["call"],         // defmodule is a call
         Language::Lua | Language::Luau => &[], // Lua has no class syntax
         Language::Ocaml => &["module_definition", "type_definition"],
+        // Formats extension (2025-09): no classes in data/config documents.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => &[],
     }
 }
 
@@ -617,6 +625,14 @@ fn get_class_body_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["do_block"],
         Language::Lua | Language::Luau => &[],
         Language::Ocaml => &[],
+        // Formats extension (2025-09): no class bodies in data/config docs.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => &[],
     }
 }
 
@@ -1589,6 +1605,14 @@ fn get_statement_node_kinds(lang: Language) -> &'static [&'static str] {
             "match_expression",
             "application",
         ],
+        // Formats extension (2025-09): no statements in data/config documents.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => &[],
     }
 }
 
@@ -1756,6 +1780,14 @@ fn find_function_body(func_node: Node, lang: Language) -> Option<Node> {
         Language::Elixir => &["do_block"],
         Language::Lua | Language::Luau => &["block"],
         Language::Ocaml => &["let_binding"],
+        // Formats extension (2025-09): no function bodies in data/config docs.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => &[],
     };
 
     let mut cursor = func_node.walk();

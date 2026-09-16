@@ -8,6 +8,25 @@ use tree_sitter::Node;
 
 use crate::Language;
 
+/// Formats-extension languages (2025-09 "all tree-sitter formats" directive):
+/// JSON, YAML, TOML, XML/SVG, HTML, CSS and Bash are *documents* rather than
+/// imperative source. The security node-kind tables below return empty slices
+/// for them — there are no calls/assignments/loops in a JSON document, so
+/// taint/security analyses find nothing (conservative, zero false positives).
+/// Format-specific security rules (e.g. XXE for XML, unsafe-deserialization
+/// for JSON) are future work.
+macro_rules! formats_langs {
+    () => {
+        Language::Json
+            | Language::Yaml
+            | Language::Toml
+            | Language::Xml
+            | Language::Html
+            | Language::Css
+            | Language::Bash
+    };
+}
+
 // =============================================================================
 // Node Kind Lookup Tables
 // =============================================================================
@@ -32,6 +51,7 @@ pub fn call_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["function_call"],
         Language::Elixir => &["call"],
         Language::Ocaml => &["application_expression"],
+        formats_langs!() => &[],
     }
 }
 
@@ -53,6 +73,7 @@ pub fn string_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["string"],
         Language::Elixir => &["string"],
         Language::Ocaml => &["string"],
+        formats_langs!() => &[],
     }
 }
 
@@ -79,6 +100,7 @@ pub fn assignment_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Luau => &["variable_declaration", "assignment_statement"],
         Language::Elixir => &["match_operator"],
         Language::Ocaml => &["let_binding", "value_definition"],
+        formats_langs!() => &[],
     }
 }
 
@@ -107,6 +129,7 @@ pub fn binary_expression_node_kinds(language: Language) -> &'static [&'static st
         Language::Lua | Language::Luau => &["binary_expression"],
         Language::Elixir => &["binary_operator"],
         Language::Ocaml => &["infix_expression"],
+        formats_langs!() => &[],
     }
 }
 
@@ -128,6 +151,7 @@ pub fn comment_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["comment"],
         Language::Elixir => &["comment"],
         Language::Ocaml => &["comment"],
+        formats_langs!() => &[],
     }
 }
 
@@ -172,6 +196,7 @@ pub fn loop_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["call"],
         Language::Lua | Language::Luau => &["for_statement", "while_statement", "repeat_statement"],
         Language::Ocaml => &["for_expression", "while_expression"],
+        formats_langs!() => &[],
     }
 }
 
@@ -205,6 +230,7 @@ pub fn literal_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["integer", "float", "string"],
         Language::Lua | Language::Luau => &["number", "string"],
         Language::Ocaml => &["number", "string", "character"],
+        formats_langs!() => &[],
     }
 }
 
@@ -229,6 +255,7 @@ pub fn identifier_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["identifier", "atom"],
         Language::Lua | Language::Luau => &["identifier"],
         Language::Ocaml => &["value_name", "module_name"],
+        formats_langs!() => &[],
     }
 }
 
@@ -253,6 +280,7 @@ pub fn unary_expression_node_kinds(language: Language) -> &'static [&'static str
         Language::Elixir => &["unary_operator"],
         Language::Lua | Language::Luau => &["unary_expression"],
         Language::Ocaml => &["prefix_expression"],
+        formats_langs!() => &[],
     }
 }
 
@@ -277,6 +305,7 @@ pub fn boolean_expression_node_kinds(language: Language) -> &'static [&'static s
         Language::Elixir => &["binary_operator"],
         Language::Lua | Language::Luau => &["binary_expression"],
         Language::Ocaml => &["infix_expression"],
+        formats_langs!() => &[],
     }
 }
 
@@ -301,6 +330,7 @@ pub fn comparison_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["binary_operator"],
         Language::Lua | Language::Luau => &["binary_expression"],
         Language::Ocaml => &["infix_expression"],
+        formats_langs!() => &[],
     }
 }
 
@@ -325,6 +355,7 @@ pub fn parenthesized_expression_node_kinds(language: Language) -> &'static [&'st
         Language::Elixir => &["block"],
         Language::Lua | Language::Luau => &["parenthesized_expression"],
         Language::Ocaml => &["parenthesized_expression"],
+        formats_langs!() => &[],
     }
 }
 
@@ -354,6 +385,7 @@ pub fn function_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["call"],
         Language::Lua | Language::Luau => &["function_declaration", "local_function"],
         Language::Ocaml => &["let_binding", "value_definition"],
+        formats_langs!() => &[],
     }
 }
 
@@ -490,6 +522,7 @@ pub fn field_access_info(language: Language) -> &'static [FieldAccessPattern] {
                 self_keywords: &[],
             },
         ],
+        formats_langs!() => &[],
     }
 }
 
@@ -645,6 +678,7 @@ pub fn extract_call_name(node: &Node, source: &[u8], language: Language) -> Opti
         Language::Lua | Language::Luau => extract_call_name_lua(node, source),
         Language::Elixir => extract_call_name_elixir(node, source),
         Language::Ocaml => extract_call_name_ocaml(node, source),
+        formats_langs!() => None,
     }
 }
 
@@ -1042,6 +1076,7 @@ fn extract_lhs_var(node: &Node, source: &[u8], language: Language) -> Option<Str
                 .or_else(|| node.child(0))
                 .map(|n| node_text(&n, source).to_string())
         }
+        formats_langs!() => None,
     }
 }
 
@@ -1103,6 +1138,8 @@ fn find_arguments_node<'a>(node: &'a Node, language: Language) -> Option<Node<'a
         Language::Lua | Language::Luau => "arguments",
         Language::Elixir => "arguments",
         Language::Ocaml => return node.child(1), // OCaml: second child is the argument
+        // Formats extension: no call nodes — the value is never consulted.
+        formats_langs!() => "arguments",
     };
 
     node.child_by_field_name("arguments").or_else(|| {

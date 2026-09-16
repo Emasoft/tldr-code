@@ -43,6 +43,15 @@ pub fn identifier_node_types(language: Language) -> &'static [&'static str] {
         Language::Elixir => &["identifier"],
         Language::Lua | Language::Luau => &["identifier"],
         Language::Ocaml => &["value_name", "type_constructor"],
+        // Formats extension: data/config documents have no identifier nodes
+        // (JSON keys are strings) — nothing to reference-count.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => &[],
     }
 }
 

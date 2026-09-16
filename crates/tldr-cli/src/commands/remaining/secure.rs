@@ -372,6 +372,14 @@ fn is_supported_secure_file(path: &std::path::Path, lang: Option<Language>) -> b
         Some(Language::Lua) => ext == "lua",
         Some(Language::Luau) => ext == "luau",
         Some(Language::Ocaml) => matches!(ext, "ml" | "mli"),
+        // Formats extension (2025-09): extension filters per data format.
+        Some(Language::Json) => matches!(ext, "json" | "jsonl" | "ndjson"),
+        Some(Language::Yaml) => matches!(ext, "yaml" | "yml"),
+        Some(Language::Toml) => ext == "toml",
+        Some(Language::Xml) => matches!(ext, "xml" | "svg" | "xsd" | "xsl"),
+        Some(Language::Html) => matches!(ext, "html" | "htm"),
+        Some(Language::Css) => ext == "css",
+        Some(Language::Bash) => matches!(ext, "sh" | "bash"),
         None => matches!(ext, "py" | "rs"),
     }
 }
@@ -402,9 +410,10 @@ fn is_rust_file(path: &std::path::Path) -> bool {
 ///    `vuln.rs::analyze_file` (covered by M-Y3
 ///    `typescript-large-file-perf-v1`) and `api_check.rs::analyze_file`
 ///    (covered by M-Z4 `fastpath-extend-non-vuln-v1`); central policy
-///    in `tldr_core::fs::oversize` enforces the 10 MB source-file cap
-///    and the 512 KB cap for `.d.ts` / `.min.js` / `.bundle.*`
-///    auto-generated artefacts.
+///    in `tldr_core::fs::oversize` enforces the per-path caps (2 GiB
+///    for normal source files, 64 MiB for `.d.ts` / `.min.js` /
+///    `.bundle.*` auto-generated artefacts, unlimited for streamed
+///    `.jsonl`/`.ndjson`).
 ///
 /// 2. **UTF-8 tolerance** (SECURE-UTF8-TOLERANCE-V1, M-X5): pre-fix,
 ///    `run_security_analysis` called `fs::read_to_string(file)?` which
@@ -1437,8 +1446,8 @@ fn risky(user: &str) {
     /// times (once per sub-analysis) and parsed 6 times into a
     /// tree-sitter AST. The fastpath skips it on the FIRST stat call.
     ///
-    /// Test fixture: a synthetic `.d.ts` file padded over the 512 KB
-    /// auto-gen cap (`MAX_AUTOGEN_FILE_SIZE_BYTES`). Asserts:
+    /// Test fixture: a synthetic `.d.ts` file padded over the auto-gen
+    /// cap (`MAX_AUTOGEN_FILE_SIZE_BYTES`, 64 MiB). Asserts:
     /// 1. The file is dropped from the kept set.
     /// 2. `files_skipped` is incremented.
     /// 3. The warning carries the documented oversize shape so
@@ -1450,8 +1459,8 @@ fn risky(user: &str) {
         let temp = TempDir::new().unwrap();
 
         // Padded content that exceeds the auto-gen cap. Use a `.d.ts`
-        // suffix so the auto-gen 512 KB cap applies (rather than the
-        // 10 MB source-file cap, which would force a many-MB fixture).
+        // suffix so the auto-gen cap (64 MiB) applies (rather than the
+        // 2 GiB source-file cap, which would force a multi-GiB fixture).
         let mut padded = String::with_capacity(MAX_AUTOGEN_FILE_SIZE_BYTES as usize + 1024);
         padded.push_str("export type Generated = {\n");
         // A line that is harmless but heavy enough to cross the cap.

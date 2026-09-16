@@ -773,6 +773,13 @@ lazy_static! {
         sinks: vec![],
         sanitizers: vec![],
     };
+    /// Formats extension (2025-09): JSON/YAML/TOML/XML(SVG)/HTML/CSS/Bash
+    /// carry no taint sources/sinks — one shared empty pattern set.
+    static ref FORMATS_PATTERNS: LanguagePatterns = LanguagePatterns {
+        sources: vec![],
+        sinks: vec![],
+        sanitizers: vec![],
+    };
 }
 
 /// Get taint analysis patterns for a given language.
@@ -797,6 +804,15 @@ pub fn get_patterns(language: Language) -> &'static LanguagePatterns {
         Language::Lua | Language::Luau => &LUA_PATTERNS,
         Language::Elixir => &ELIXIR_PATTERNS,
         Language::Ocaml => &OCAML_PATTERNS,
+        // Formats extension (2025-09): data/config documents carry no taint
+        // sources/sinks — empty pattern set (see ast_utils formats_langs!).
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => &FORMATS_PATTERNS,
     }
 }
 
@@ -3971,6 +3987,17 @@ fn get_ast_patterns(language: Language) -> AstLanguagePatterns {
             sinks: OCAML_AST_SINKS,
             sanitizers: OCAML_AST_SANITIZERS,
         },
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => AstLanguagePatterns {
+            sources: &[],
+            sinks: &[],
+            sanitizers: &[],
+        },
     }
 }
 
@@ -4035,6 +4062,14 @@ pub fn fastpath_pattern_strings(language: Language) -> &'static [&'static str] {
         Language::Luau => fastpath_static!(LUAU, Language::Luau),
         Language::Elixir => fastpath_static!(EX, Language::Elixir),
         Language::Ocaml => fastpath_static!(OCAML, Language::Ocaml),
+        // Formats extension: no taint needles in data/config documents.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => &[],
     }
 }
 

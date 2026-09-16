@@ -2282,6 +2282,15 @@ fn binary_expr_node_kinds(lang: Language) -> &'static [&'static str] {
         Language::Ocaml => &["infix_expression"],
         Language::Lua | Language::Luau => &["binary_expression"],
         Language::Swift => &["infix_expression"],
+        // Formats extension (2025-09): no binary expressions in data/config
+        // documents.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => &[],
     }
 }
 

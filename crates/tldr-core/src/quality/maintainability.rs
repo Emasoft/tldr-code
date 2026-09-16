@@ -349,6 +349,11 @@ fn count_loc(source: &str, language: Language) -> usize {
         Language::Ruby | Language::Elixir => vec!["#"],
         Language::Ocaml => vec!["(*", "*"],
         Language::Lua | Language::Luau => vec!["--"],
+        // Formats extension (2025-09): line-comment prefixes per data format.
+        Language::Yaml | Language::Toml | Language::Bash => vec!["#"],
+        Language::Xml | Language::Html => vec!["<!--"],
+        Language::Css => vec!["/*"],
+        Language::Json => vec![],
     };
 
     source

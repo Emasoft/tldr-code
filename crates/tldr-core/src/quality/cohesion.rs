@@ -1874,6 +1874,15 @@ fn extract_field_from_pattern(
         Language::Lua | Language::Luau => extract_lua_self_field_access(node, source),
         Language::Elixir => extract_elixir_module_attribute(node, source),
         Language::Ocaml => None,
+        // Formats extension (2025-09): no `this`-style field access in
+        // data/config documents.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => None,
     }
 }
 

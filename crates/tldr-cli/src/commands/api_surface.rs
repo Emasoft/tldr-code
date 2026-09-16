@@ -119,6 +119,14 @@ fn language_to_string(lang: Language) -> String {
         Language::Luau => "luau".to_string(),
         Language::Elixir => "elixir".to_string(),
         Language::Ocaml => "ocaml".to_string(),
+        // Formats extension (2025-09)
+        Language::Json => "json".to_string(),
+        Language::Yaml => "yaml".to_string(),
+        Language::Toml => "toml".to_string(),
+        Language::Xml => "xml".to_string(),
+        Language::Html => "html".to_string(),
+        Language::Css => "css".to_string(),
+        Language::Bash => "bash".to_string(),
     }
 }
 

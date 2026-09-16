@@ -70,6 +70,14 @@ tree-sitter-elixir = { workspace = true }
 tree-sitter-ocaml = { workspace = true }
 tree-sitter-kotlin-ng = { workspace = true }
 tree-sitter-swift = { workspace = true }
+# Formats extension (2025-09) — used by explain's per-language parser setup
+tree-sitter-json = { workspace = true }
+tree-sitter-yaml = { workspace = true }
+tree-sitter-toml-ng = { workspace = true }
+tree-sitter-xml = { workspace = true }
+tree-sitter-html = { workspace = true }
+tree-sitter-css = { workspace = true }
+tree-sitter-bash = { workspace = true }
 streaming-iterator = "0.1"
 
 # Difftastic L1/L2 graft - Phase 1

@@ -727,6 +727,15 @@ fn is_scope_node(kind: &str, language: Language) -> bool {
                 | "block"
                 | "compilation_unit"
         ),
+        // Formats extension (2025-09): a whole data/config document is one
+        // scope.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => matches!(kind, "document" | "program" | "module" | "source_file"),
     }
 }
 
@@ -750,6 +759,8 @@ fn scan_scope_for_binding(
         Language::Go => scan_go_scope(node, bytes, symbol, file),
         Language::Java => scan_java_scope(node, bytes, symbol, file),
         Language::C | Language::Cpp => scan_clike_scope(node, bytes, symbol, file),
+        // Formats extension (2025-09): no scoping constructs in data/config
+        // documents.
         Language::Ruby => scan_ruby_scope(node, bytes, symbol, file),
         Language::Kotlin => scan_kotlin_scope(node, bytes, symbol, file),
         Language::Swift => scan_swift_scope(node, bytes, symbol, file),
@@ -759,6 +770,14 @@ fn scan_scope_for_binding(
         Language::Elixir => scan_elixir_scope(node, bytes, symbol, file),
         Language::Ocaml => scan_ocaml_scope(node, bytes, symbol, file),
         Language::CSharp => scan_csharp_scope(node, bytes, symbol, file),
+        // Formats extension: no bindings to scan for in data/config documents.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => None,
     }
 }
 
@@ -2561,6 +2580,14 @@ fn resolve_import_scope(
         // symbols at the language level. Ruby's `require` doesn't bind a
         // symbol either. They fall through to the file-scope pass.
         Language::C | Language::Cpp | Language::Ruby | Language::Go => None,
+        // Formats extension: no imports.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => None,
     };
 
     let Some((line_no, col)) = line_idx else {

@@ -266,6 +266,15 @@ pub(crate) fn extract_functions_detailed(tree: &Tree, source: &str, language: La
         Language::Luau => extract_luau_functions_detailed(&root, source, &mut functions),
         Language::Swift => extract_swift_functions_detailed(&root, source, &mut functions),
         Language::Ocaml => extract_ocaml_functions_detailed(&root, source, &mut functions),
+        // Formats extension (2025-09): JSON/YAML/TOML/XML(SVG)/HTML/CSS/Bash
+        // are data/config/markup documents — no source-code functions.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => {}
     }
 
     functions
@@ -299,6 +308,14 @@ pub(crate) fn extract_classes_detailed(tree: &Tree, source: &str, language: Lang
         Language::Go => extract_go_structs_detailed(&root, source, &mut classes),
         Language::Swift => extract_swift_classes_detailed(&root, source, &mut classes),
         Language::C | Language::Lua | Language::Luau | Language::Ocaml => {} // No classes
+        // Formats extension: no classes in data/config/markup documents.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => {}
     }
 
     classes
@@ -733,6 +750,15 @@ fn extract_module_constants(tree: &Tree, source: &str, language: Language) -> Ve
         Language::Luau => extract_luau_module_constants(&root, source),
         Language::Elixir => extract_elixir_module_constants(&root, source),
         Language::Ocaml => extract_ocaml_module_constants(&root, source),
+        // Formats extension: no module constants in data/config/markup
+        // documents (JSON keys are not constants).
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => Vec::new(),
     }
 }
 

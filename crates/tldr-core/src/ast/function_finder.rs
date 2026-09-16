@@ -453,6 +453,14 @@ pub fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         ],
         Language::Swift => &["function_declaration", "init_declaration"],
         Language::Ocaml => &["let_binding", "value_definition"],
+        // Formats extension: no function nodes in data/config/markup docs.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => &[],
     }
 }
 
@@ -521,6 +529,14 @@ pub fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
             "protocol_declaration",
             "extension_declaration",
         ],
+        // Formats extension: no class-like containers in data/config markup.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => &[],
     }
 }
 

@@ -11,19 +11,33 @@
 //!
 //! This module centralises the size policy:
 //!
-//! - **Normal source files**: 10 MB cap (matches the historical
-//!   per-command cap in `patterns/contracts/vuln`).
+//! - **Normal source files**: 2 GiB cap (limits-stretch-v1, 2025-09 — was
+//!   10 MB; tree-sitter is RAM-bound, not size-bound, so the cap now targets
+//!   the 2 GB single-file navigation goal).
 //! - **Auto-generated / minified files** (`.d.ts`, `.min.js`,
-//!   `.min.css`, `.bundle.js`, `.bundle.css`): 512 KB cap. These are
+//!   `.min.css`, `.bundle.js`, `.bundle.css`): 64 MiB cap (was 512 KB).
+//!   These are
 //!   rarely valuable to analyse deeply (tens of thousands of
 //!   generated declarations or minified IIFEs) and are the most
-//!   common cause of pathological slowdowns. The 512 KB cap is
-//!   empirically chosen against the `ts-dom-gen` baselines tree
+//!   common cause of pathological slowdowns. The historical 512 KB cap
+//!   was empirically chosen against the `ts-dom-gen` baselines tree
 //!   (60+ `*.generated.d.ts` artefacts in the 100 KB – 2.3 MB
-//!   range): a 1 MB cap left ~12 baselines admitted and the
-//!   whole-repo run took 58 s; 512 KB drops the run under 30 s
-//!   while admitting every hand-authored `.d.ts` shim observed in
-//!   `tldr-rs-canonical` (the largest is 75 KB).
+//!   range); limits-stretch-v1 raised it 128× so machine-generated
+//!   bundles are analyzed, while keeping the cap 32× below the
+//!   source-file cap preserves the 30 s-per-command guardrail for
+//!   directory walks.
+//! - **Newline-delimited JSON** (`.jsonl` / `.ndjson`): no cap. These
+//!   files are streamed one JSON document per row
+//!   (`ast::jsonl::stream_jsonl`, bounded memory — one row in RAM at
+//!   a time), so file size is not a memory risk.
+//!
+//! Callers that need to exercise the skip decision without
+//! multi-megabyte (let alone multi-GiB) fixtures can inject a flat cap
+//! through [`check_size_with_override`] — the daemon's warm pass uses
+//! that hook for its `max_file_size` config knob. Production callers
+//! use [`check_size`], which applies the per-path policy above
+//! unchanged. Both routes go through the same decision code, so the
+//! injected cap and the default policy can never diverge.
 //!
 //! The cap is enforced at file-read time (in
 //! `ast::parser::parse_file_with_lang`) so every command that goes
@@ -36,24 +50,31 @@
 
 use std::path::Path;
 
-/// Maximum file size for normal source files, in bytes (10 MB).
+/// Maximum file size for normal source files, in bytes (2 GiB).
 ///
-/// Files at or below this size are read and analysed normally.
-pub const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
+/// limits-stretch-v1 (2025-09, "all tree-sitter formats" directive): raised
+/// from the historical 10 MB so that multi-hundred-MB generated sources and
+/// the 2 GB single-file navigation goal are admitted rather than skipped.
+/// tree-sitter (the binding library) imposes no source-size limit of its own
+/// — the real constraint is RAM (the syntax tree costs ~3-5× the source), so
+/// 2 GiB of source is the practical ceiling this tool commits to supporting.
+/// Note the trade-off: analysis time on a file this size is minutes, not
+/// milliseconds; whole-repo walks with several such files will be slow by
+/// choice.
+pub const MAX_FILE_SIZE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Maximum file size for auto-generated or minified files, in bytes
-/// (512 KB).
+/// (64 MiB).
 ///
 /// Applies to extensions reported as auto-gen by [`is_autogen_file`].
-/// Empirically chosen: the `ts-dom-gen` baselines directory holds
-/// dozens of `*.generated.d.ts` files in the 100 KB – 2.3 MB range;
-/// `tldr structure /tmp/repos/ts-dom-gen` took 58 s with a 1 MB cap
-/// because all of the 600 KB – 950 KB baselines were still admitted
-/// and each ran ~1 s of per-method-info AST work. Dropping the cap
-/// to 512 KB keeps the whole-repo run under 30 s while admitting
-/// every hand-authored `.d.ts` shim observed in `tldr-rs-canonical`
-/// (the largest is 75 KB).
-pub const MAX_AUTOGEN_FILE_SIZE_BYTES: u64 = 512 * 1024;
+/// limits-stretch-v1 (2025-09): raised 128× from the historical 512 KB —
+/// large machine-generated `.d.ts` bundles are now analyzed instead of
+/// skipped. The cap stays 32× below [`MAX_FILE_SIZE_BYTES`] on purpose:
+/// minified bundles are the most common trigger of super-linear analysis
+/// blowups (the `ts-dom-gen` 58 s whole-repo run that motivated the original
+/// cap), and a 30 s-per-command guardrail is still wanted for directory
+/// walks even when single files may be huge.
+pub const MAX_AUTOGEN_FILE_SIZE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Suffixes that mark a file as auto-generated or minified.
 ///
@@ -86,16 +107,37 @@ pub fn is_autogen_file(path: &Path) -> bool {
     AUTOGEN_SUFFIXES.iter().any(|s| lossy.ends_with(s))
 }
 
-/// Maximum allowed size in bytes for `path` under the current
-/// policy.
+/// Maximum allowed size in bytes for `path` under the current policy.
 ///
+/// - `u64::MAX` for newline-delimited JSON (`.jsonl` / `.ndjson`): these are
+///   **streamed one JSON document per row** (`ast::jsonl::stream_jsonl`,
+///   bounded memory — one row in RAM at a time), so file size is not a
+///   memory risk. This is the format class the "chunk streaming" requirement
+///   names explicitly.
 /// - [`MAX_AUTOGEN_FILE_SIZE_BYTES`] when [`is_autogen_file`] is true.
 /// - [`MAX_FILE_SIZE_BYTES`] otherwise.
 pub fn max_size_for(path: &Path) -> u64 {
-    if is_autogen_file(path) {
+    if crate::ast::jsonl::is_jsonl_path(path) {
+        u64::MAX
+    } else if is_autogen_file(path) {
         MAX_AUTOGEN_FILE_SIZE_BYTES
     } else {
         MAX_FILE_SIZE_BYTES
+    }
+}
+
+/// [`max_size_for`] with an optional caller-supplied cap override.
+///
+/// - `Some(cap)` replaces the per-path policy entirely: every file is
+///   capped at `cap` bytes regardless of category (including the
+///   normally uncapped `.jsonl` / `.ndjson` class). This is the hook
+///   the daemon's warm pass uses to make its oversize skip testable
+///   with tiny fixtures; production callers pass [`None`].
+/// - `None` behaves exactly like [`max_size_for`].
+pub fn max_size_for_with_override(path: &Path, override_max: Option<u64>) -> u64 {
+    match override_max {
+        Some(cap) => cap,
+        None => max_size_for(path),
     }
 }
 
@@ -129,10 +171,23 @@ pub enum SizeCheck {
 /// their existing read-error path in that case rather than treat
 /// "unknown size" as oversize.
 pub fn check_size(path: &Path) -> SizeCheck {
+    check_size_with_override(path, None)
+}
+
+/// [`check_size`] with an optional per-call cap override; see
+/// [`max_size_for_with_override`] for the override semantics.
+///
+/// This is the single size-cap decision point: the default per-path
+/// policy ([`check_size`]) and the injectable warm cap both route
+/// through here, so the two can never diverge. When an override is
+/// supplied, [`SizeCheck::Oversize::max_bytes`] carries the override
+/// while `is_autogen` still reports the path's policy class, so
+/// callers that format warnings keep a sensible category.
+pub fn check_size_with_override(path: &Path, override_max: Option<u64>) -> SizeCheck {
     match std::fs::metadata(path) {
         Ok(md) => {
             let size_bytes = md.len();
-            let max_bytes = max_size_for(path);
+            let max_bytes = max_size_for_with_override(path, override_max);
             if size_bytes > max_bytes {
                 SizeCheck::Oversize {
                     size_bytes,
@@ -224,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn max_size_picks_5mb_for_autogen_10mb_for_source() {
+    fn max_size_picks_autogen_cap_for_autogen_and_source_cap_otherwise() {
         assert_eq!(
             max_size_for(&PathBuf::from("dom.d.ts")),
             MAX_AUTOGEN_FILE_SIZE_BYTES
@@ -285,8 +340,8 @@ mod tests {
 
     #[test]
     fn check_size_within_limit_for_source_between_caps() {
-        // A non-autogen file between the auto-gen cap (512 KB) and
-        // the source cap (10 MB) must NOT be flagged as oversize:
+        // A non-autogen file above the auto-gen cap (64 MiB) but below
+        // the source cap (2 GiB) must NOT be flagged as oversize:
         // the auto-gen cap doesn't apply to it.
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("medium.ts");
@@ -302,6 +357,83 @@ mod tests {
     fn check_size_unknown_for_missing_file() {
         let outcome = check_size(Path::new("/nonexistent/path/abc.ts"));
         assert_eq!(outcome, SizeCheck::Unknown);
+    }
+
+    #[test]
+    fn max_size_for_with_override_none_matches_max_size_for() {
+        assert_eq!(
+            max_size_for_with_override(&PathBuf::from("dom.ts"), None),
+            max_size_for(&PathBuf::from("dom.ts"))
+        );
+        assert_eq!(
+            max_size_for_with_override(&PathBuf::from("dom.d.ts"), None),
+            max_size_for(&PathBuf::from("dom.d.ts"))
+        );
+    }
+
+    #[test]
+    fn max_size_for_with_override_replaces_per_path_policy() {
+        // The override applies regardless of the path's policy class —
+        // including source files (2 GiB) and autogen files (64 MiB),
+        // both far above any sane injected cap.
+        for name in ["dom.ts", "dom.d.ts", "rows.jsonl"] {
+            assert_eq!(
+                max_size_for_with_override(&PathBuf::from(name), Some(1024)),
+                1024,
+                "override must replace the per-path cap for {}",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn check_size_with_override_none_matches_check_size() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("small.ts");
+        std::fs::write(&path, b"hello").unwrap();
+        assert_eq!(
+            check_size_with_override(&path, None),
+            check_size(&path),
+            "None override must be behaviourally identical to check_size"
+        );
+    }
+
+    #[test]
+    fn check_size_with_override_flags_file_within_default_policy() {
+        // 4 KB is far below every per-path cap (2 GiB source / 64 MiB
+        // autogen / unlimited jsonl) but above the injected 1 KB cap —
+        // exactly the situation the warm-pass test hook exists for.
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("medium.py");
+        std::fs::write(&path, vec![b'a'; 4 * 1024]).unwrap();
+        match check_size_with_override(&path, Some(1024)) {
+            SizeCheck::Oversize {
+                size_bytes,
+                max_bytes,
+                is_autogen,
+            } => {
+                assert_eq!(size_bytes, 4 * 1024);
+                assert_eq!(max_bytes, 1024);
+                assert!(!is_autogen);
+            }
+            other => panic!("expected Oversize under the injected cap, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn check_size_with_override_within_injected_cap_is_admitted() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("small.py");
+        std::fs::write(&path, "def small_fn():\n    return 1\n").unwrap();
+        match check_size_with_override(&path, Some(1024)) {
+            SizeCheck::WithinLimit { size_bytes } => {
+                assert_eq!(size_bytes, "def small_fn():\n    return 1\n".len() as u64)
+            }
+            other => panic!(
+                "expected WithinLimit under the injected cap, got {:?}",
+                other
+            ),
+        }
     }
 
     #[test]

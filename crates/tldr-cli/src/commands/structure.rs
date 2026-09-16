@@ -43,9 +43,33 @@ impl StructureArgs {
         }
 
         // Determine language (auto-detect from directory, default to Python)
-        let language = self
-            .lang
-            .unwrap_or_else(|| Language::from_directory(&self.path).unwrap_or(Language::Python));
+        //
+        // Resolution order:
+        // - Single FILE input: `from_path` first (formats-extension-v1).
+        //   `from_directory` deliberately filters the 7 formats languages
+        //   (Json/Yaml/Toml/Xml/Html/Css/Bash) via
+        //   `is_project_language_signal`, so a lone `config.json` /
+        //   `config.toml` would otherwise fall through to the Python
+        //   default instead of reporting its own format. For an
+        //   unrecognized single file, fall back to the parent directory's
+        //   dominant language (mirroring `get_code_structure`, which
+        //   anchors single-file runs on the parent), then to the
+        //   historical Python default.
+        // - DIRECTORY input: `from_directory` dominant-language detection.
+        let language = self.lang.unwrap_or_else(|| {
+            if self.path.is_file() {
+                Language::from_path(&self.path)
+                    .or_else(|| {
+                        self.path
+                            .parent()
+                            .filter(|p| !p.as_os_str().is_empty())
+                            .and_then(Language::from_directory)
+                    })
+                    .unwrap_or(Language::Python)
+            } else {
+                Language::from_directory(&self.path).unwrap_or(Language::Python)
+            }
+        });
 
         // Try daemon first for cached result
         if let Some(structure) = try_daemon_route::<CodeStructure>(

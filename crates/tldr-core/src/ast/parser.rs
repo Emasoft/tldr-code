@@ -18,8 +18,17 @@ use crate::error::TldrError;
 use crate::types::Language as TldrLanguage;
 use crate::TldrResult;
 
-/// Maximum file size to parse (5MB) - M6 mitigation
-pub const MAX_PARSE_SIZE: usize = 5 * 1024 * 1024;
+/// Maximum in-memory source size the parser pool will parse (4 GiB).
+///
+/// limits-stretch-v1 (2025-09, "all tree-sitter formats" directive): the
+/// historical 5 MB M6 cap fought the centralized 10 MB size policy in
+/// `fs::oversize` — files in (5 MB, 10 MB] passed the policy check and then
+/// hard-failed here with a confusing "File too large: ... (max 5242880)".
+/// tree-sitter itself is memory-bound (no hard source-size limit; the tree
+/// costs ~3-5× the source in RAM), so the cap now sits ABOVE the policy cap
+/// (2 GiB, see `fs::oversize::MAX_FILE_SIZE_BYTES`) with headroom. Source
+/// strings enter this pool only after the caller-side policy check.
+pub const MAX_PARSE_SIZE: usize = 4 * 1024 * 1024 * 1024;
 
 /// TypeScript / JavaScript grammar dialect.
 ///
@@ -135,6 +144,16 @@ impl ParserPool {
             TldrLanguage::Ocaml => Some(tree_sitter_ocaml::LANGUAGE_OCAML.into()),
             TldrLanguage::Kotlin => Some(tree_sitter_kotlin_ng::LANGUAGE.into()),
             TldrLanguage::Swift => Some(tree_sitter_swift::LANGUAGE.into()),
+            // Formats extension (2025-09): data/config/markup/web/shell.
+            // XML family routes through LANGUAGE_XML (SVG/XSD/XSL are XML
+            // documents; the DTD grammar is intentionally not wired).
+            TldrLanguage::Json => Some(tree_sitter_json::LANGUAGE.into()),
+            TldrLanguage::Yaml => Some(tree_sitter_yaml::LANGUAGE.into()),
+            TldrLanguage::Toml => Some(tree_sitter_toml_ng::LANGUAGE.into()),
+            TldrLanguage::Xml => Some(tree_sitter_xml::LANGUAGE_XML.into()),
+            TldrLanguage::Html => Some(tree_sitter_html::LANGUAGE.into()),
+            TldrLanguage::Css => Some(tree_sitter_css::LANGUAGE.into()),
+            TldrLanguage::Bash => Some(tree_sitter_bash::LANGUAGE.into()),
         }
     }
 
@@ -320,8 +339,8 @@ impl ParserPool {
         // through (structure, calls, smells, dead, secure, …), so
         // applying the cap here gives uniform skip behaviour across
         // commands. Auto-generated / minified files (`.d.ts`,
-        // `.min.js`, `.bundle.css`, …) get a stricter 5 MB cap;
-        // normal source files keep the historical 10 MB cap.
+        // `.min.js`, `.bundle.css`, …) get a stricter 64 MiB cap;
+        // normal source files keep the 2 GiB cap (limits-stretch-v1).
         // See `crate::fs::oversize` for the full policy.
         // WithinLimit / Unknown: fall through to the existing read path.
         // `Unknown` (stat failed) lets the existing I/O error handling
@@ -337,6 +356,20 @@ impl ParserPool {
                 size_mb: (size_bytes as usize).div_ceil(1024 * 1024),
                 max_mb: (max_bytes as usize).div_ceil(1024 * 1024),
             });
+        }
+
+        // formats-extension-v1 (2025-09): `.jsonl`/`.ndjson` files are one
+        // JSON document per row and are NEVER read whole — parse the first
+        // non-blank row's tree instead (bounded memory, see `ast::jsonl`).
+        // Structure output for a JSON document is empty, which is exactly
+        // the "one JSON file per row" equivalence; `tldr structure` attaches
+        // full row-health stats via `jsonl_stream` (see `get_code_structure`).
+        if lang == TldrLanguage::Json && crate::ast::jsonl::is_jsonl_path(path) {
+            return match crate::ast::jsonl::first_row_tree(path)? {
+                Some((tree, row_text)) => Ok((tree, row_text, lang)),
+                // Empty (all-blank) JSONL: a valid empty parse, no content.
+                None => Ok((self.parse("", lang)?, String::new(), lang)),
+            };
         }
 
         // Read file content with UTF-8 lossy fallback - M2 mitigation

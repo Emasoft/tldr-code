@@ -679,6 +679,16 @@ fn infer_visibility_from_name(
 
         // Swift: default is internal, not public
         Language::Swift => !bare_name.starts_with('_'),
+
+        // Formats extension (2025-09): data/config documents have no private
+        // naming convention — a JSON/YAML/TOML key is always "reachable".
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => true,
     }
 }
 

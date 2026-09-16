@@ -41,6 +41,32 @@ pub fn get_code_structure(
     let mut warnings: Vec<String> = Vec::new();
     let mut files_skipped: u32 = 0;
 
+    // formats-extension-v1 (2025-09): `.jsonl`/`.ndjson` are streamed ONE
+    // JSON document per row (bounded memory — see `ast::jsonl`), so a 2 GB
+    // JSONL file is processed with the same peak RAM as a 2 KB one. The
+    // structure shape is intentionally empty (JSON has no functions/classes)
+    // and the row-health stats ride the additive `jsonl_stream` field.
+    if root.is_file() && crate::ast::jsonl::is_jsonl_path(root) {
+        let report = crate::ast::jsonl::stream_jsonl(root)?;
+        let file_structure = crate::types::FileStructure {
+            path: root.to_path_buf(),
+            functions: Vec::new(),
+            classes: Vec::new(),
+            methods: Vec::new(),
+            method_infos: Vec::new(),
+            imports: Vec::new(),
+            definitions: Vec::new(),
+        };
+        return Ok(CodeStructure {
+            root: root.to_path_buf(),
+            language: Some(Language::Json),
+            files: vec![file_structure],
+            files_skipped: 0,
+            warnings: Vec::new(),
+            jsonl_stream: Some(report.summary),
+        });
+    }
+
     // Handle single file case: extract structure directly
     if root.is_file() {
         let parent = root.parent().unwrap_or(root);
@@ -52,6 +78,7 @@ pub fn get_code_structure(
                     files: vec![structure],
                     files_skipped: 0,
                     warnings: Vec::new(),
+                    jsonl_stream: None,
                 });
             }
             Err(crate::error::TldrError::FileTooLarge {
@@ -90,6 +117,7 @@ pub fn get_code_structure(
                     files: Vec::new(),
                     files_skipped,
                     warnings,
+                    jsonl_stream: None,
                 });
             }
             Err(crate::error::TldrError::EncodingError { path, detail }) => {
@@ -106,6 +134,7 @@ pub fn get_code_structure(
                     files: Vec::new(),
                     files_skipped,
                     warnings,
+                    jsonl_stream: None,
                 });
             }
             Err(e) => {
@@ -205,6 +234,7 @@ pub fn get_code_structure(
         files: file_structures,
         files_skipped,
         warnings: out_warnings,
+        jsonl_stream: None,
     })
 }
 
@@ -301,6 +331,15 @@ pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<S
         Language::Elixir => extract_elixir_functions(&root, source, &mut functions),
         Language::Lua => extract_lua_functions(&root, source, &mut functions),
         Language::Luau => extract_luau_functions(&root, source, &mut functions),
+        // Formats extension (2025-09): data/config/markup documents have no
+        // source-code functions.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => {}
     }
 
     functions
@@ -2339,6 +2378,14 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
         }
 
         Language::Lua | Language::Luau | Language::Ocaml => None,
+        // Formats extension: no constants in data/config/markup documents.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => None,
     }
 }
 
@@ -2559,6 +2606,14 @@ fn anonymous_callable_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["function_definition"],
         Language::Ocaml => &["fun_expression"],
         Language::C => &[],
+        // Formats extension: no lambdas in data/config/markup documents.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => &[],
     }
 }
 

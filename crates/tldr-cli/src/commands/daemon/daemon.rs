@@ -1187,7 +1187,10 @@ impl TLDRDaemon {
     /// Per-file work is capped consistently with the rest of the daemon:
     /// files over the shared oversize policy (`tldr_core::fs::oversize`) are
     /// skipped, as are files whose language cannot be detected, and each file
-    /// warms at most `MAX_WARM_FUNCTIONS_PER_FILE` cfg/dfg pairs.
+    /// warms at most `MAX_WARM_FUNCTIONS_PER_FILE` cfg/dfg pairs. The
+    /// oversize decision consults `config.max_file_size` first: `None`
+    /// (production default) applies the shared per-path caps, `Some(cap)`
+    /// replaces them with a flat cap (test hook for tiny fixtures).
     fn warm_per_file_caches(
         &self,
         lang: Language,
@@ -1213,9 +1216,13 @@ impl TLDRDaemon {
             let path = path.as_path();
 
             // Size cap: skip files the daemon's own parse policy would skip,
-            // so warm never does work a query would refuse to reuse.
+            // so warm never does work a query would refuse to reuse. The
+            // decision goes through the single oversize entry point in
+            // `tldr_core::fs::oversize`; `config.max_file_size` (a test
+            // hook, `None` in production) swaps the per-path policy for a
+            // flat cap without forking the skip logic.
             if let tldr_core::fs::oversize::SizeCheck::Oversize { .. } =
-                tldr_core::fs::oversize::check_size(path)
+                tldr_core::fs::oversize::check_size_with_override(path, self.config.max_file_size)
             {
                 stats.files_skipped += 1;
                 continue;
@@ -2576,30 +2583,57 @@ mod tests {
         );
     }
 
-    /// Warm must skip oversize files (cap consistent with the daemon's own
-    /// parse policy) instead of blocking the connection loop on them.
+    /// Warm must skip oversize files instead of blocking the connection
+    /// loop on them.
+    ///
+    /// Production warm applies the shared per-path oversize policy
+    /// (`tldr_core::fs::oversize`): 2 GiB for normal source files, 64 MiB
+    /// for auto-generated/minified files, unlimited for streamed
+    /// `.jsonl`/`.ndjson`. Those caps are far too high to hit with a
+    /// reasonable fixture, so this test injects a flat 1 KB cap through
+    /// `DaemonConfig::max_file_size` (a test hook; `None` in production
+    /// keeps the per-path policy) and asserts the same skip behaviour on
+    /// a KB-sized file: skipped with a skip counted in warm's stats and
+    /// no cache slots filled, while the sub-cap file warms normally.
     #[tokio::test]
     async fn test_warm_skips_oversize_files() {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().canonicalize().unwrap();
 
-        // Small file: warmed.
+        // Small file: warmed (well under the injected cap).
         let py_file = project.join("small.py");
         std::fs::write(&py_file, "def small_fn():\n    return 1\n").unwrap();
-        // Oversize file: skipped (10 MB cap for normal source files).
+        // Oversize file under the injected cap: 400 * 10 = 4000 bytes —
+        // above the 1024-byte injected cap but far below every per-path
+        // policy cap, so only the override can be what skips it.
         let big_file = project.join("big.py");
-        let big_body = "# padding\n".repeat(11 * 1024 * 1024 / 9);
+        let big_body = "# padding\n".repeat(400);
         std::fs::write(&big_file, big_body).unwrap();
 
-        let daemon = TLDRDaemon::new(project.clone(), DaemonConfig::default());
+        let config = DaemonConfig {
+            max_file_size: Some(1024),
+            ..DaemonConfig::default()
+        };
+        let daemon = TLDRDaemon::new(project.clone(), config);
         let response = daemon
             .handle_command(DaemonCommand::Warm { language: None })
             .await;
 
-        match &response {
-            DaemonResponse::Status { status, .. } => assert_eq!(status, "ok"),
+        let warm_msg = match &response {
+            DaemonResponse::Status { status, message } => {
+                assert_eq!(status, "ok");
+                message.clone().unwrap_or_default()
+            }
             other => panic!("Expected Status response, got {:?}", other),
-        }
+        };
+
+        // Warm stats must report the skip: exactly one of the two files
+        // was scanned, the oversize one landed in the skip bucket.
+        assert!(
+            warm_msg.contains("1 file(s) scanned, 1 skipped"),
+            "warm stats must count the oversize skip, got: {}",
+            warm_msg
+        );
 
         // The small file's slots are filled...
         let detected = detect_or_parse_language(None, &py_file).unwrap();
@@ -2611,7 +2645,10 @@ mod tests {
         let big_detected = detect_or_parse_language(None, &big_file).unwrap();
         let big_key = extract_query_key(&big_file, big_detected);
         let big_cached: Option<serde_json::Value> = daemon.cache.get(&big_key);
-        assert!(big_cached.is_none(), "oversize file must be skipped by warm");
+        assert!(
+            big_cached.is_none(),
+            "oversize file must be skipped by warm"
+        );
     }
 
     /// daemon-warm-v2 (issue #7): persistence must round-trip. A daemon

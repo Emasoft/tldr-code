@@ -128,6 +128,16 @@ impl LanguageConfig {
             Language::Ocaml => Self::ocaml(),
             Language::Kotlin => Self::kotlin(),
             Language::Swift => Self::swift(),
+            // Formats extension (2025-09): contracts/SSA analysis targets
+            // imperative code — data/config formats get the most permissive
+            // config (no call kinds, empty patterns).
+            Language::Json
+            | Language::Yaml
+            | Language::Toml
+            | Language::Xml
+            | Language::Html
+            | Language::Css
+            | Language::Bash => Self::lua(),
         }
     }
 

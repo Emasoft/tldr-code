@@ -1115,6 +1115,15 @@ pub fn classify_reference_kind(node: &Node, source: &[u8], language: Language) -
         Language::Luau => classify_luau_reference(node, &parent, source),
         Language::Elixir => classify_elixir_reference(node, &parent, source),
         Language::Ocaml => classify_ocaml_reference(node, &parent, source),
+        // Formats extension: no cross-reference semantics in data/config
+        // documents.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => ReferenceKind::Other,
     }
 }
 

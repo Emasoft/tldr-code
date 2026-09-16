@@ -569,6 +569,9 @@ fn is_comment_line(trimmed: &str, language: Language) -> bool {
                 || trimmed.starts_with("*/")
                 || trimmed.starts_with("*")
         }
+        // Formats extension (2025-09): line comments per data format.
+        Language::Yaml | Language::Toml | Language::Bash => trimmed.starts_with('#'),
+        Language::Json | Language::Xml | Language::Html | Language::Css => false,
     }
 }
 
@@ -593,6 +596,13 @@ fn comment_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["comment"],
         Language::Elixir => &["comment"],
         Language::Ocaml => &["comment"],
+        // Formats extension: comment node kinds per data format grammar.
+        Language::Yaml => &["comment"],
+        Language::Toml => &["comment"],
+        Language::Bash => &["comment"],
+        Language::Xml | Language::Html => &["comment"],
+        Language::Css => &["line_comment", "block_comment"],
+        Language::Json => &[],
     }
 }
 

@@ -73,10 +73,32 @@ impl SmartSearchArgs {
             anyhow::bail!("Path not found: {}", self.path.display());
         }
 
-        // Determine language (auto-detect from directory, default to Python)
-        let language = self
-            .lang
-            .unwrap_or_else(|| Language::from_directory(&self.path).unwrap_or(Language::Python));
+        // Determine language (auto-detect from directory, default to Python).
+        //
+        // Single FILE input: `from_path` first. The search root may be a
+        // single file (see tldr-core `search::enriched::resolve_indexed_path`:
+        // "when the search root IS a file, e.g. `tldr search 'dres'
+        // public/app.js`"), and `from_directory` deliberately filters the 7
+        // formats languages via `is_project_language_signal`, so a lone
+        // `data.json` would otherwise fall through to Python and the BM25
+        // index (which filters by `language.extensions()`) would silently
+        // skip the file. For an unrecognized single file, fall back to the
+        // parent directory's dominant language, then to the historical
+        // Python default — mirroring `structure`'s single-file resolution.
+        let language = self.lang.unwrap_or_else(|| {
+            if self.path.is_file() {
+                Language::from_path(&self.path)
+                    .or_else(|| {
+                        self.path
+                            .parent()
+                            .filter(|p| !p.as_os_str().is_empty())
+                            .and_then(Language::from_directory)
+                    })
+                    .unwrap_or(Language::Python)
+            } else {
+                Language::from_directory(&self.path).unwrap_or(Language::Python)
+            }
+        });
 
         writer.progress(&format!(
             "Smart searching for '{}' in {} ({})...",

@@ -44,6 +44,19 @@ pub struct DaemonConfig {
 
     /// Idle timeout in seconds (default: 1800 = 30 min)
     pub idle_timeout_secs: u64,
+
+    /// Optional warm-time oversize cap override, in bytes.
+    ///
+    /// `None` (the default) keeps warm's skip decision on the shared
+    /// per-path size policy in `tldr_core::fs::oversize` — 2 GiB for
+    /// normal source files, 64 MiB for auto-generated/minified files,
+    /// unlimited for streamed `.jsonl`/`.ndjson` — with zero behaviour
+    /// change. When set, warm skips every file larger than this cap
+    /// regardless of category. No production writer sets this knob; it
+    /// exists so tests can exercise warm's oversize skip with
+    /// KB-sized fixtures instead of multi-gigabyte ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_file_size: Option<u64>,
 }
 
 impl Default for DaemonConfig {
@@ -53,6 +66,7 @@ impl Default for DaemonConfig {
             auto_reindex_threshold: DEFAULT_REINDEX_THRESHOLD,
             semantic_model: "bge-large-en-v1.5".to_string(),
             idle_timeout_secs: IDLE_TIMEOUT_SECS,
+            max_file_size: None,
         }
     }
 }
@@ -539,6 +553,9 @@ mod tests {
         assert_eq!(config.auto_reindex_threshold, DEFAULT_REINDEX_THRESHOLD);
         assert_eq!(config.semantic_model, "bge-large-en-v1.5");
         assert_eq!(config.idle_timeout_secs, IDLE_TIMEOUT_SECS);
+        // The warm oversize-cap override must default to `None` so the
+        // production warm path keeps the per-path oversize policy.
+        assert_eq!(config.max_file_size, None);
     }
 
     #[test]
