@@ -3,18 +3,25 @@
 //! Pins the three surfaces of the document-reference core working together:
 //!
 //! 1. `tldr imports` on markdown/html/xml emits link targets as ImportInfo
-//!    (`module` = raw target, `is_from = true`, `alias` = provenance label).
-//! 2. `tldr importers <file> <root> --lang markdown` finds the documents that
-//!    LINK to a target (path matching — doc arm of `module_matches`).
+//!    (`module` = raw target, `is_from = true`, `alias` = provenance label);
+//!    css/latex loaded elements (`@import`, `url()`, `\input`,
+//!    `\includegraphics`, `\bibliography`) ride the same shape.
+//! 2. `tldr importers <file> <root> --lang markdown|latex` finds the
+//!    documents that LINK to a target (path matching — doc arm of
+//!    `module_matches`).
 //! 3. `tldr impact <root>/<file>` on a document computes the file-level blast
 //!    radius: the transitive reverse-link closure via the existing impact BFS
 //!    keyed `(file, "<doc>")` — with `total_targets == 1`, external URLs
 //!    absent from the graph, and depth-correct nesting.
 //!
-//! Fixture (tempdir): `index.md` → `a.md` → `b.md` → `c.md#frag` (c.md
-//! intentionally absent — the link still shows up in imports but contributes
-//! no edge), plus `page.html` and `schema.xml` for the html/xml field pins.
-//! No daemon is started; every command takes the direct-compute path.
+//! Fixtures (tempdirs): `build_doc_project` has `index.md` → `a.md` →
+//! `b.md` → `c.md#frag` (c.md intentionally absent — the link still shows up
+//! in imports but contributes no edge), plus `page.html` and `schema.xml` for
+//! the html/xml field pins. `build_style_project` has the css/latex/md-fence
+//! batch: `styles.css` → `theme.css` via @import plus font/image url() loads,
+//! `main.tex` → chapter/graphic/bibliography targets, and `a.md` with a real
+//! link plus a fenced example block whose fake links must stay inert. No
+//! daemon is started; every command takes the direct-compute path.
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -70,6 +77,59 @@ fn build_doc_project() -> TempDir {
 </root>
 "#,
     );
+    dir
+}
+
+/// Fixture for the css/latex/md-fence batch: `styles.css` imports
+/// `theme.css` and loads a font + an image through `url()` (the "loaded
+/// elements"); `main.tex` inputs a chapter, includes a graphic and declares
+/// a two-file bibliography; `a.md` carries a real link plus a fenced example
+/// block whose fake links must stay inert.
+fn build_style_project() -> TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write(
+        root.join("styles.css"),
+        concat!(
+            "@import \"theme.css\";\n",
+            "@font-face {\n",
+            "  font-family: \"Inter\";\n",
+            "  src: url(fonts/a.woff2) format(\"woff2\");\n",
+            "}\n",
+            ".hero {\n",
+            "  background: url(img/hero.png) no-repeat;\n",
+            "}\n",
+        ),
+    );
+    write(root.join("theme.css"), "body { margin: 0; }\n");
+    write(root.join("fonts/a.woff2"), "woff2");
+    write(root.join("img/hero.png"), "png");
+
+    write(
+        root.join("main.tex"),
+        "\\input{chapters/ch1}\n\\includegraphics{fig.png}\n\\bibliography{refs,more}\n",
+    );
+    write(root.join("chapters/ch1.tex"), "\\section{One}\n");
+    write(root.join("refs.bib"), "@book{k, title={K}}\n");
+    write(root.join("more.bib"), "@book{m, title={M}}\n");
+    write(root.join("fig.png"), "png");
+
+    write(
+        root.join("a.md"),
+        r#"# A
+
+[real](real.md)
+
+```rust
+let x = "[fake](nope.md)";
+let u = <https://fake.example>;
+```
+
+tail
+"#,
+    );
+    write(root.join("real.md"), "# Real\n");
     dir
 }
 
@@ -507,4 +567,160 @@ fn impact_document_exit_codes() {
         .output()
         .expect("run imports on missing doc");
     assert!(!out.status.success(), "imports on a missing file must fail");
+}
+
+// =============================================================================
+// (4) css / latex / md-fence batch (build_style_project)
+// =============================================================================
+
+/// `tldr imports styles.css` — the @import and both url() loads ride
+/// ImportInfo in source order: `alias` = "import" for @import, "url" for
+/// url() tokens (the loaded elements: stylesheet, font, image).
+#[test]
+fn imports_css_emits_import_and_url_targets() {
+    let dir = build_style_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(&["imports", "styles.css", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+    assert_eq!(json["language"], "css");
+
+    let imports = json["imports"].as_array().unwrap();
+    assert_eq!(imports.len(), 3, "exactly the 3 loaded elements: {json}");
+
+    assert_eq!(imports[0]["module"], "theme.css");
+    assert_eq!(imports[0]["alias"], "import");
+    assert_eq!(imports[0]["is_from"], true);
+
+    assert_eq!(imports[1]["module"], "fonts/a.woff2");
+    assert_eq!(imports[1]["alias"], "url");
+
+    assert_eq!(imports[2]["module"], "img/hero.png");
+    assert_eq!(imports[2]["alias"], "url");
+}
+
+/// `tldr imports main.tex` — one ImportInfo per braced target: `\input`
+/// keeps the raw path (no .tex appended), `\includegraphics` rides its
+/// command name, and `\bibliography{refs,more}` comma-splits into two
+/// entries with the same command alias.
+#[test]
+fn imports_latex_emits_one_entry_per_target() {
+    let dir = build_style_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(&["imports", "main.tex", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+    assert_eq!(json["language"], "latex");
+
+    let imports = json["imports"].as_array().unwrap();
+    assert_eq!(imports.len(), 4, "ch1 + fig + refs + more: {json}");
+
+    let by_module = |m: &str| {
+        imports
+            .iter()
+            .find(|i| i["module"] == m)
+            .unwrap_or_else(|| panic!("{m} missing from {:?}", imports))
+    };
+    assert_eq!(by_module("chapters/ch1")["alias"], "input");
+    assert_eq!(by_module("fig.png")["alias"], "includegraphics");
+    assert_eq!(by_module("refs")["alias"], "bibliography");
+    assert_eq!(by_module("more")["alias"], "bibliography");
+    for entry in imports {
+        assert_eq!(entry["is_from"], true);
+    }
+}
+
+/// Markdown fenced example blocks are masked: the fake link and autolink
+/// inside the fence never emit, the real link outside does.
+#[test]
+fn imports_markdown_fenced_example_block_stays_inert() {
+    let dir = build_style_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(&["imports", "a.md", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+    let modules: Vec<&str> = json["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["module"].as_str())
+        .collect();
+    assert!(
+        modules.contains(&"real.md"),
+        "the real link emits: {modules:?}"
+    );
+    assert!(
+        !modules.iter().any(|m| m.contains("nope.md")),
+        "the fake link inside the fence must NOT emit: {modules:?}"
+    );
+    assert!(
+        !modules.iter().any(|m| m.contains("fake.example")),
+        "the fake autolink inside the fence must NOT emit: {modules:?}"
+    );
+    assert_eq!(modules.len(), 1, "exactly the real link: {modules:?}");
+}
+
+/// `tldr importers chapters/ch1.tex <root> --lang latex` finds main.tex —
+/// the doc arm of module_matches works for latex path targets.
+#[test]
+fn importers_finds_latex_input_source() {
+    let dir = build_style_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(
+        &[
+            "importers",
+            "chapters/ch1.tex",
+            root.to_str().unwrap(),
+            "--lang",
+            "latex",
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(json["total"], 1, "only main.tex inputs ch1: {json}");
+    assert!(json["importers"][0]["file"]
+        .as_str()
+        .unwrap()
+        .ends_with("main.tex"));
+    assert!(json["importers"][0]["import_statement"]
+        .as_str()
+        .unwrap()
+        .contains("chapters/ch1"));
+}
+
+/// `tldr impact <root>/theme.css` — the reverse closure of an @import'ed
+/// stylesheet contains styles.css (the loaded-element edge is a real
+/// document-reference edge).
+#[test]
+fn impact_css_import_closure_finds_the_stylesheet() {
+    let dir = build_style_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(
+        &[
+            "impact",
+            root.join("theme.css").to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(json["total_targets"], 1);
+
+    let tree = json["targets"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    assert_eq!(tree["note"], "discovered via document link");
+    let callers = tree["callers"].as_array().unwrap();
+    assert_eq!(callers.len(), 1, "styles.css imports theme.css: {json}");
+    assert!(callers[0]["file"].as_str().unwrap().ends_with("styles.css"));
 }

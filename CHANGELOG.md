@@ -25,9 +25,25 @@
   attribute name `href`/`src`/… / the XML role `xlink:href` / `xsi:schemaLocation` /
   `xml-stylesheet` / `doctype-system`). Markdown extraction covers inline links (+ optional
   title), images, autolinks (`<http…>`, `<path>` — HTML-ish bare tokens like `<div>` are
-  filtered), and reference definitions; inline code spans are masked (byte-length preserving) so
-  `` `[x](y.md)` `` stays inert — fenced code blocks are the NEXT batch, as are CSS `url()` and
-  LaTeX `\href`/\include extractors. HTML covers `href|src|poster|data|action|cite|background`
+  filtered), and reference definitions; inline code spans AND code blocks are masked
+  (byte-length preserving) so `` `[x](y.md)` `` stays inert — the code-block mask covers fenced
+  blocks (``` / ~~~, opening fence ≤3 spaces of indent, closing fence the same character with
+  length ≥ the opener's, CommonMark-ish info-string rules) and indented blocks (a
+  ≥4-space-indented line after a blank line — a conservative heuristic that never fabricates an
+  edge, only potentially suppresses one). CSS joins as a **loaded-elements** extractor:
+  `@import "path";` / `@import url(path);` / `@import url("path") media;` emit with alias
+  `import` (the whole statement is masked before the generic pass so nothing double-reports), and
+  every `url(...)` token inside declarations — the font in `@font-face src:`, the image in
+  `background:`/`background-image:`, anything else — emits with alias `url`: a stylesheet really
+  loads those files when applied, so they are genuine reference edges. `data:` URIs,
+  `#fragment`-only targets and non-path function calls (`url(var(--font))`) emit nothing. LaTeX
+  joins with its file-bearing command table — `\input{name}`, `\include{name}`,
+  `\includegraphics[opts]{name}` (incl. the `*` form), `\usepackage[opts]{pkg}`,
+  `\documentclass[opts]{cls}`, `\addbibresource{name}` and `\bibliography{a,b}` (comma-split, one
+  entry per target) — one `ImportInfo` per braced target, `alias` = the command name, targets kept
+  raw exactly as written (no `.tex` appended; LaTeX resolution stays downstream, and the
+  `importers` doc matcher applies it: a query for `chapters/ch1.tex` matches the bare braced
+  target `chapters/ch1`). HTML covers `href|src|poster|data|action|cite|background`
   with double/single/unquoted values; XML/SVG covers the link attributes plus `xi:include` href,
   the `<?xml-stylesheet … href="…"?>` PI and the DOCTYPE `SYSTEM "…"` literal (PIs and DOCTYPEs
   are masked before the attribute pass so nothing double-reports). `data:` URIs and
@@ -52,9 +68,11 @@
   Also unblocks `--lang <format>` end to end: `Language::from_str` (which backs every clap
   `--lang` argument) now accepts the 10 format names it previously rejected with "Unknown
   language" even though `from_path`/`from_extension` always resolved them. Unit-tested in
-  `ast::doclinks` (35 cases), `analysis::doc_impact` and `analysis::importers`; pinned end to end
-  by the new `doclinks_v1` CLI suite (imports fields, importers path matching, transitive closure
-  with depth truncation, external-URL absence, exit codes).
+  `ast::doclinks` (70 cases across markdown/html/xml/css/latex/masking), `analysis::doc_impact`
+  and `analysis::importers`; pinned end to end by the new `doclinks_v1` CLI suite
+  (markdown/html/xml imports fields, css/latex loaded-element fields, importers path matching
+  in both markdown and latex, transitive closure with depth truncation, external-URL absence,
+  fenced-block suppression, exit codes).
 
 - **Markdown format support: `tldr structure README.md`.** Markdown joins the supported formats as
   language 28 (`Language::Markdown` for `.md`/`.markdown`, signal=false like every other format — a

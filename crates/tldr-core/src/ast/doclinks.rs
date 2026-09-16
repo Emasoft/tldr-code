@@ -14,7 +14,8 @@
 //! field-for-field:
 //!
 //! - `module` = the raw link target **exactly as written** (`./a.md`,
-//!   `c.md#frag`, `https://example.com/x` stay untouched). Resolution /
+//!   `c.md#frag`, `https://example.com/x` stay untouched — and LaTeX targets
+//!   keep the bare command argument, with no `.tex` appended). Resolution /
 //!   normalization is a downstream concern (`analysis::doc_impact` and the
 //!   `module_matches` doc arm in `analysis::importers`), not an extraction
 //!   one — extraction must stay a faithful, lossless index of the source.
@@ -24,20 +25,37 @@
 //!   communicates to consumers.
 //! - `alias` = a provenance label describing WHERE the link came from:
 //!   markdown link text (truncated to 100 chars), the reference-definition
-//!   label, the HTML attribute name (`href`/`src`/…), or the XML role
-//!   (attribute name / `xml-stylesheet` / `doctype-system`).
+//!   label, the HTML attribute name (`href`/`src`/…), the XML role
+//!   (attribute name / `xml-stylesheet` / `doctype-system`), the CSS role
+//!   (`import` / `url`), or the LaTeX command name (`input` /
+//!   `includegraphics` / …).
 //!
-//! # Scope and masking plan
+//! # Loaded elements (CSS and LaTeX)
+//!
+//! CSS `@import` and `url()` targets are **loaded elements**: a stylesheet
+//! that imports another stylesheet or references a font/image resource
+//! through `url()` genuinely loads that file when it is applied, so each
+//! target is a real reference edge — the CSS analogue of a hyperlink. The
+//! LaTeX file-bearing commands (`\input`, `\include`, `\includegraphics`,
+//! `\bibliography`, `\addbibresource`, `\usepackage`, `\documentclass`) are
+//! the same for documents — one `ImportInfo` per braced target, the
+//! `\bibliography` argument comma-split.
+//!
+//! # Scope and masking
 //!
 //! - **Masked now:** markdown *inline code spans* (`` `[x](y.md)` `` must not
-//!   look like a link). The masking is byte-length-preserving so match
-//!   offsets stay valid against the original source.
-//! - **Deferred (next batch):** markdown *fenced/indented code blocks* are
-//!   NOT masked yet — a link-shaped line inside a fence currently emits.
-//!   CSS `url()`/`@import` and LaTeX `\href`/`\include` extractors land in
-//!   their own batches (kept out of this commit by design).
-//! - HTML comments and `<script>` bodies are not masked either (documented
-//!   scope: attribute scan is textual, like the C include scan).
+//!   look like a link) AND markdown *code blocks* — fenced (``` / ~~~,
+//!   opening fence ≤3 spaces indent, closing fence the same char with
+//!   length ≥ the opener's) and indented (a ≥4-space-indented line after a
+//!   blank line; a conservative heuristic, see `mask_code_blocks`). Example
+//!   links inside code blocks therefore never emit. All masking is
+//!   byte-length-preserving so match offsets stay valid against the
+//!   original source.
+//! - **Deferred (next batch):** JSON/YAML/TOML path-strings, bash `source`,
+//!   and plain text — no link surface is wired for those languages yet.
+//! - HTML comments and `<script>` bodies are not masked (documented scope:
+//!   the attribute scan is textual, like the C include scan); the CSS and
+//!   LaTeX scans are likewise textual (comments are not masked).
 //!
 //! # External targets
 //!
@@ -107,6 +125,43 @@ lazy_static! {
         r#"(?i)\bsystem\b\s*(?:"(?P<dq>[^"]*)"|'(?P<sq>[^']*)')"#
     )
     .expect("DOCTYPE_SYSTEM regex");
+
+    /// CSS `@import` rules: `@import "path";` / `@import url(path);` /
+    /// `@import url("path") media;` — lazy body up to the first `;` so the
+    /// optional media-query tail (parens included) is consumed. The target
+    /// is picked in code: the `url(...)` form via `u` (quotes stripped by
+    /// `strip_quotes`), else the bare quoted string via `dq`/`sq`.
+    static ref CSS_IMPORT: Regex = Regex::new(
+        r#"(?i)@import\s+(?:url\(\s*(?P<u>[^;]*?)\s*\)|"(?P<dq>[^"\n]*)"|'(?P<sq>[^'\n]*)')[^;]*;"#
+    )
+    .expect("CSS_IMPORT regex");
+
+    /// CSS `url()` tokens anywhere (declarations, `@font-face` `src:`,
+    /// `background:`/`background-image:`, `content:`, …): `url(path)`,
+    /// `url("path")`, `url('path')`. Empty / `data:` / `#fragment` targets
+    /// are dropped by `emittable`; non-path function calls like
+    /// `url(var(--font))` are dropped by the paren/comma sanity filter in
+    /// `extract_css_links` (an UNQUOTED token containing `(`, `,`, `[` or
+    /// `]` cannot be a filesystem path). Quoted targets keep any such
+    /// characters — `url("a (1).png")` is a real file name.
+    static ref CSS_URL: Regex = Regex::new(
+        r#"(?i)\burl\(\s*(?:"(?P<dq>[^"\n]*)"|'(?P<sq>[^'\n]*)'|(?P<raw>[^)"'\n]*))\s*\)"#
+    )
+    .expect("CSS_URL regex");
+
+    /// LaTeX file-bearing commands (see `extract_latex_links`): the command
+    /// must start with `\`, may carry a `*` star form, and must be followed
+    /// by an optional `[...]` options group and then the braced argument.
+    /// (The `regex` crate has no look-around; the structural `\{`
+    /// requirement IS the word boundary on the command name —
+    /// `\bibliographystyle{plain}` fails because after `bibliography` comes
+    /// `style`, not `{`, and `\myinput{x}` / `\inputx{y}` fail the same
+    /// way.) Alternation is longest-first so `\includegraphics` wins over
+    /// its `\include` prefix without relying on backtracking order.
+    static ref LATEX_COMMAND: Regex = Regex::new(
+        r#"\\(?P<cmd>includegraphics|addbibresource|documentclass|bibliography|usepackage|include|input)\*?\s*(?:\[[^\]\n]*\]\s*)?\{(?P<arg>[^}\n]*)\}"#
+    )
+    .expect("LATEX_COMMAND regex");
 }
 
 /// Link targets that never become imports: empty, `data:` URIs (inline
@@ -137,16 +192,19 @@ pub fn extract_doc_links(language: Language, source: &str) -> Vec<ImportInfo> {
         Language::Markdown => extract_markdown_links(source),
         Language::Html => extract_html_links(source),
         Language::Xml => extract_xml_links(source),
+        Language::Css => extract_css_links(source),
+        Language::Latex => extract_latex_links(source),
         _ => Vec::new(),
     }
 }
 
 /// Markdown: inline links, images, autolinks and reference definitions.
 fn extract_markdown_links(source: &str) -> Vec<ImportInfo> {
-    // Mask inline code spans (byte-length preserving) so `` `[x](y.md)` ``
-    // stays inert. Fenced/indented code blocks are NOT masked in this batch
-    // (documented deferral — see module docs).
-    let masked = mask_inline_code_spans(source);
+    // Mask code BLOCKS (fenced + indented — example links inside them must
+    // never emit) and then inline code spans (byte-length preserving), so
+    // every later match offset stays valid against the original source.
+    let masked = mask_code_blocks(source);
+    let masked = mask_inline_code_spans(&masked);
     let mut hits: Vec<(usize, ImportInfo)> = Vec::new();
     // A second byte-length-preserving mask: reference definitions are
     // extracted first and then blanked so the autolink pass cannot
@@ -315,6 +373,111 @@ fn extract_attrs_at(source: &str, allowed: &[&str]) -> Vec<(usize, ImportInfo)> 
     hits
 }
 
+/// CSS: `@import` rules and `url()` tokens. Both are **loaded elements** —
+/// a stylesheet that `@import`s another stylesheet, or references a
+/// font/image resource through `url()`, genuinely loads that file when it
+/// is applied, so each target is a real reference edge (the CSS analogue of
+/// a hyperlink; `tldr impact` treats them as such).
+///
+/// - `@import "path";` / `@import url(path);` / `@import url("path") media;`
+///   → one entry, `alias` = `"import"`. The whole statement is masked after
+///   extraction so the generic `url()` pass cannot double-report its target.
+/// - `url(path)` inside any declaration (`src:` in `@font-face`,
+///   `background:`/`background-image:`, `content:`, … — the scan is
+///   textual, it does not care which property) → one entry per token,
+///   `alias` = `"url"`. `data:` URIs and `#fragment`-only targets are
+///   dropped by `emittable`; unquoted tokens containing `(`, `,`, `[` or
+///   `]` are dropped as non-paths (`url(var(--font))`).
+///
+/// Deterministic source order (ascending byte offset, ties in scan order).
+/// Like the HTML/XML scans this is textual — CSS comments are not masked.
+fn extract_css_links(source: &str) -> Vec<ImportInfo> {
+    let mut hits: Vec<(usize, ImportInfo)> = Vec::new();
+    // Extract-then-mask: @import statements are pulled from the original
+    // text and blanked so the generic url() pass cannot double-report the
+    // url(...) form of an @import (offsets unchanged — mask is spaces).
+    let mut masked = source.as_bytes().to_vec();
+
+    for caps in CSS_IMPORT.captures_iter(source) {
+        let whole = caps.get(0).expect("whole match");
+        let target = if let Some(u) = caps.name("u") {
+            strip_quotes(u.as_str())
+        } else if let Some(dq) = caps.name("dq") {
+            dq.as_str()
+        } else {
+            caps.name("sq").map(|m| m.as_str()).unwrap_or("")
+        };
+        if emittable(target) {
+            hits.push((whole.start(), doc_import(target, "import")));
+        }
+        mask_span(&mut masked, &(whole.start()..whole.end()));
+    }
+
+    for caps in CSS_URL.captures_iter(&String::from_utf8_lossy(&masked)) {
+        let whole = caps.get(0).expect("whole match");
+        let (target, quoted) = if let Some(dq) = caps.name("dq") {
+            (dq.as_str(), true)
+        } else if let Some(sq) = caps.name("sq") {
+            (sq.as_str(), true)
+        } else {
+            (caps.name("raw").map(|m| m.as_str()).unwrap_or(""), false)
+        };
+        let target = target.trim();
+        if !emittable(target) {
+            continue;
+        }
+        // An unquoted CSS url token may not contain these (they make it a
+        // function call or a selector fragment, not a filesystem path).
+        if !quoted && target.contains(['(', ',', '[', ']']) {
+            continue;
+        }
+        hits.push((whole.start(), doc_import(target, "url")));
+    }
+
+    hits.sort_by_key(|(offset, _)| *offset);
+    hits.into_iter().map(|(_, import)| import).collect()
+}
+
+/// LaTeX: file-bearing commands, one [`ImportInfo`] per braced target.
+/// `alias` = the command name — the command IS the provenance:
+///
+/// | command | targets emitted |
+/// |---|---|
+/// | `\input{name}` / `\include{name}` | one |
+/// | `\includegraphics[opts]{name}` (incl. `*` form) | one |
+/// | `\usepackage[opts]{pkg}` | one |
+/// | `\documentclass[opts]{cls}` | one |
+/// | `\addbibresource{name}` | one |
+/// | `\bibliography{a,b}` | one PER comma-separated part |
+///
+/// Targets keep the raw string exactly as written — no `.tex` is appended
+/// and no path normalization happens (LaTeX resolution — kpathsea,
+/// `\graphicspath`, BIBINPUTS — stays downstream, same decision as the
+/// markdown/HTML raw-target rule). Whitespace around comma-split
+/// `\bibliography` parts is trimmed (bibtex semantics); empty parts are
+/// dropped. The scan is textual — LaTeX `%` comments are not masked.
+fn extract_latex_links(source: &str) -> Vec<ImportInfo> {
+    let mut hits: Vec<(usize, ImportInfo)> = Vec::new();
+    for caps in LATEX_COMMAND.captures_iter(source) {
+        let whole = caps.get(0).expect("whole match");
+        let cmd = caps.name("cmd").map(|m| m.as_str()).unwrap_or("");
+        let arg = caps.name("arg").map(|m| m.as_str()).unwrap_or("");
+        let offset = whole.start();
+        if cmd == "bibliography" {
+            for part in arg.split(',') {
+                let part = part.trim();
+                if emittable(part) {
+                    hits.push((offset, doc_import(part, cmd)));
+                }
+            }
+        } else if emittable(arg) {
+            hits.push((offset, doc_import(arg, cmd)));
+        }
+    }
+    hits.sort_by_key(|(offset, _)| *offset);
+    hits.into_iter().map(|(_, import)| import).collect()
+}
+
 fn doc_import(module: &str, alias: &str) -> ImportInfo {
     ImportInfo {
         module: module.to_string(),
@@ -351,8 +514,8 @@ fn mask_span(bytes: &mut [u8], span: &std::ops::Range<usize>) {
 /// Mask markdown inline code spans (CommonMark rule: a run of N backticks
 /// closes at the next run of exactly N backticks). Byte-length preserving:
 /// match offsets against the masked copy are valid against the original.
-/// Fenced/indented code BLOCKS are deliberately not handled here (next
-/// batch — see module docs).
+/// Fenced/indented code BLOCKS are handled separately by `mask_code_blocks`,
+/// which runs BEFORE this pass.
 fn mask_inline_code_spans(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut out = bytes.to_vec();
@@ -394,6 +557,152 @@ fn mask_inline_code_spans(source: &str) -> String {
         }
     }
     String::from_utf8(out).unwrap_or_else(|_| source.to_string())
+}
+
+/// Strip one layer of matching `"` / `'` quotes (the CSS `url("…")` /
+/// `@import "…"` wrappers are syntax, not part of the target).
+fn strip_quotes(s: &str) -> &str {
+    let t = s.trim();
+    if t.len() >= 2
+        && ((t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')))
+    {
+        &t[1..t.len() - 1]
+    } else {
+        t
+    }
+}
+
+/// Mask markdown code BLOCKS (CommonMark-ish, byte-length preserving) so
+/// example links inside them never emit:
+///
+/// - **Fenced blocks** (`mask_fenced_code_blocks`): an opening fence is a
+///   line with ≤3 leading spaces followed by a run of ≥3 backticks or ≥3
+///   tildes plus an optional info string (for backtick fences the info
+///   string must not contain a backtick — CommonMark). The block runs to
+///   the first line with ≤3 leading spaces that is a run of the SAME fence
+///   char with length ≥ the opener's and nothing else (closers carry no
+///   info string). An unclosed fence masks to end of input.
+/// - **Indented blocks** (`mask_indented_code_blocks`): a line indented ≥4
+///   spaces directly after a blank line (or the start of the document)
+///   opens a block that continues over blank and ≥4-space-indented lines.
+///   This is a CONSERVATIVE HEURISTIC: it does not model list/table
+///   context, so a deeply-indented list continuation after a blank line can
+///   be masked too. That only ever SUPPRESSES an emission (a real link
+///   written that way is missed — and in CommonMark such a line usually
+///   *is* a code block), never fabricates one.
+///
+/// Both passes write spaces into the output buffer, so match offsets
+/// against the masked copy stay valid against the original (same trick as
+/// `mask_inline_code_spans`). The fenced pass runs first; the indented pass
+/// reads the original lines and simply over-mask — the two cannot
+/// disagree, because a 4-space-indented line is never a fence opener/closer
+/// (fences require ≤3 indent).
+fn mask_code_blocks(source: &str) -> String {
+    let mut out = source.as_bytes().to_vec();
+    mask_fenced_code_blocks(source, &mut out);
+    mask_indented_code_blocks(source, &mut out);
+    String::from_utf8(out).unwrap_or_else(|_| source.to_string())
+}
+
+/// A line's leading-space count. Tabs are not counted — a tab-indented line
+/// is neither a fence candidate nor a code-block candidate in this scanner
+/// (conservative; avoids tab-width ambiguity).
+fn leading_spaces(line: &[u8]) -> usize {
+    line.iter().take_while(|&&b| b == b' ').count()
+}
+
+/// If `bytes` starts with a run of ≥3 identical fence characters (backtick
+/// or tilde), return `(char, run_length)`.
+fn fence_run(bytes: &[u8]) -> Option<(u8, usize)> {
+    let first = *bytes.first()?;
+    if first != b'`' && first != b'~' {
+        return None;
+    }
+    let run = bytes.iter().take_while(|&&b| b == first).count();
+    if run >= 3 {
+        Some((first, run))
+    } else {
+        None
+    }
+}
+
+fn mask_fenced_code_blocks(source: &str, out: &mut [u8]) {
+    let mut in_fence = false;
+    let mut fence_char = b'`';
+    let mut fence_len = 0usize;
+    let mut block_start = 0usize;
+
+    let mut offset = 0usize;
+    for line in source.split_inclusive('\n') {
+        let bytes = line.as_bytes();
+        let line_end = offset + bytes.len();
+        let indent = leading_spaces(bytes);
+        let rest = &bytes[indent..];
+        if in_fence {
+            // Closing fence: ≤3 indent, SAME char, length ≥ the opener's,
+            // and nothing else on the line (whitespace allowed).
+            if indent <= 3 {
+                if let Some((ch, run)) = fence_run(rest) {
+                    // The trailing newline rides the line (split_inclusive).
+                    let tail_blank = rest[run..]
+                        .iter()
+                        .all(|&b| b == b' ' || b == b'\t' || b == b'\r' || b == b'\n');
+                    if ch == fence_char && run >= fence_len && tail_blank {
+                        mask_span(out, &(block_start..line_end));
+                        in_fence = false;
+                    }
+                }
+            }
+        } else if indent <= 3 {
+            // Opening fence (≤3 indent, ≥3 of one fence char). CommonMark:
+            // a backtick fence's info string may not contain a backtick —
+            // such a line is NOT a fence and its content stays scannable.
+            if let Some((ch, run)) = fence_run(rest) {
+                let info = &rest[run..];
+                if ch != b'`' || !info.contains(&b'`') {
+                    in_fence = true;
+                    fence_char = ch;
+                    fence_len = run;
+                    block_start = offset;
+                }
+            }
+        }
+        offset = line_end;
+    }
+    if in_fence {
+        mask_span(out, &(block_start..source.len()));
+    }
+}
+
+fn mask_indented_code_blocks(source: &str, out: &mut [u8]) {
+    let mut in_block = false;
+    let mut block_start = 0usize;
+    // Start of document behaves like a blank predecessor line.
+    let mut prev_blank = true;
+
+    let mut offset = 0usize;
+    for line in source.split_inclusive('\n') {
+        let bytes = line.as_bytes();
+        let line_end = offset + bytes.len();
+        let is_blank = bytes
+            .iter()
+            .all(|&b| b == b' ' || b == b'\t' || b == b'\r' || b == b'\n');
+        let indent = leading_spaces(bytes);
+        if in_block && !is_blank && indent < 4 {
+            // A non-blank, <4-indent line ends the block BEFORE this line.
+            mask_span(out, &(block_start..offset));
+            in_block = false;
+        }
+        if !in_block && !is_blank && prev_blank && indent >= 4 {
+            in_block = true;
+            block_start = offset;
+        }
+        prev_blank = is_blank;
+        offset = line_end;
+    }
+    if in_block {
+        mask_span(out, &(block_start..source.len()));
+    }
 }
 
 #[cfg(test)]
@@ -693,14 +1002,328 @@ mod tests {
     }
 
     // =========================================================================
-    // Language gating
+    // CSS
     // =========================================================================
 
     #[test]
+    fn css_import_double_quoted() {
+        let imports = extract_doc_links(Language::Css, "@import \"theme.css\";\n");
+        assert_eq!(targets(&imports), vec!["theme.css"]);
+        assert_eq!(aliases(&imports), vec![Some("import")]);
+        assert!(imports[0].is_from);
+    }
+
+    #[test]
+    fn css_import_single_quoted() {
+        let imports = extract_doc_links(Language::Css, "@import 'theme.css';\n");
+        assert_eq!(targets(&imports), vec!["theme.css"]);
+        assert_eq!(aliases(&imports), vec![Some("import")]);
+    }
+
+    #[test]
+    fn css_import_url_unquoted_quoted_and_media_tail() {
+        let imports = extract_doc_links(
+            Language::Css,
+            "@import url(a.css);\n@import url(\"b.css\") screen;\n@import url('c.css') print;\n",
+        );
+        assert_eq!(targets(&imports), vec!["a.css", "b.css", "c.css"]);
+        assert_eq!(aliases(&imports), vec![Some("import"); 3]);
+    }
+
+    #[test]
+    fn css_import_keyword_case_insensitive() {
+        let imports = extract_doc_links(Language::Css, "@IMPORT url(A.css);\n");
+        assert_eq!(targets(&imports), vec!["A.css"]);
+    }
+
+    #[test]
+    fn css_import_url_form_not_double_reported() {
+        let imports = extract_doc_links(Language::Css, "@import url(theme.css);\n");
+        assert_eq!(
+            imports.len(),
+            1,
+            "url() inside @import must not double-report: {:?}",
+            imports
+        );
+        assert_eq!(aliases(&imports), vec![Some("import")]);
+    }
+
+    #[test]
+    fn css_font_face_and_background_urls() {
+        let source = "@font-face {\n  font-family: \"Inter\";\n  src: url(fonts/a.woff2) format(\"woff2\");\n}\n.hero { background: url(\"img/hero.png\") no-repeat; }\n.icon { background-image: url('i/logo.svg'); }";
+        let imports = extract_doc_links(Language::Css, source);
+        assert_eq!(
+            targets(&imports),
+            vec!["fonts/a.woff2", "img/hero.png", "i/logo.svg"]
+        );
+        assert_eq!(aliases(&imports), vec![Some("url"); 3]);
+    }
+
+    #[test]
+    fn css_data_uri_and_fragment_only_skipped() {
+        let source = ".a { background: url(data:image/png;base64,AAAA); }\n.b { clip-path: url(#mask); }\n.c { color: red; }";
+        let imports = extract_doc_links(Language::Css, source);
+        assert!(imports.is_empty(), "got {:?}", imports);
+    }
+
+    #[test]
+    fn css_unquoted_function_call_is_not_a_path() {
+        // url(var(--font)) — the unquoted token stops at `)` and is not a
+        // filesystem path.
+        let imports = extract_doc_links(Language::Css, "p { font-family: url(var(--font)); }");
+        assert!(imports.is_empty(), "got {:?}", imports);
+    }
+
+    #[test]
+    fn css_url_spaces_around_path() {
+        let imports = extract_doc_links(Language::Css, ".a { background: url( img/hero.png ); }");
+        assert_eq!(targets(&imports), vec!["img/hero.png"]);
+    }
+
+    #[test]
+    fn css_source_order_is_deterministic() {
+        let source =
+            ".a { background: url(z.png); }\n@import url(a.css);\n.b { content: url(m.png); }";
+        let imports = extract_doc_links(Language::Css, source);
+        assert_eq!(targets(&imports), vec!["z.png", "a.css", "m.png"]);
+    }
+
+    #[test]
+    fn css_non_url_properties_are_inert() {
+        // Quoted strings in non-url() positions are values, not references.
+        let imports = extract_doc_links(
+            Language::Css,
+            ".a { color: #fff; font-family: \"x.md\"; }\n",
+        );
+        assert!(imports.is_empty(), "got {:?}", imports);
+    }
+
+    #[test]
+    fn css_scan_is_textual_comments_not_masked() {
+        // Documented scope: the scan is textual (like the HTML attribute
+        // scan), so a url() inside a comment DOES emit.
+        let imports = extract_doc_links(Language::Css, "/* .b { background: url(c.png); } */\n");
+        assert_eq!(targets(&imports), vec!["c.png"]);
+    }
+
+    // =========================================================================
+    // LaTeX
+    // =========================================================================
+
+    #[test]
+    fn latex_input_and_include() {
+        let imports = extract_doc_links(
+            Language::Latex,
+            "\\input{chapters/ch1}\n\\include{chapters/app}\n",
+        );
+        assert_eq!(targets(&imports), vec!["chapters/ch1", "chapters/app"]);
+        assert_eq!(aliases(&imports), vec![Some("input"), Some("include")]);
+        assert!(imports[0].is_from);
+    }
+
+    #[test]
+    fn latex_includegraphics_opts_and_starred() {
+        let imports = extract_doc_links(
+            Language::Latex,
+            "\\includegraphics[width=0.8\\textwidth]{fig.png}\n\\includegraphics*[scale=0.5]{img.png}\n\\includegraphics*{bare.png}\n",
+        );
+        assert_eq!(targets(&imports), vec!["fig.png", "img.png", "bare.png"]);
+        assert_eq!(aliases(&imports), vec![Some("includegraphics"); 3]);
+    }
+
+    #[test]
+    fn latex_usepackage_and_documentclass_opts() {
+        let imports = extract_doc_links(
+            Language::Latex,
+            "\\documentclass[11pt]{article}\n\\usepackage[T1]{fontenc}\n\\usepackage{graphicx}\n",
+        );
+        assert_eq!(targets(&imports), vec!["article", "fontenc", "graphicx"]);
+        assert_eq!(
+            aliases(&imports),
+            vec![
+                Some("documentclass"),
+                Some("usepackage"),
+                Some("usepackage")
+            ]
+        );
+    }
+
+    #[test]
+    fn latex_bibliography_comma_split() {
+        let imports = extract_doc_links(Language::Latex, "\\bibliography{refs,more}\n");
+        assert_eq!(targets(&imports), vec!["refs", "more"]);
+        assert_eq!(aliases(&imports), vec![Some("bibliography"); 2]);
+    }
+
+    #[test]
+    fn latex_bibliography_parts_trimmed_and_empty_dropped() {
+        let imports = extract_doc_links(Language::Latex, "\\bibliography{ refs , more , }\n");
+        assert_eq!(targets(&imports), vec!["refs", "more"]);
+    }
+
+    #[test]
+    fn latex_addbibresource() {
+        let imports = extract_doc_links(Language::Latex, "\\addbibresource{refs.bib}\n");
+        assert_eq!(targets(&imports), vec!["refs.bib"]);
+        assert_eq!(aliases(&imports), vec![Some("addbibresource")]);
+    }
+
+    #[test]
+    fn latex_targets_kept_raw_no_tex_appended() {
+        let imports = extract_doc_links(Language::Latex, "\\input{./chapters/app}\n");
+        assert_eq!(targets(&imports), vec!["./chapters/app"]);
+    }
+
+    #[test]
+    fn latex_no_false_positives_on_prose_or_lookalikes() {
+        // \section{input} / \subsection{include}: the ARGUMENT is a handled
+        // word, the command is not — nothing emits. \bibliographystyle is a
+        // different command; \myinput / \inputx fail the command-name word
+        // boundary; a bare "input" without a backslash is prose.
+        let source = "\\section{input}\n\\subsection{include}\n\\bibliographystyle{plain}\n\\myinput{x}\n\\inputx{y}\nthe word input alone does nothing\n";
+        let imports = extract_doc_links(Language::Latex, source);
+        assert!(imports.is_empty(), "got {:?}", imports);
+    }
+
+    #[test]
+    fn latex_source_order_is_deterministic() {
+        let source = "\\input{a}\n\\usepackage{b}\n\\input{c}\n";
+        let imports = extract_doc_links(Language::Latex, source);
+        assert_eq!(targets(&imports), vec!["a", "b", "c"]);
+    }
+
+    // =========================================================================
+    // Markdown code-block masking
+    // =========================================================================
+
+    #[test]
+    fn markdown_fenced_block_links_are_inert() {
+        let source = concat!(
+            "# T\n\n```rust\n",
+            "let x = \"[fake](x.md)\";\n",
+            "let u = <https://fake.example>;\n",
+            "```\n\ntail\n"
+        );
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert!(imports.is_empty(), "got {:?}", imports);
+    }
+
+    #[test]
+    fn markdown_real_links_around_fences_still_emit() {
+        let source = "[before](before.md)\n\n```\n[fake](fake.md)\n```\n\n[after](after.md)\n";
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert_eq!(targets(&imports), vec!["before.md", "after.md"]);
+    }
+
+    #[test]
+    fn markdown_backtick_fence_with_backticks_inside_string() {
+        // The ``` inside the string literal is fence CONTENT (a closing
+        // fence carries nothing else), so the block runs to the real closer
+        // and the link after it still emits.
+        let source = "```rust\nlet s = \"```\";\n```\n\n[real](real.md)\n";
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert_eq!(targets(&imports), vec!["real.md"]);
+    }
+
+    #[test]
+    fn markdown_tilde_fence_closed_by_longer_run() {
+        // ~~~ opener (≥3) closed by a LONGER run of the same char.
+        let source = "~~~\n[fake](fake.md)\n~~~~~\n\n[real](real.md)\n";
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert_eq!(targets(&imports), vec!["real.md"]);
+    }
+
+    #[test]
+    fn markdown_backticks_inside_tilde_fence_are_content() {
+        // A ``` line inside a ~~~ fence is content (different fence char).
+        let source = "~~~\n```\n[fake](fake.md)\n```\n~~~\n\n[real](real.md)\n";
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert_eq!(targets(&imports), vec!["real.md"]);
+    }
+
+    #[test]
+    fn markdown_fence_info_string_masked_too() {
+        let source = "```rust title=\"[fake](fake.md)\"\n[fake](fake.md)\n```\n[real](real.md)\n";
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert_eq!(targets(&imports), vec!["real.md"]);
+    }
+
+    #[test]
+    fn markdown_backtick_info_string_with_backtick_is_not_a_fence() {
+        // CommonMark: a backtick fence's info string may not contain a
+        // backtick — this line is NOT a fence, so the link below emits.
+        let source = "``` a ` b\n[fake](fake.md)\n";
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert_eq!(targets(&imports), vec!["fake.md"]);
+    }
+
+    #[test]
+    fn markdown_refdef_inside_fence_is_inert() {
+        let source = "```\n[lbl]: ref.md\n```\n\n[real](real.md)\n";
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert_eq!(targets(&imports), vec!["real.md"]);
+    }
+
+    #[test]
+    fn markdown_unclosed_fence_masks_to_eof() {
+        let source = "[before](before.md)\n\n```\n[fake](fake.md)\n";
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert_eq!(targets(&imports), vec!["before.md"]);
+    }
+
+    #[test]
+    fn markdown_fence_indent_up_to_three_spaces() {
+        let source = "   ```\n[fake](fake.md)\n   ```\n\n[real](real.md)\n";
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert_eq!(targets(&imports), vec!["real.md"]);
+    }
+
+    #[test]
+    fn markdown_indented_code_block_is_masked() {
+        let source = "# T\n\n    [fake](fake.md)\n    <https://fake.example>\n\n[real](real.md)\n";
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert_eq!(targets(&imports), vec!["real.md"]);
+    }
+
+    #[test]
+    fn markdown_indented_block_needs_blank_line_before() {
+        // A paragraph line followed by a 4-space line is a lazy
+        // continuation, not a code block — the link still emits (heuristic
+        // scope, and correct CommonMark too).
+        let source = "text\n    [fake](fake.md)\n";
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert_eq!(targets(&imports), vec!["fake.md"]);
+    }
+
+    #[test]
+    fn markdown_indented_block_over_blank_lines() {
+        // Blank lines INSIDE an indented block keep it open.
+        let source = "# T\n\n    [fake](fake.md)\n\n    [also-fake](nope.md)\n\n[real](real.md)\n";
+        let imports = extract_doc_links(Language::Markdown, source);
+        assert_eq!(targets(&imports), vec!["real.md"]);
+    }
+
+    #[test]
+    fn mask_code_blocks_is_byte_length_preserving() {
+        let source = "a\n\n```\n[fake](fake.md)\n```\n\nb\n";
+        let masked = mask_code_blocks(source);
+        assert_eq!(masked.len(), source.len());
+        assert!(!masked.contains("[fake]"), "got {masked:?}");
+        // The masked span runs through the closing fence's own newline, so
+        // the tail keeps only the blank line + "b".
+        assert!(masked.starts_with("a\n\n") && masked.ends_with("\nb\n"));
+    }
+
+    // =========================================================================
+    // Language gating
+    // =========================================================================
+
+    /// Css and Latex ARE document languages now (their extractors live in
+    /// the CSS/LaTeX sections above); these languages still have no link
+    /// surface.
+    #[test]
     fn non_document_languages_emit_nothing() {
         for lang in [
-            Language::Css,
-            Language::Latex,
             Language::Json,
             Language::Yaml,
             Language::Toml,
@@ -708,7 +1331,10 @@ mod tests {
             Language::Bash,
             Language::Python,
         ] {
-            let imports = extract_doc_links(lang, "[a](b.md) <x href=\"y.md\">");
+            let imports = extract_doc_links(
+                lang,
+                "[a](b.md) <x href=\"y.md\"> @import \"z.css\"; \\input{w.tex}",
+            );
             assert!(imports.is_empty(), "{lang:?} must emit nothing");
         }
     }

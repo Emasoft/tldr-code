@@ -202,11 +202,29 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
             }
             false
         }
-        // doclinks-v1: document languages (markdown/html/xml links now;
-        // css/latex wired ahead of the next batch) reference each other by
-        // PATH — delegate to the doc matcher.
+        // doclinks-v1: document languages (markdown/html/xml hyperlinks,
+        // css/latex loaded elements) reference each other by PATH — delegate
+        // to the doc matcher.
         Language::Markdown | Language::Html | Language::Xml | Language::Css | Language::Latex => {
-            doc_module_matches(import_module, target)
+            if doc_module_matches(import_module, target) {
+                return true;
+            }
+            // LaTeX resolves `\input{name}` / `\include{name}` /
+            // `\usepackage{pkg}` to `name.tex` / `pkg.sty` when the braced
+            // target has no extension — extraction keeps the target RAW (no
+            // `.tex` appended, see `ast::doclinks::extract_latex_links`), so
+            // this resolution rule lives HERE: a query for the real file
+            // (`chapters/ch1.tex`) must also match the bare braced target
+            // (`chapters/ch1`). The suffix rule of `doc_module_matches` then
+            // still applies to the extended form.
+            if language == Language::Latex && !import_module.contains('.') {
+                for ext in [".tex", ".sty", ".cls"] {
+                    if doc_module_matches(&format!("{import_module}{ext}"), target) {
+                        return true;
+                    }
+                }
+            }
+            false
         }
         _ => import_module == target,
     }

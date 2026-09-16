@@ -3,8 +3,8 @@
 //! File-level impact analysis for **documents**: given a doc file, find every
 //! document that (transitively) links to it. This is the document analogue of
 //! `impact_analysis`'s reverse call-graph BFS — "who breaks if I change this
-//! file" for markdown/html/xml (and css/latex once their link extractors
-//! land in the next batch).
+//! file" for markdown/html/xml and the CSS/LaTeX loaded elements (`@import`,
+//! `url()`, `\input`, `\includegraphics`, …).
 //!
 //! # Why the impact BFS is reused verbatim
 //!
@@ -66,10 +66,9 @@ pub(crate) const DOC_NODE: &str = "<doc>";
 /// consumers distinguishing doc-link closure from code call-graph impact.
 const DOC_NOTE: &str = "discovered via document link";
 
-/// The document languages participating in the document link graph: the 3
-/// formats with link extractors today (Markdown, Html, Xml) plus Css and
-/// Latex, whose files are already valid link TARGETS (a `.md` can link a
-/// stylesheet) and whose own link extractors land in the next batch.
+/// The document languages participating in the document link graph:
+/// markdown/html/xml hyperlinks plus the CSS/LaTeX loaded elements
+/// (`@import`, `url()`, `\input`, `\includegraphics`, `\bibliography`, …).
 pub fn is_doc_language(language: Language) -> bool {
     matches!(
         language,
