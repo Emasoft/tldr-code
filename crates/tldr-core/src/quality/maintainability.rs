@@ -361,6 +361,8 @@ fn count_loc(source: &str, language: Language) -> usize {
         // Markdown batch: the only comment form is the HTML `<!-- … -->`
         // block; mirror the Xml/Html treatment (line-prefix exclusion).
         Language::Markdown => vec!["<!--"],
+        // Plain-text batch: prose lines are not comments — no prefixes.
+        Language::Text => vec![],
     };
 
     source

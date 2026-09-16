@@ -585,6 +585,7 @@ fn is_supported_source_file(path: &Path, lang: Option<Language>) -> bool {
         Some(Language::Latex) => matches!(ext, "tex" | "sty" | "cls"),
         Some(Language::Log) => ext == "log",
         Some(Language::Markdown) => matches!(ext, "md" | "markdown"),
+        Some(Language::Text) => matches!(ext, "txt" | "text"),
         // No --lang: preserve historical behavior of scanning py + rs
         // (the two languages the taint analyzer natively handles).
         None => matches!(ext, "py" | "rs"),

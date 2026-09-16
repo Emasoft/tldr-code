@@ -580,6 +580,9 @@ fn is_comment_line(trimmed: &str, language: Language) -> bool {
         // Markdown batch: no line-comment syntax (the HTML `<!-- … -->` block
         // is not a line prefix; mirrors Json/Xml/Html/Css).
         Language::Markdown => false,
+        // Plain-text batch: `.txt` lines are prose — a leading `#` is a
+        // TOC-ish marker or ASCII decoration, not a comment.
+        Language::Text => false,
     }
 }
 
@@ -621,6 +624,10 @@ fn comment_node_kinds(language: Language) -> &'static [&'static str] {
         // comment node — HTML comments surface as `html_block` alongside real
         // HTML, so no kind is safely classifiable as "comment".
         Language::Markdown => &[],
+        // Plain-text batch: `.txt` never parses through tree-sitter (no
+        // grammar — there is no syntax to parse) — no comment node kinds
+        // exist.
+        Language::Text => &[],
     }
 }
 

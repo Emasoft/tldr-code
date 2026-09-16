@@ -483,6 +483,10 @@ fn is_single_line_comment(trimmed: &str, lang: Language) -> bool {
         // matches the generic `/* */` multi-line markers either) it is left
         // to the consumer's judgement rather than half-modelled here.
         Language::Markdown => false,
+        // Plain-text batch: `.txt` lines are prose — a leading `#` in a
+        // notes file is a TOC-ish marker or ASCII decoration, not a comment
+        // language, so nothing counts as a comment.
+        Language::Text => false,
         // why: OCaml has no single-line comment syntax — every comment is a
         // `(* ... *)` block (possibly spanning one line). Treating a line
         // that merely starts with "(*" as already-closed single-line

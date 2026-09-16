@@ -77,6 +77,13 @@ pub fn extract_imports_from_tree(
         // scanner (alias `source`). The tree is handed over UNRE-PARSED —
         // this function already holds it, so the AST-keyed extractors cost
         // nothing extra (the regex-only extractors ignore it).
+        //
+        // Plain-text batch: `.txt` joins with the whole-document URL/path
+        // scan (`ast::doclinks::scan_paths_and_urls` — bare URLs,
+        // angle-wrapped paths, shell-escaped paths, plain path tokens). The
+        // tree is Text's structural placeholder and is ignored (regex-only
+        // scan over the real source, which `parse_file_with_lang`'s Text
+        // arm supplies).
         Language::Markdown
         | Language::Html
         | Language::Xml
@@ -85,7 +92,8 @@ pub fn extract_imports_from_tree(
         | Language::Json
         | Language::Yaml
         | Language::Toml
-        | Language::Bash => super::doclinks::extract_doc_links(language, source, Some(tree)),
+        | Language::Bash
+        | Language::Text => super::doclinks::extract_doc_links(language, source, Some(tree)),
         // Log has no reference surface in any sense: no grammar (its tree
         // is a structural placeholder), no path convention — log files are
         // consumed exclusively by the native scanner in `ast::logs`.

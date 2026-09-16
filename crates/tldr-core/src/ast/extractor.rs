@@ -104,6 +104,42 @@ pub fn get_code_structure(
         });
     }
 
+    // Plain-text batch: `.txt`/`.text` files NEVER go through tree-sitter
+    // (plain text has no syntax, so no grammar can exist — the Log
+    // no-grammar precedent, d1992302). The whole parse-then-walk machinery
+    // is skipped via this early-return, exactly like the JSONL and Log
+    // returns above. Headings come from the heuristic TOC scanner in
+    // `ast::toc` and map onto `DefinitionInfo` with kind `"heading"`.
+    //
+    // Why NOT `extract_elements`: that engine walks tree-sitter trees, and
+    // Text has no tree — there is nothing for it to walk. `elements.rs` is
+    // deliberately untouched; text headings are emitted here, from the
+    // scanner, in source order. Unlike `.log`, `.txt` files keep the
+    // STANDARD size policy (the TOC scan holds the whole source in memory —
+    // the honest bound — so a giant text file is a skip-with-warning, not a
+    // streaming case).
+    if root.is_file() && crate::ast::toc::is_text_path(root) {
+        let source = crate::ast::toc::parse_text_file(root)?;
+        let definitions = crate::ast::toc::scan_toc(&source);
+        let file_structure = crate::types::FileStructure {
+            path: root.to_path_buf(),
+            functions: Vec::new(),
+            classes: Vec::new(),
+            methods: Vec::new(),
+            method_infos: Vec::new(),
+            imports: Vec::new(),
+            definitions,
+        };
+        return Ok(CodeStructure {
+            root: root.to_path_buf(),
+            language: Some(Language::Text),
+            files: vec![file_structure],
+            files_skipped: 0,
+            warnings: Vec::new(),
+            jsonl_stream: None,
+        });
+    }
+
     // OOXML containers (2026-xx): `.docx`/`.xlsx`/`.pptx` are ZIP packages,
     // not tree-sitter files — and deliberately NOT a `Language` variant (the
     // container-is-not-a-language decision is documented at the top of
@@ -489,7 +525,9 @@ pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<S
         // functions; they surface as `kind: "entry"` definitions from the
         // `ast::logs` scanner via the `get_code_structure` early-return.
         // Markdown joins them (2026-09): headings/code blocks/tables are
-        // elements, not functions.
+        // elements, not functions. Text joins too (plain-text batch): TOC
+        // headings are elements from the `ast::toc` scanner via its own
+        // early-return.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -499,7 +537,8 @@ pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<S
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => {}
+        | Language::Markdown
+        | Language::Text => {}
     }
 
     functions
@@ -2553,7 +2592,8 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
 
         Language::Lua | Language::Luau | Language::Ocaml => None,
         // Formats extension: no constants in data/config/markup documents;
-        // log entries carry no constants either; markdown documents neither.
+        // log entries carry no constants either; markdown documents
+        // neither; plain text neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -2563,7 +2603,8 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => None,
+        | Language::Markdown
+        | Language::Text => None,
     }
 }
 
@@ -2805,7 +2846,8 @@ fn anonymous_callable_kinds(language: Language) -> &'static [&'static str] {
         Language::Ocaml => &["fun_expression"],
         Language::C => &[],
         // Formats extension: no lambdas in data/config/markup documents;
-        // log entries are not lambdas; markdown documents neither.
+        // log entries are not lambdas; markdown documents neither; plain
+        // text neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -2815,7 +2857,8 @@ fn anonymous_callable_kinds(language: Language) -> &'static [&'static str] {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => &[],
+        | Language::Markdown
+        | Language::Text => &[],
     }
 }
 

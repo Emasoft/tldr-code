@@ -1358,3 +1358,107 @@ Traceback (most recent call last):
         );
     }
 }
+
+/// TEXT PIN (`text_headings_are_elements`, plain-text batch): `.txt` files
+/// never reach a tree-sitter tree (plain text has no syntax to parse — the
+/// Log no-grammar precedent), so the heuristic TOC scanner in `ast::toc` is
+/// the ONLY source of text definitions. `tldr structure <file>.txt` must
+/// surface one `heading` definition per TOC heading — named after the
+/// collapsed heading text (ATX/underline markers stripped, numbering
+/// prefixes kept), with byte spans and `definition_line` = the heading's
+/// first line. Prose and colon-terminated ALL-CAPS label lines stay inert.
+#[test]
+fn text_headings_are_elements() {
+    let fixture = "\
+OVERVIEW
+
+Introduction
+============
+
+1. Setup
+1.1. Requirements
+
+lowercase prose stays inert
+SEE ALSO:
+";
+    let dir = TempDir::new().unwrap_or_else(|e| panic!("symbol-fidelity-v1: tempdir failed: {e}"));
+    let path = dir.path().join("notes.txt");
+    fs::write(&path, fixture)
+        .unwrap_or_else(|e| panic!("symbol-fidelity-v1: write notes.txt failed: {e}"));
+
+    let structure = get_code_structure(&path, Language::Text, 0, None)
+        .unwrap_or_else(|e| panic!("symbol-fidelity-v1: notes.txt extraction failed: {e}"));
+    assert_eq!(
+        structure.files.len(),
+        1,
+        "symbol-fidelity-v1 [notes.txt]: expected exactly one FileStructure"
+    );
+    assert_eq!(
+        structure.language,
+        Some(Language::Text),
+        "symbol-fidelity-v1 [notes.txt]: language must report text"
+    );
+    let defs = &structure.files[0].definitions;
+
+    // EXACT heading sequence, source order — one definition per heading;
+    // prose and the `SEE ALSO:` label line never emit.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("heading", "OVERVIEW"),
+        ("heading", "Introduction"),
+        ("heading", "1. Setup"),
+        ("heading", "1.1. Requirements"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "symbol-fidelity-v1 [notes.txt]: expected exact heading sequence, got {defs:#?}"
+    );
+
+    // The setext heading's region covers BOTH lines (text + underline).
+    let setext = defs
+        .iter()
+        .find(|d| d.name == "Introduction")
+        .unwrap_or_else(|| {
+            panic!("symbol-fidelity-v1 [notes.txt]: setext heading not found.\n{defs:#?}")
+        });
+    assert_eq!(
+        setext.line_start, 3,
+        "symbol-fidelity-v1 [notes.txt]: setext heading starts at its text line"
+    );
+    assert_eq!(
+        setext.line_end, 4,
+        "symbol-fidelity-v1 [notes.txt]: setext region includes the underline line"
+    );
+    let slice = &fixture[setext.byte_start.unwrap() as usize..setext.byte_end.unwrap() as usize];
+    assert_eq!(
+        slice, "Introduction\n============",
+        "symbol-fidelity-v1 [notes.txt]: setext byte region = text + underline"
+    );
+
+    // Every heading: byte spans present + definition_line = start line +
+    // empty signature (prose has none).
+    for d in defs {
+        assert_eq!(d.kind, "heading");
+        assert!(
+            d.byte_start.is_some() && d.byte_end.is_some(),
+            "symbol-fidelity-v1 [notes.txt]: heading {} must carry byte spans",
+            d.name
+        );
+        assert_eq!(
+            d.definition_line,
+            Some(d.line_start),
+            "symbol-fidelity-v1 [notes.txt]: heading {} definition_line must be its start line",
+            d.name
+        );
+        assert!(
+            d.signature.is_empty(),
+            "symbol-fidelity-v1 [notes.txt]: prose has no signatures"
+        );
+    }
+}

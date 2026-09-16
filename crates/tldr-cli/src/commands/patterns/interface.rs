@@ -82,7 +82,7 @@ fn function_node_kinds(lang: Language) -> &'static [&'static str] {
         Language::Kotlin | Language::Swift => &["function_declaration"],
         // Formats extension (2025-09): no functions in data/config documents;
         // log entries are not functions; markdown headings/code blocks are
-        // not functions either (2026-09).
+        // not functions either (2026-09); plain-text TOC headings neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -92,7 +92,8 @@ fn function_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => &[],
+        | Language::Markdown
+        | Language::Text => &[],
     }
 }
 
@@ -138,7 +139,8 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
         // swift-collections/.../Span+Extras.swift).
         Language::Swift => &["class_declaration", "protocol_declaration"],
         // Formats extension (2025-09): no classes in data/config documents;
-        // log entries are not classes; markdown documents neither (2026-09).
+        // log entries are not classes; markdown documents neither (2026-09);
+        // plain text neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -148,7 +150,8 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => &[],
+        | Language::Markdown
+        | Language::Text => &[],
     }
 }
 
@@ -2917,7 +2920,13 @@ end
         assert!(is_supported_source_file(Path::new("test.c")));
         assert!(is_supported_source_file(Path::new("test.rb")));
         assert!(is_supported_source_file(Path::new("test.cs")));
-        assert!(!is_supported_source_file(Path::new("test.txt")));
+        // plain-text batch: `.txt` resolves to Language::Text, so it IS a
+        // (format-tier) supported source file now — the old negative
+        // assertion here was valid only while `.txt` resolved to None
+        // (plain-text batch: `tldr structure notes.txt` reports the
+        // heuristic TOC headings). `.xyz` keeps a genuinely unsupported
+        // negative in the test.
+        assert!(is_supported_source_file(Path::new("test.txt")));
         // markdown batch (2026-09): `.md` resolves to Language::Markdown, so
         // it IS a (format-tier) supported source file now — the old
         // negative assertion here was valid only while `.md` resolved to

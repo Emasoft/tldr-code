@@ -39,6 +39,16 @@
 //!   region; signature = the raw timestamp text (or empty). Unlike the
 //!   tree-walk formats, entries set `definition_line` = the entry's start
 //!   line.
+//! - Text → `heading` per heuristic TOC heading from the NATIVE scanner
+//!   (`ast::toc` — no tree-sitter grammar exists for prose): setext
+//!   (text + `===`/`---` underline, region = BOTH lines), ATX (`#`-prefixed),
+//!   ALL-CAPS lines and numbered/word outlines, named after the collapsed
+//!   heading text (the `#`/underline/numbering markers stay in the region
+//!   bytes but never in the name for setext/ATX; numbered outlines KEEP
+//!   their prefix). Signature is always empty; `definition_line` = the
+//!   heading's first line. The documented false-positive classes (shouted
+//!   prose, decimal numbers reading like outlines) are pinned in `ast::toc`'s
+//!   unit tests.
 //! - Markdown → `heading` per ATX heading (`#`…`######`) and setext heading
 //!   (`text` + `===`/`---` underline), named after the heading text (the
 //!   `#`/underline markers are separate grammar children and never enter the
@@ -838,6 +848,138 @@ fn log_entries_are_definitions_with_exact_spans() {
 }
 
 // =============================================================================
+// Plain text — heuristic TOC scanner (NO tree-sitter): headings as definitions
+// =============================================================================
+//
+// `.txt` never reaches a tree-sitter tree (prose has no syntax to parse).
+// The `get_code_structure` hook early-returns to the `ast::toc` scanner, and
+// each heading maps onto `DefinitionInfo` with kind `"heading"`, name =
+// collapsed heading text, signature = empty, and definition_line = the
+// heading's first line. `assert_element_invariants` is deliberately NOT
+// applied here: text headings DO set `definition_line` (the heading's start
+// line is its declaration line).
+//
+// Line map (the pinned spans below are computed against exactly this text):
+//  1: USER GUIDE
+//  2:
+//  3: Introduction
+//  4: ============
+//  5:
+//  6: ## Quick Start
+//  7:
+//  8: 1. Setup
+//  9: 1.1. Requirements
+// 10:
+// 11: lowercase prose stays inert
+// 12: SEE ALSO:
+// 13:
+// 14: Appendix 2
+const TEXT_FIXTURE: &str = "\
+USER GUIDE
+
+Introduction
+============
+
+## Quick Start
+
+1. Setup
+1.1. Requirements
+
+lowercase prose stays inert
+SEE ALSO:
+
+Appendix 2
+";
+
+#[test]
+fn text_toc_headings_are_definitions_with_exact_spans() {
+    let defs = extract_elements("notes.txt", TEXT_FIXTURE, Language::Text);
+
+    // EXACT source-order sequence: the ALL-CAPS title, the setext heading
+    // (both lines), the ATX heading, the numbered outlines (prefix kept in
+    // the name), and the word outline. Lowercase prose and the
+    // colon-terminated `SEE ALSO:` label line never emit.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("heading", "USER GUIDE"),
+        ("heading", "Introduction"),
+        ("heading", "Quick Start"),
+        ("heading", "1. Setup"),
+        ("heading", "1.1. Requirements"),
+        ("heading", "Appendix 2"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [notes.txt]: expected exact heading sequence"
+    );
+
+    // Every heading: signature empty, definition_line = start line, byte
+    // spans present, and the byte region is an exact slice of the source.
+    for d in &defs {
+        assert_eq!(d.kind, "heading");
+        assert!(
+            d.signature.is_empty(),
+            "element-extraction-v1 [notes.txt]: prose has no signatures"
+        );
+        assert_eq!(
+            d.definition_line,
+            Some(d.line_start),
+            "element-extraction-v1 [notes.txt]: {} definition_line must be the start line",
+            d.name
+        );
+        assert!(
+            d.byte_start.is_some() && d.byte_end.is_some(),
+            "element-extraction-v1 [notes.txt]: {} must carry byte spans",
+            d.name
+        );
+        let (s, e) = (d.byte_start.unwrap() as usize, d.byte_end.unwrap() as usize);
+        assert!(e > s);
+        let _ = &TEXT_FIXTURE[s..e];
+    }
+
+    // ALL-CAPS title: single line, region = the physical line.
+    let title = find_element(&defs, "notes.txt", "heading", "USER GUIDE");
+    assert_span(title, "notes.txt", "heading:USER GUIDE", 1, 1);
+    assert_byte_slice(title, TEXT_FIXTURE, "notes.txt", "USER GUIDE");
+
+    // Setext heading: region covers text + underline exactly.
+    let setext = find_element(&defs, "notes.txt", "heading", "Introduction");
+    assert_span(setext, "notes.txt", "heading:Introduction", 3, 4);
+    assert_byte_slice(setext, TEXT_FIXTURE, "notes.txt", "Introduction");
+    let setext_slice =
+        &TEXT_FIXTURE[setext.byte_start.unwrap() as usize..setext.byte_end.unwrap() as usize];
+    assert_eq!(
+        setext_slice, "Introduction\n============",
+        "setext region = heading line + underline line"
+    );
+
+    // ATX heading: name has the markers stripped, region keeps them.
+    let atx = find_element(&defs, "notes.txt", "heading", "Quick Start");
+    assert_span(atx, "notes.txt", "heading:Quick Start", 6, 6);
+    assert_byte_slice(atx, TEXT_FIXTURE, "notes.txt", "## Quick Start");
+
+    // Numbered outline: prefix stays in the name AND in the region.
+    let setup = find_element(&defs, "notes.txt", "heading", "1. Setup");
+    assert_span(setup, "notes.txt", "heading:1. Setup", 8, 8);
+    assert_byte_slice(setup, TEXT_FIXTURE, "notes.txt", "1. Setup");
+
+    let sub = find_element(&defs, "notes.txt", "heading", "1.1. Requirements");
+    assert_span(sub, "notes.txt", "heading:1.1. Requirements", 9, 9);
+    assert_byte_slice(sub, TEXT_FIXTURE, "notes.txt", "1.1. Requirements");
+
+    // Section word: `Appendix 2` (the numeral rule).
+    let appendix = find_element(&defs, "notes.txt", "heading", "Appendix 2");
+    assert_span(appendix, "notes.txt", "heading:Appendix 2", 14, 14);
+    assert_byte_slice(appendix, TEXT_FIXTURE, "notes.txt", "Appendix 2");
+}
+
+// =============================================================================
 // Markdown — headings (ATX + setext), fenced/indented code blocks, pipe table
 // =============================================================================
 
@@ -1005,6 +1147,7 @@ fn elements_flow_through_the_definitions_array_of_every_format() {
         ("pinned.css", CSS_FIXTURE, Language::Css, 5),
         ("pinned.tex", LATEX_FIXTURE, Language::Latex, 6),
         ("server.log", LOG_FIXTURE, Language::Log, 6),
+        ("notes.txt", TEXT_FIXTURE, Language::Text, 6),
         ("README.md", MARKDOWN_FIXTURE, Language::Markdown, 7),
     ] {
         let defs = extract_elements(filename, content, language);

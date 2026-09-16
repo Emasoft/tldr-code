@@ -69,10 +69,11 @@ const DOC_NOTE: &str = "discovered via document link";
 
 /// The document languages participating in the document link graph:
 /// markdown/html/xml hyperlinks, the CSS/LaTeX loaded elements (`@import`,
-/// `url()`, `\input`, `\includegraphics`, `\bibliography`, …), and the
+/// `url()`, `\input`, `\includegraphics`, `\bibliography`, …), the
 /// config-batch reference surfaces — JSON/YAML `$ref`/`extends` mapping
-/// keys, TOML path-shaped string values, and bash `source`/`.` script
-/// loads (see `ast::doclinks` for each language's extraction policy).
+/// keys, TOML path-shaped string values, bash `source`/`.` script loads —
+/// and (plain-text batch) the `.txt` whole-document URL/path scan (see
+/// `ast::doclinks` for each language's extraction policy).
 pub fn is_doc_language(language: Language) -> bool {
     matches!(
         language,
@@ -85,6 +86,7 @@ pub fn is_doc_language(language: Language) -> bool {
             | Language::Yaml
             | Language::Toml
             | Language::Bash
+            | Language::Text
     )
 }
 
@@ -100,6 +102,7 @@ fn doc_language_extensions() -> HashSet<String> {
         Language::Yaml,
         Language::Toml,
         Language::Bash,
+        Language::Text,
     ]
     .iter()
     .flat_map(|l| l.extensions().iter().map(|s| s.to_string()))
@@ -223,13 +226,24 @@ pub fn document_impact(
 /// 1. normalize: strip `#fragment` / `?query`, collapse leading `./`,
 ///    trim trailing `/`;
 /// 2. skip empty targets and external URLs (`://`, `mailto:`);
-/// 3. absolute targets are taken as-is when they exist;
-/// 4. otherwise try `from_dir.join(target)` first — markdown/HTML resolve a
-///    relative URL against the document that contains it — and fall back to
-///    `root.join(target)` (the "exact" project-relative spelling, e.g. links
-///    generated from the root's perspective);
-/// 5. the winner is canonicalized so it matches the BFS query key space;
-///    callers drop anything outside the project root.
+/// 3. **spelling candidates:** the LITERAL normalized target first, then —
+///    when it differs — the percent-DECODED form (`%20` → space, …). The
+///    plain-text extraction keeps percent-encoded tokens raw
+///    (`ast::doclinks::scan_paths_and_urls`), so a link written
+///    `guide%20with%20spaces.md` only resolves when the decoded spelling is
+///    tried here; the reverse — a raw-space target like
+///    `<./docs/guide with spaces.md>` — needs no decoding (spaces are legal
+///    path characters and `Path::join` carries them verbatim). Decoding is
+///    a std-only `%XX` byte pass; malformed escapes stay verbatim.
+/// 4. absolute targets are taken as-is when they exist;
+/// 5. otherwise try `from_dir.join(candidate)` first — markdown/HTML resolve
+///    a relative URL against the document that contains it — and fall back
+///    to `root.join(candidate)` (the "exact" project-relative spelling, e.g.
+///    links written from the project root's perspective);
+/// 6. the winner is canonicalized so it matches the BFS query key space;
+///    callers drop anything outside the project root. A spelling is only
+///    retried when the previous spelling found nothing, so a file literally
+///    named `a%20b.md` wins over its decoded reading `a b.md`.
 fn resolve_doc_target(root: &Path, from_dir: &Path, raw: &str) -> Option<PathBuf> {
     let mut module = raw;
     if let Some(pos) = module.find(['#', '?']) {
@@ -247,23 +261,62 @@ fn resolve_doc_target(root: &Path, from_dir: &Path, raw: &str) -> Option<PathBuf
         return None;
     }
 
-    let candidate = if module.starts_with('/') {
-        PathBuf::from(module)
-    } else {
-        let from_file = from_dir.join(module);
-        if from_file.exists() {
-            from_file
-        } else {
-            let from_root = root.join(module);
-            if from_root.exists() {
-                from_root
-            } else {
-                return None;
-            }
-        }
-    };
+    // Spelling candidates: literal first, then the decoded form when it
+    // differs (rule 3).
+    let mut spellings = vec![module.to_string()];
+    let decoded = percent_decode(module);
+    if decoded != module {
+        spellings.push(decoded);
+    }
 
-    Some(dunce::canonicalize(&candidate).unwrap_or(candidate))
+    for spelling in &spellings {
+        let candidate = if spelling.starts_with('/') {
+            PathBuf::from(spelling)
+        } else {
+            let from_file = from_dir.join(spelling);
+            if from_file.exists() {
+                from_file
+            } else {
+                let from_root = root.join(spelling);
+                if from_root.exists() {
+                    from_root
+                } else {
+                    continue; // this spelling found nothing — try the next
+                }
+            }
+        };
+        return Some(dunce::canonicalize(&candidate).unwrap_or(candidate));
+    }
+    None
+}
+
+/// Minimal std-only percent-decoding: every `%XX` hex pair becomes its byte,
+/// everything else passes through verbatim (malformed escapes included).
+/// Invalid UTF-8 after decoding is lossy-repaired — link targets that decode
+/// to non-UTF-8 bytes are pathological and unresolvable anyway.
+fn percent_decode(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_string();
+    }
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            let hi = (bytes[i + 1] as char).to_digit(16).unwrap_or(0);
+            let lo = (bytes[i + 2] as char).to_digit(16).unwrap_or(0);
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
@@ -286,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn is_doc_language_covers_the_nine_doc_languages() {
+    fn is_doc_language_covers_the_ten_doc_languages() {
         assert!(is_doc_language(Language::Markdown));
         assert!(is_doc_language(Language::Html));
         assert!(is_doc_language(Language::Xml));
@@ -297,8 +350,48 @@ mod tests {
         assert!(is_doc_language(Language::Yaml));
         assert!(is_doc_language(Language::Toml));
         assert!(is_doc_language(Language::Bash));
+        // plain-text batch: `.txt` joins with the URL/path prose scan.
+        assert!(is_doc_language(Language::Text));
         assert!(!is_doc_language(Language::Python));
         assert!(!is_doc_language(Language::Log));
+    }
+
+    #[test]
+    fn resolve_doc_target_tries_literal_then_percent_decoded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        // A file whose name contains a raw space — the angle-wrapped
+        // raw-space target needs NO decoding (spaces are legal path chars).
+        fs::write(root.join("docs/guide with spaces.md"), "# Guide\n").unwrap();
+
+        let from = root.to_path_buf();
+
+        // Raw-space target resolves literally.
+        let got = resolve_doc_target(root, &from, "./docs/guide with spaces.md").expect("literal");
+        assert!(got.ends_with("docs/guide with spaces.md"));
+
+        // Percent-encoded target resolves through the decoded fallback: only
+        // the DECODED file exists here.
+        let encoded_dir = tempfile::tempdir().unwrap();
+        fs::write(encoded_dir.path().join("a b.md"), "decoded form\n").unwrap();
+        let got = resolve_doc_target(encoded_dir.path(), encoded_dir.path(), "./a%20b.md")
+            .expect("decoded fallback");
+        assert!(
+            got.ends_with("a b.md"),
+            "decoded spelling must resolve: {got:?}"
+        );
+
+        // A file literally named `a%20b.md` wins over its decoded reading
+        // (the literal spelling is tried first).
+        let both_dir = tempfile::tempdir().unwrap();
+        fs::write(both_dir.path().join("a%20b.md"), "literal-name wins\n").unwrap();
+        fs::write(both_dir.path().join("a b.md"), "decoded form\n").unwrap();
+        let got = resolve_doc_target(both_dir.path(), both_dir.path(), "./a%20b.md").unwrap();
+        assert!(
+            got.to_string_lossy().ends_with("a%20b.md"),
+            "literal spelling must win over the decoded fallback: {got:?}"
+        );
     }
 
     #[test]

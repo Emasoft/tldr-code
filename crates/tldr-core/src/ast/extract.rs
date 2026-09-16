@@ -273,7 +273,8 @@ pub(crate) fn extract_functions_detailed(
         // Formats extension (2025-09): JSON/YAML/TOML/XML(SVG)/HTML/CSS/Bash
         // are data/config/markup documents — no source-code functions.
         // Markdown joins them (2026-09): headings/code blocks/tables are
-        // elements, not functions (see `ast::elements`).
+        // elements, not functions (see `ast::elements`). Plain-text batch:
+        // Text joins too — TOC headings are elements (see `ast::toc`).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -283,7 +284,8 @@ pub(crate) fn extract_functions_detailed(
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => {}
+        | Language::Markdown
+        | Language::Text => {}
     }
 
     functions
@@ -322,7 +324,8 @@ pub(crate) fn extract_classes_detailed(
         Language::Swift => extract_swift_classes_detailed(&root, source, &mut classes),
         Language::C | Language::Lua | Language::Luau | Language::Ocaml => {} // No classes
         // Formats extension: no classes in data/config/markup documents;
-        // log entries are not classes either; markdown documents neither.
+        // log entries are not classes either; markdown documents neither;
+        // plain text neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -332,7 +335,8 @@ pub(crate) fn extract_classes_detailed(
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => {}
+        | Language::Markdown
+        | Language::Text => {}
     }
 
     classes
@@ -769,7 +773,7 @@ fn extract_module_constants(tree: &Tree, source: &str, language: Language) -> Ve
         Language::Ocaml => extract_ocaml_module_constants(&root, source),
         // Formats extension: no module constants in data/config/markup
         // documents (JSON keys are not constants); log entries neither;
-        // markdown documents neither.
+        // markdown documents neither; plain text neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -779,7 +783,8 @@ fn extract_module_constants(tree: &Tree, source: &str, language: Language) -> Ve
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => Vec::new(),
+        | Language::Markdown
+        | Language::Text => Vec::new(),
     }
 }
 

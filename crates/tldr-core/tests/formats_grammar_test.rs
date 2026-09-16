@@ -197,6 +197,8 @@ fn new_languages_map_from_extension() {
         (".log", Language::Log),
         (".md", Language::Markdown),
         (".markdown", Language::Markdown),
+        (".txt", Language::Text),
+        (".text", Language::Text),
     ] {
         let got = Language::from_extension(ext).unwrap_or_else(|| panic!("{ext} should resolve"));
         assert_eq!(got, expected, "extension {ext}");
@@ -213,6 +215,23 @@ fn new_languages_map_from_extension() {
         tldr_core::ast::parser::parse("some log line", Language::Log).is_err(),
         "logs have no tree-sitter grammar — direct parse must fail"
     );
+    // Plain-text batch: `.txt`/`.text` resolve through `from_path` too (the
+    // path `tldr structure notes.txt` takes). NO parse smoke test is possible
+    // for Text — plain text has NO SYNTAX, so no grammar can exist — and
+    // that absence is itself pinned: parsing prose must stay
+    // UnsupportedLanguage (the Log no-grammar precedent).
+    assert_eq!(
+        Language::from_path(std::path::Path::new("docs/notes.txt")),
+        Some(Language::Text)
+    );
+    assert_eq!(
+        Language::from_path(std::path::Path::new("docs/notes.text")),
+        Some(Language::Text)
+    );
+    assert!(
+        tldr_core::ast::parser::parse("some prose line", Language::Text).is_err(),
+        "plain text has no tree-sitter grammar — direct parse must fail"
+    );
     // Markdown batch: `.md` also resolves through `from_path` — this is the
     // path `tldr structure README.md` resolves through (the mislabel fix:
     // before this batch `.md` returned None and single-file structure runs
@@ -224,10 +243,10 @@ fn new_languages_map_from_extension() {
 }
 
 #[test]
-fn all_28_variants_have_str_and_extensions() {
+fn all_29_variants_have_str_and_extensions() {
     assert_eq!(
         Language::all().len(),
-        28,
+        29,
         "Language::all() must list every variant"
     );
     for lang in Language::all() {

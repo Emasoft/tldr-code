@@ -26,7 +26,12 @@
 //! impact doc-root), `deploy.yaml` `$ref` → `config/base.yaml` next to an
 //! inert Actions `include:` matrix and local-action `uses:`, `app.toml`'s
 //! path-shaped string value → `img/logo.svg`, and `main.sh` sourcing
-//! `lib/common.sh` via `source` and the POSIX `.` spelling. No
+//! `lib/common.sh` via `source` and the POSIX `.` spelling. The plain-text
+//! batch adds `build_text_project`: `notes.txt` carries a bare URL, an
+//! angle-wrapped path with spaces (`<./docs/guide with spaces.md>`, real on
+//! disk), a shell-escaped path and a plain relative path (`./b.txt`), pinning
+//! the prose reference scan end to end (imports fields, the impact closure
+//! of the spaced target, and importers `--lang text`). No
 //! daemon is started; every command takes the direct-compute path.
 
 use assert_cmd::Command;
@@ -222,6 +227,39 @@ fn build_config_project() -> TempDir {
         ),
     );
     write(root.join("lib/common.sh"), "log() { echo \"$*\"; }\n");
+    dir
+}
+
+/// Fixture for the plain-text batch: `notes.txt` carries the whole prose
+/// reference surface — a bare URL, an angle-wrapped path with spaces, a
+/// shell-escaped path and a plain relative path — plus a spaced target file
+/// (`docs/guide with spaces.md`, real on disk) and a second `.txt` to link
+/// to.
+fn build_text_project() -> TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    // Root marker: the impact target (`docs/guide with spaces.md`) is NESTED,
+    // so `explain_project_root` needs a project marker at the root to resolve
+    // the doc-root to the project (the same trick build_config_project uses
+    // for `schemas/user.json`).
+    write(
+        root.join("package.json"),
+        r#"{ "name": "fixture", "private": true }"#,
+    );
+    write(
+        root.join("notes.txt"),
+        concat!(
+            "Project notes.\n",
+            "\n",
+            "See https://example.com/docs for the upstream manual.\n",
+            "The full guide lives at <./docs/guide with spaces.md>.\n",
+            "Shell-escaped dump: cat my\\ file.txt\n",
+            "Related: ./b.txt\n",
+        ),
+    );
+    write(root.join("docs/guide with spaces.md"), "# Guide\n");
+    write(root.join("b.txt"), "second plain-text file\n");
     dir
 }
 
@@ -1017,4 +1055,111 @@ fn impact_yaml_config_closure_finds_the_referring_workflow() {
         files.iter().any(|f| f.ends_with("deploy.yaml")),
         "closure must contain deploy.yaml: {files:?}"
     );
+}
+
+// =============================================================================
+// (6) plain-text batch (build_text_project): .txt prose references
+// =============================================================================
+
+/// `tldr imports notes.txt` — the prose reference scan emits one ImportInfo
+/// per shape, in source order: bare URL (trailing sentence period stays out),
+/// angle-wrapped path with spaces (contents verbatim), shell-escaped path
+/// (backslash escape removed — that IS the real path) and the plain relative
+/// path token.
+#[test]
+fn imports_text_emits_urls_and_paths_in_source_order() {
+    let dir = build_text_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(&["imports", "notes.txt", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+    assert_eq!(json["language"], "text", "notes.txt resolves to Text");
+
+    let imports = json["imports"].as_array().unwrap();
+    assert_eq!(imports.len(), 4, "exactly the 4 prose references: {json}");
+
+    assert_eq!(imports[0]["module"], "https://example.com/docs");
+    assert_eq!(imports[0]["alias"], "url");
+    assert_eq!(imports[0]["is_from"], true);
+
+    assert_eq!(imports[1]["module"], "./docs/guide with spaces.md");
+    assert_eq!(imports[1]["alias"], "angle-link");
+
+    assert_eq!(imports[2]["module"], "my file.txt", "escape syntax removed");
+    assert_eq!(imports[2]["alias"], "escaped-path");
+
+    assert_eq!(imports[3]["module"], "./b.txt");
+    assert_eq!(imports[3]["alias"], "path");
+}
+
+/// `tldr impact <root>/docs/guide with spaces.md` — the angle-wrapped
+/// raw-space target resolves (spaces are legal path characters; the
+/// resolution layer also tries the percent-decoded spelling), so the
+/// closure finds notes.txt.
+#[test]
+fn impact_text_angle_target_closure_finds_the_referring_notes() {
+    let dir = build_text_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(
+        &[
+            "impact",
+            root.join("docs/guide with spaces.md").to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0), "impact on a plain-text-referenced doc");
+    assert_eq!(json["total_targets"], 1);
+
+    let tree = json["targets"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    assert_eq!(tree["function"], "<doc>");
+    assert_eq!(tree["note"], "discovered via document link");
+
+    let mut files = Vec::new();
+    collect_files(&json, &mut files);
+    assert!(
+        files.iter().any(|f| f.ends_with("notes.txt")),
+        "closure must contain notes.txt: {files:?}"
+    );
+}
+
+/// `tldr importers b.txt <root> --lang text` finds notes.txt — the doc arm
+/// of module_matches works for the plain-text reference surface.
+#[test]
+fn importers_finds_text_reference_source() {
+    let dir = build_text_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(
+        &[
+            "importers",
+            "b.txt",
+            root.to_str().unwrap(),
+            "--lang",
+            "text",
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(json["module"], "b.txt");
+    assert_eq!(json["total"], 1, "only notes.txt references b.txt: {json}");
+    assert!(json["importers"][0]["file"]
+        .as_str()
+        .unwrap()
+        .ends_with("notes.txt"));
+    assert!(json["importers"][0]["import_statement"]
+        .as_str()
+        .unwrap()
+        .contains("b.txt"));
 }

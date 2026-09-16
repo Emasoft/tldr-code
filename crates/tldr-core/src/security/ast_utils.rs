@@ -30,6 +30,7 @@ macro_rules! formats_langs {
             | Language::Latex
             | Language::Log
             | Language::Markdown
+            | Language::Text
     };
 }
 

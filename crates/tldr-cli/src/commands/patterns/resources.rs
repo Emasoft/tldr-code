@@ -605,7 +605,7 @@ fn get_resource_patterns(lang: Language) -> LangResourcePatterns {
         },
         // Formats extension (2025-09): no resource lifecycle in data/config
         // documents (JSON has no `open()`); log entries neither; markdown
-        // documents neither (2026-09).
+        // documents neither (2026-09); plain text neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -615,7 +615,8 @@ fn get_resource_patterns(lang: Language) -> LangResourcePatterns {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => LangResourcePatterns {
+        | Language::Markdown
+        | Language::Text => LangResourcePatterns {
             creators: &[],
             closers: &[],
             function_kinds: &[],

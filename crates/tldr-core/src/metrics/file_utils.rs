@@ -796,24 +796,26 @@ mod tests {
 
     #[test]
     fn test_walk_source_files_skips_non_source_files() {
-        // Non-source files (.txt, .lock) should be skipped. `.md` JOINED the
-        // recognized formats in the markdown batch (2026-09): it now resolves
-        // to `Language::Markdown` and is counted as a format-tier source file
-        // (like `.json`/`.tex` before it), so it is asserted as INCLUDED.
+        // Non-source files (.xyz, .lock) should be skipped. `.md` JOINED the
+        // recognized formats in the markdown batch (2026-09) and `.txt` in
+        // the plain-text batch: both now resolve to format-tier languages
+        // (like `.json`/`.tex` before them), so they are asserted as
+        // INCLUDED.
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("readme.md"), "# README").unwrap();
         fs::write(dir.path().join("notes.txt"), "some notes").unwrap();
         fs::write(dir.path().join("Cargo.lock"), "lock file").unwrap();
         fs::write(dir.path().join("main.py"), "def main(): pass").unwrap();
+        fs::write(dir.path().join("blob.xyz"), "unknown").unwrap();
 
         let options = WalkOptions::default();
         let (files, _warnings) = walk_source_files(dir.path(), &options).unwrap();
 
         assert_eq!(
             files.len(),
-            2,
-            "Should return main.py + readme.md (format-tier markdown) and skip \
-             .txt/.lock. Found: {:?}",
+            3,
+            "Should return main.py + readme.md (markdown) + notes.txt (plain text) and skip \
+             .xyz/.lock. Found: {:?}",
             files
         );
         assert!(
@@ -821,6 +823,20 @@ mod tests {
                 .iter()
                 .any(|f| f.extension().map(|e| e == "md").unwrap_or(false)),
             "readme.md must be included now that .md is a recognized language: {:?}",
+            files
+        );
+        assert!(
+            files
+                .iter()
+                .any(|f| f.extension().map(|e| e == "txt").unwrap_or(false)),
+            "notes.txt must be included now that .txt is a recognized language: {:?}",
+            files
+        );
+        assert!(
+            !files
+                .iter()
+                .any(|f| f.extension().map(|e| e == "xyz").unwrap_or(false)),
+            "blob.xyz must stay skipped (genuinely unknown extension): {:?}",
             files
         );
     }

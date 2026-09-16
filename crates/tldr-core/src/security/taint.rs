@@ -808,6 +808,7 @@ pub fn get_patterns(language: Language) -> &'static LanguagePatterns {
         // sources/sinks — empty pattern set (see ast_utils formats_langs!).
         // Log files join them: log text is not executable input syntax.
         // Markdown joins them (2026-09): document text is not input syntax.
+        // Text joins them (plain-text batch): prose is not input syntax.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -817,7 +818,8 @@ pub fn get_patterns(language: Language) -> &'static LanguagePatterns {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => &FORMATS_PATTERNS,
+        | Language::Markdown
+        | Language::Text => &FORMATS_PATTERNS,
     }
 }
 
@@ -3928,7 +3930,8 @@ fn get_ast_patterns(language: Language) -> AstLanguagePatterns {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => AstLanguagePatterns {
+        | Language::Markdown
+        | Language::Text => AstLanguagePatterns {
             sources: &[],
             sinks: &[],
             sanitizers: &[],
@@ -3999,7 +4002,7 @@ pub fn fastpath_pattern_strings(language: Language) -> &'static [&'static str] {
         Language::Ocaml => fastpath_static!(OCAML, Language::Ocaml),
         // Formats extension: no taint needles in data/config documents;
         // log files have none either (never parsed as source); markdown
-        // documents neither.
+        // documents neither; plain text neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -4009,7 +4012,8 @@ pub fn fastpath_pattern_strings(language: Language) -> &'static [&'static str] {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => &[],
+        | Language::Markdown
+        | Language::Text => &[],
     }
 }
 

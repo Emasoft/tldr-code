@@ -15,6 +15,47 @@
 
 ### Added
 
+- **Plain-text support: `Language::Text` — heuristic TOC + URL/path references from prose.** `.txt`/`.text`
+  files join the supported formats as language 29 (`Language::Text`, signal=false like every other
+  format — a directory of notes must never outvote source code), with the `Log` no-grammar twist
+  taken one step further: **no tree-sitter grammar can exist for plain text** (prose has no syntax to
+  parse), so `.txt` never goes through tree-sitter at all — `parse(source, Text)` stays
+  `UnsupportedLanguage`, and `parse_file_with_lang` returns the same structural placeholder tree the
+  Log batch introduced, but WITH the real source beside it (unlike Log's entries, text content is the
+  product of every downstream scan). Two native scanners are the only consumers. **Structure:** a
+  heuristic table-of-contents scanner (`ast::toc::scan_toc`) classifies heading-shaped lines into
+  `kind: "heading"` definitions, rules tried in order — (1) setext underlines (`===`/`---`, trimmed
+  underline ≥ 2 chars AND ≥ the text length, region = both lines, the text line may not itself be an
+  underline run); (2) ATX (`#`…`######` + whitespace, markers stripped from the name, shebangs and
+  `#hashtag` inert); (3) ALL-CAPS lines (trimmed 3..=80 chars, ≥ 2 alphabetic chars, every alphabetic
+  char uppercase, not ending `.`/`,`/`;`/`:` — the colon rule removes `ERROR:`-style label lines,
+  while shouted lines like `ERROR: DATABASE EXPLODED` remain the documented, accepted false-positive
+  class); (4) numbered outlines (`\d+(\.\d+)*[.)]?` + text — `1.`, `2)`, `3.2.1`, indented
+  sub-outlines included, the numbering prefix stays in the name; decimal numbers in prose
+  (`3.14 is a constant`) are the documented false-positive class); (5) section words
+  (`Chapter|Part|Section|Appendix` + a roman/digit run — `Appendix B` deliberately does not match).
+  Every heading carries exact line/byte spans (CRLF handled, the trailing `\r` never enters the
+  span), an empty signature and `definition_line` = the heading's first line. **References:** the new
+  `ast::doclinks::scan_paths_and_urls` turns the whole-document prose into ImportInfo entries with a
+  single left-to-right pass over four shapes — bare URLs (`https?://…`, trailing `.,;:!?"'` trimmed,
+  alias `url`), angle-wrapped targets (`<./docs/guide with spaces.md>`, contents verbatim — spaces
+  INCLUDED, alias `angle-link`, HTML-ish `<div>` tokens filtered), shell-escaped paths
+  (`my\ file.txt` → target `my file.txt`, the backslash-space is escape SYNTAX and its removal IS the
+  real path, alias `escaped-path`) and plain path tokens (surrounding punctuation split off — the
+  `.` of a `./` prefix is protected — alias `path`); percent-encoded tokens are kept RAW at extraction
+  (`my%20file.txt` stays `%20`) because the resolution layer — not the extraction — tries the
+  percent-DECODED spelling as a fallback (`resolve_doc_target` now attempts the literal form first —
+  a file literally named `a%20b.md` wins over its decoded reading — then the decoded form), while a
+  raw-space target needs no decoding at all. The reference graph expands accordingly:
+  `is_doc_language`/`doc_language_extensions` and the `module_matches` doc arm now include Text
+  (10 doc languages), so `tldr impact <root>/docs/guide with spaces.md` computes the link closure
+  and `tldr importers b.txt <root> --lang text` finds the referring file. Unit tests: 24 in
+  `ast::toc` (every rule + its negatives and documented false positives) and 13 new cases in
+  `ast::doclinks` (bare URL trailing period, angle-with-spaces, escaped path, percent-raw, span
+  dedup); `element_extraction_v1` gains the `.txt` exact-span pin, `symbol_fidelity_v1` a text
+  element pin, and `doclinks_v1` a `build_text_project` fixture (imports fields, the impact closure
+  of the spaced target, importers `--lang text`).
+
 - **Document links: the reference graph for non-code files (doclinks-v1).** `tldr imports` on
   markdown/html/xml now emits the file's hyperlinks as `ImportInfo` entries — one per link, in
   source order — so the existing import pipeline serves documents: `module` carries the raw link

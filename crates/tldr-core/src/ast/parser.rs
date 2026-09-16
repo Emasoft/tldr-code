@@ -193,6 +193,16 @@ impl ParserPool {
             // the native scanner in `ast::logs`; `parse_file_with_lang`
             // short-circuits before this would ever matter.
             TldrLanguage::Log => None,
+            // Plain-text batch: NO grammar, for a stronger reason than
+            // logs — plain text has NO SYNTAX to parse. There is nothing a
+            // tree-sitter grammar could be written against, so
+            // `Language::Text` deliberately has no tree-sitter mapping (a
+            // direct `parse(source, Text)` call is UnsupportedLanguage).
+            // Text content is consumed by the heuristic TOC scanner in
+            // `ast::toc` (structure) and the reference scanner in
+            // `ast::doclinks` (imports) — both regex-free-of-grammars,
+            // text-only passes.
+            TldrLanguage::Text => None,
         }
     }
 
@@ -431,6 +441,29 @@ impl ParserPool {
         if lang == TldrLanguage::Log {
             let tree = self.parse("", TldrLanguage::Bash)?;
             return Ok((tree, String::new(), lang));
+        }
+
+        // Plain-text batch: `.txt`/`.text` files NEVER go through
+        // tree-sitter — plain text has no syntax, so no grammar can exist
+        // (the Log no-grammar precedent, d1992302). The TREE is the same
+        // structural placeholder as Log's (an empty shell `program`) that
+        // Text consumers never inspect: the `get_code_structure` hook
+        // early-returns to the heuristic TOC scanner in `ast::toc` before
+        // any tree walk happens, and the reference extraction in
+        // `ast::doclinks` is regex-only.
+        //
+        // UNLIKE Log — whose entries are re-derived from the file by the
+        // streaming scanner and whose placeholder source is empty — Text
+        // consumers NEED THE CONTENT: both the TOC scan and the URL/path
+        // reference scan work on the text itself. So this arm READS the
+        // file and returns the real source beside the placeholder tree.
+        // Wide encodings (UTF-16/32) are rejected with the shared
+        // `EncodingError` (the same policy as every tree-sitter read —
+        // see `ast::toc::parse_text_file`); everything else lossy-decodes.
+        if lang == TldrLanguage::Text {
+            let source = crate::ast::toc::parse_text_file(path)?;
+            let tree = self.parse("", TldrLanguage::Bash)?;
+            return Ok((tree, source, lang));
         }
 
         // Read file content with UTF-8 lossy fallback - M2 mitigation
@@ -787,6 +820,42 @@ mod tests {
         assert!(
             matches!(err, Err(TldrError::UnsupportedLanguage(_))),
             "parse(source, Log) must be UnsupportedLanguage, got {:?}",
+            err
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Plain-text batch: Language::Text never parses through tree-sitter.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn test_parse_file_text_returns_placeholder_tree_with_real_source() {
+        // `parse_file_with_lang` on a `.txt` path must return the structural
+        // PLACEHOLDER tree (empty Bash program — Text consumers never walk
+        // it) but WITH the real source: unlike Log, whose entries are
+        // re-derived from the file by the streaming scanner, Text consumers
+        // (the `ast::toc` TOC scan and the `ast::doclinks` reference scan)
+        // work on the text itself.
+        let dir = tempfile::tempdir().unwrap();
+        let txt_path = dir.path().join("notes.txt");
+        std::fs::write(&txt_path, "OVERVIEW\n\nsee docs/guide.md\n").unwrap();
+
+        let pool = ParserPool::new();
+        let (tree, source, lang) = pool.parse_file(&txt_path).unwrap();
+        assert_eq!(lang, TldrLanguage::Text);
+        assert_eq!(source, "OVERVIEW\n\nsee docs/guide.md\n", "real source");
+        assert_eq!(tree.root_node().child_count(), 0, "empty program");
+        assert_eq!(
+            count_error_nodes(tree.root_node()),
+            0,
+            "placeholder empty tree must be a clean parse"
+        );
+
+        // Direct path-less parse of prose SOURCE stays UnsupportedLanguage —
+        // plain text has no grammar (nothing to parse it WITH), by design.
+        let err = pool.parse("some prose line", TldrLanguage::Text);
+        assert!(
+            matches!(err, Err(TldrError::UnsupportedLanguage(_))),
+            "parse(source, Text) must be UnsupportedLanguage, got {:?}",
             err
         );
     }

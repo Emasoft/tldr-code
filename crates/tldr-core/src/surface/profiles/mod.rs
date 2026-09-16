@@ -65,7 +65,8 @@ pub(crate) fn profile_for(language: Language) -> Option<&'static SurfaceLanguage
         // Formats extension (2025-09): no API-surface profiles for
         // data/config formats (a JSON document has no callable surface);
         // log entries have no callable surface either; markdown documents
-        // neither (markdown batch, 2026-09).
+        // neither (markdown batch, 2026-09); plain text neither
+        // (plain-text batch).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -75,6 +76,7 @@ pub(crate) fn profile_for(language: Language) -> Option<&'static SurfaceLanguage
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => None,
+        | Language::Markdown
+        | Language::Text => None,
     }
 }

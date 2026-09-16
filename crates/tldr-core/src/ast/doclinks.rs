@@ -124,6 +124,41 @@
 //! resolve to project files downstream — `doc_impact` and the importers doc
 //! matcher treat `://` targets as external and skip them.
 
+//! # Plain text — the whole-document reference scan (`scan_paths_and_urls`)
+//!
+//! Plain text (`.txt`/`.text`) has no link syntax at all, so its reference
+//! surface is "anything in the prose that LOOKS like a URL or a path". The
+//! scan is a single left-to-right pass ([`scan_paths_and_urls`]) with four
+//! shapes, tried at each position in this order (one span never emits twice —
+//! an angle-wrapped URL is consumed by the angle shape, not also by the URL
+//! shape):
+//!
+//! | Shape | Example | Target | `alias` |
+//! |-------|---------|--------|---------|
+//! | bare URL | `see https://example.com/x.` | the URL with trailing `.,;:!?"'` trimmed | `url` |
+//! | angle-wrapped | `<./docs/guide with spaces.md>` | the contents verbatim (spaces INCLUDED — that is the whole point of the angle form) | `angle-link` |
+//! | shell-escaped path | `cat my\ file.txt` | the UNESCAPED path (`my file.txt`) — the backslash-space is shell escape SYNTAX; removing it yields the real path | `escaped-path` |
+//! | plain path token | `see ./b.txt, ok?` | the token with surrounding punctuation split off | `path` |
+//!
+//! Filters: angle contents must contain `:`/`/`/`.` (keeps HTML-ish `<div>`
+//! tokens out); every target passes the shared `emittable` rule (`data:` URIs
+//! and `#fragment`-only targets never emit) and the plain-path shape
+//! additionally passes [`looks_like_path_or_url`]. **Percent-encoded tokens
+//! are kept RAW** (`./docs/my%20file.txt` stays `%20` at extraction — the
+//! resolution layer (`analysis::doc_impact::resolve_doc_target`) tries the
+//! percent-DECODED spelling as a fallback, and decoding at extraction would
+//! lose the distinction between a file literally named `a%20b.md` and its
+//! decoded reading). Bare URLs, angle-wrapped targets and escaped paths can
+//! never resolve to project files when they are external, exactly like every
+//! other format's external targets.
+//!
+//! False-positive classes are broader than the other formats by necessity
+//! (prose has no link syntax to key on): any prose token that passes
+//! [`looks_like_path_or_url`] emits — version-y directory references
+//! (`assets/v1.2`), dotted words with separators — the same accepted class
+//! the TOML string-value scan documents. Unresolved targets are inert
+//! downstream.
+
 use lazy_static::lazy_static;
 use regex::Regex;
 use tree_sitter::{Node, Tree};
@@ -266,6 +301,7 @@ pub fn extract_doc_links(language: Language, source: &str, tree: Option<&Tree>) 
         Language::Yaml => extract_yaml_ref_links(source, tree),
         Language::Toml => extract_toml_path_links(source, tree),
         Language::Bash => extract_bash_source_links(source),
+        Language::Text => extract_text_links(source),
         _ => Vec::new(),
     }
 }
@@ -601,6 +637,179 @@ fn balance_strip_quotes(raw: &str) -> (String, bool) {
     } else {
         (raw.to_string(), true)
     }
+}
+
+// =============================================================================
+// Plain text — the whole-document reference scan (no grammar, no link syntax;
+// rules documented in the module docs and in `scan_paths_and_urls`)
+// =============================================================================
+
+/// Punctuation split off the ENDS of a plain-path token before the
+/// [`looks_like_path_or_url`] test ("see ./b.txt, ok?" → `./b.txt`).
+/// Sentence punctuation included (a trailing `.` is prose, not an extension);
+/// interior characters are never touched.
+const TOKEN_PUNCT: &[char] = &[
+    '(', ')', '[', ']', '{', '}', '<', '>', ',', ';', ':', '!', '?', '"', '\'', '.',
+];
+
+/// Split surrounding punctuation off a plain-path token WITHOUT eating the
+/// `.` of a `./` / `../` prefix — that dot is the path's relative-to-here
+/// marker, not sentence punctuation ("see ./b.txt." keeps its `./`, loses
+/// only the trailing sentence period). Trailing punctuation strips freely;
+/// interior characters are never touched.
+fn trim_token_punct(t: &str) -> &str {
+    let mut end = t.len();
+    while let Some(c) = t[..end].chars().next_back() {
+        if TOKEN_PUNCT.contains(&c) {
+            end -= c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    let mut start = 0usize;
+    while let Some(c) = t[start..end].chars().next() {
+        if !TOKEN_PUNCT.contains(&c) {
+            break;
+        }
+        if c == '.' && (t[start..end].starts_with("./") || t[start..end].starts_with("../")) {
+            break;
+        }
+        start += c.len_utf8();
+    }
+    &t[start..end]
+}
+
+/// Extract the reference surface of a plain-text document: one
+/// `(target, alias)` pair per URL/path-shaped token, in source order, each
+/// source span emitted at most once (a single left-to-right pass cannot
+/// revisit a span — an angle-wrapped URL is consumed by the angle shape and
+/// is therefore never also a bare-URL hit). See the module docs for the
+/// shape table and the false-positive classes.
+#[must_use]
+pub(crate) fn scan_paths_and_urls(source: &str) -> Vec<(String, String)> {
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    let mut hits: Vec<(usize, (String, String))> = Vec::new();
+    let mut i = 0usize;
+
+    while i < len {
+        let b = bytes[i];
+
+        // 1. Angle-wrapped target: `<…>` with the closing `>` on the same
+        //    line (contents may contain spaces — the angle form EXISTS to
+        //    carry them). Unmatched `<` falls through to token scanning.
+        if b == b'<' {
+            if let Some(close) = source[i + 1..].find(['>', '\n']).map(|p| i + 1 + p) {
+                if close < len && bytes[close] == b'>' {
+                    let contents = &source[i + 1..close];
+                    let t = contents.trim();
+                    if !t.is_empty()
+                        && emittable(t)
+                        && (t.contains(':') || t.contains('/') || t.contains('.'))
+                    {
+                        hits.push((i, (t.to_string(), "angle-link".to_string())));
+                    }
+                    i = close + 1;
+                    continue;
+                }
+            }
+            // No closing `>` on this line: not an angle target. Advance past
+            // the `<` so it cannot start a token that would contain it.
+            i += 1;
+            continue;
+        }
+
+        // 2. Bare URL: `https?://` + body of non-space/non-`)`/non-angle/
+        //    non-quote chars, trailing sentence punctuation trimmed.
+        if source[i..].starts_with("http://") || source[i..].starts_with("https://") {
+            let mut j = i;
+            while j < len
+                && !matches!(
+                    bytes[j],
+                    b' ' | b'\t' | b'\r' | b'\n' | b')' | b'<' | b'>' | b'"' | b'\''
+                )
+            {
+                j += 1;
+            }
+            let target = source[i..j].trim_end_matches(['.', ',', ';', ':', '!', '?', '"', '\'']);
+            if emittable(target) {
+                hits.push((i, (target.to_string(), "url".to_string())));
+            }
+            i = j;
+            continue;
+        }
+
+        // 3/4. Whitespace-separated token — where a SPACE PRECEDED BY A
+        //      BACKSLASH does not break the token (the shell-escape form
+        //      `my\ file.txt` is one token despite its interior space).
+        if b.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < len {
+            if bytes[i].is_ascii_whitespace() {
+                // Only a literal SPACE is shell-escapable here — a
+                // backslash-newline is a line continuation, not part of the
+                // path, so it must break the token.
+                if bytes[i] == b' ' && bytes[i - 1] == b'\\' {
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+            i += 1;
+        }
+        let raw = &source[start..i];
+
+        // Shell-escaped path: the token contains a backslash-space (escape
+        // SYNTAX). The target is the UNESCAPED path — that IS the real path
+        // on disk; the backslashes are not part of it.
+        if raw.contains("\\ ") {
+            let trimmed = trim_token_punct(raw);
+            let target = trimmed.replace("\\ ", " ");
+            if emittable(&target) {
+                hits.push((start, (target, "escaped-path".to_string())));
+            }
+            continue;
+        }
+
+        // Plain path token: surrounding punctuation split off, then the
+        // shared heuristic. A token that (after trimming) turns out to be a
+        // URL — `(https://example.com/x)` — reports with the `url` alias.
+        let t = trim_token_punct(raw);
+        if t.is_empty() {
+            continue;
+        }
+        if t.starts_with("http://") || t.starts_with("https://") {
+            let target = t.trim_end_matches(['.', ',', ';', ':', '!', '?', '"', '\'']);
+            if emittable(target) {
+                hits.push((start, (target.to_string(), "url".to_string())));
+            }
+            continue;
+        }
+        if looks_like_path_or_url(t) && emittable(t) {
+            hits.push((start, (t.to_string(), "path".to_string())));
+        }
+    }
+
+    // Deterministic source order; dedup by byte offset (defensive — the
+    // single pass never revisits a span, but the contract is "same span
+    // never twice" and this makes it hold by construction).
+    hits.sort_by_key(|(offset, _)| *offset);
+    hits.dedup_by_key(|(offset, _)| *offset);
+    hits.into_iter().map(|(_, hit)| hit).collect()
+}
+
+/// Plain text: one [`ImportInfo`] per URL/path-shaped token in the prose
+/// (`alias` = the shape that produced it — `url`/`angle-link`/`escaped-path`/
+/// `path`). The scan is purely textual; the (placeholder) tree is ignored.
+fn extract_text_links(source: &str) -> Vec<ImportInfo> {
+    scan_paths_and_urls(source)
+        .into_iter()
+        .map(|(target, alias)| doc_import(&target, &alias))
+        .collect()
 }
 
 /// Markdown: inline links, images, autolinks and reference definitions.
@@ -2081,5 +2290,147 @@ mod tests {
         assert_eq!(balance_strip_quotes("a.sh"), ("a.sh".into(), true));
         assert_eq!(balance_strip_quotes("\"a"), ("\"a".into(), false));
         assert_eq!(balance_strip_quotes("'"), ("'".into(), false));
+    }
+
+    // =========================================================================
+    // Plain text — scan_paths_and_urls (bare URLs / angle / escaped / paths)
+    // =========================================================================
+
+    #[test]
+    fn text_bare_url_trailing_period_trimmed() {
+        let imports = extract_doc_links(
+            Language::Text,
+            "See https://example.com/docs. Also https://example.com/a?",
+        );
+        assert_eq!(
+            targets(&imports),
+            vec!["https://example.com/docs", "https://example.com/a"]
+        );
+        assert_eq!(aliases(&imports), vec![Some("url"), Some("url")]);
+        assert!(imports.iter().all(|i| i.is_from && i.names.is_empty()));
+    }
+
+    #[test]
+    fn text_angle_path_with_spaces() {
+        let imports =
+            extract_doc_links(Language::Text, "Guide: <./docs/guide with spaces.md> here");
+        assert_eq!(targets(&imports), vec!["./docs/guide with spaces.md"]);
+        assert_eq!(aliases(&imports), vec![Some("angle-link")]);
+    }
+
+    #[test]
+    fn text_angle_wrapped_url_is_not_double_reported() {
+        // The angle span is consumed once — the inner URL must not ALSO emit
+        // as a bare `url` (dedup by span, the documented contract).
+        let imports = extract_doc_links(Language::Text, "see <https://example.com/x> now");
+        assert_eq!(targets(&imports), vec!["https://example.com/x"]);
+        assert_eq!(aliases(&imports), vec![Some("angle-link")]);
+    }
+
+    #[test]
+    fn text_escaped_path_target_is_the_unescaped_real_path() {
+        let imports = extract_doc_links(Language::Text, "cat my\\ file.txt for details");
+        assert_eq!(
+            targets(&imports),
+            vec!["my file.txt"],
+            "backslash escape removed"
+        );
+        assert_eq!(aliases(&imports), vec![Some("escaped-path")]);
+    }
+
+    #[test]
+    fn text_percent_encoded_token_kept_raw() {
+        // Extraction keeps `%20` verbatim — the resolution layer
+        // (analysis::doc_impact) tries the decoded spelling as a fallback.
+        let imports = extract_doc_links(Language::Text, "open ./docs/my%20file.txt now");
+        assert_eq!(targets(&imports), vec!["./docs/my%20file.txt"]);
+        assert_eq!(aliases(&imports), vec![Some("path")]);
+    }
+
+    #[test]
+    fn text_plain_path_token_with_punctuation_split() {
+        let imports = extract_doc_links(Language::Text, "Config in (./etc/app.yaml), done.");
+        assert_eq!(targets(&imports), vec!["./etc/app.yaml"]);
+        assert_eq!(aliases(&imports), vec![Some("path")]);
+    }
+
+    #[test]
+    fn text_parenthesised_url_reports_with_url_alias() {
+        let imports = extract_doc_links(Language::Text, "(https://example.com/x)");
+        assert_eq!(targets(&imports), vec!["https://example.com/x"]);
+        assert_eq!(aliases(&imports), vec![Some("url")]);
+    }
+
+    #[test]
+    fn text_prose_and_bare_words_stay_inert() {
+        // No separators, no extensions-with-slash, no schemes: nothing to
+        // emit. `guide.md` alone (bare filename, no directory) is inert by
+        // the shared looks_like_path_or_url rule.
+        let src = "just some words\nanother line here\nsee guide.md alone\n";
+        assert!(
+            extract_doc_links(Language::Text, src).is_empty(),
+            "bare prose must not fabricate references"
+        );
+    }
+
+    #[test]
+    fn text_htmlish_angle_tokens_stay_inert() {
+        let imports = extract_doc_links(Language::Text, "a <div> and <b> stay inert");
+        assert!(imports.is_empty(), "got {:?}", imports);
+    }
+
+    #[test]
+    fn text_fragment_and_data_targets_suppressed() {
+        let imports = extract_doc_links(Language::Text, "jump <#section> skip <data:x> ./ok.md");
+        assert_eq!(targets(&imports), vec!["./ok.md"]);
+    }
+
+    #[test]
+    fn text_source_order_is_deterministic_and_mixed() {
+        let src = concat!(
+            "Intro\n",
+            "see https://example.com/docs for upstream\n",
+            "full guide: <./docs/guide with spaces.md>\n",
+            "raw dump: cat my\\ file.txt\n",
+            "related: ./b.txt\n",
+        );
+        let imports = extract_doc_links(Language::Text, src);
+        assert_eq!(
+            targets(&imports),
+            vec![
+                "https://example.com/docs",
+                "./docs/guide with spaces.md",
+                "my file.txt",
+                "./b.txt",
+            ]
+        );
+        assert_eq!(
+            aliases(&imports),
+            vec![
+                Some("url"),
+                Some("angle-link"),
+                Some("escaped-path"),
+                Some("path")
+            ]
+        );
+    }
+
+    #[test]
+    fn text_repeated_token_emits_per_occurrence_not_per_span() {
+        // Dedup is by span, not by target: two separate occurrences of the
+        // same URL are two references; one occurrence is exactly one entry.
+        let src = "a https://x.io/a and https://x.io/a end\n";
+        let imports = extract_doc_links(Language::Text, src);
+        assert_eq!(targets(&imports), vec!["https://x.io/a", "https://x.io/a"]);
+    }
+
+    #[test]
+    fn text_scan_paths_and_urls_pairs_match_extract_doc_links() {
+        // The pub(crate) scanner and the ImportInfo extractor agree.
+        let src = "u https://a.io/p\np ./x/y.md\n";
+        let pairs = scan_paths_and_urls(src);
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], ("https://a.io/p".to_string(), "url".to_string()));
+        assert_eq!(pairs[1], ("./x/y.md".to_string(), "path".to_string()));
     }
 }

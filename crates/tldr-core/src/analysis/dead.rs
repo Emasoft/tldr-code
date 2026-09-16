@@ -681,6 +681,7 @@ fn infer_visibility_from_name(
         // naming convention — a JSON/YAML/TOML key is always "reachable".
         // Log batch: log entries are not code symbols; always reachable.
         // Markdown batch: headings/code blocks/tables are not code symbols.
+        // Plain-text batch: TOC headings are not code symbols either.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -690,7 +691,8 @@ fn infer_visibility_from_name(
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => true,
+        | Language::Markdown
+        | Language::Text => true,
     }
 }
 

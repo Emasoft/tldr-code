@@ -131,7 +131,8 @@ impl LanguageConfig {
             // Formats extension (2025-09): contracts/SSA analysis targets
             // imperative code — data/config formats get the most permissive
             // config (no call kinds, empty patterns). Log files join them,
-            // and markdown documents too (markdown batch, 2026-09).
+            // and markdown documents too (markdown batch, 2026-09); plain
+            // text joins them (plain-text batch).
             Language::Json
             | Language::Yaml
             | Language::Toml
@@ -141,7 +142,8 @@ impl LanguageConfig {
             | Language::Bash
             | Language::Latex
             | Language::Log
-            | Language::Markdown => Self::lua(),
+            | Language::Markdown
+            | Language::Text => Self::lua(),
         }
     }
 

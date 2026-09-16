@@ -45,8 +45,9 @@ pub fn identifier_node_types(language: Language) -> &'static [&'static str] {
         Language::Ocaml => &["value_name", "type_constructor"],
         // Formats extension: data/config documents have no identifier nodes
         // (JSON keys are strings) — nothing to reference-count. Log files
-        // likewise have no identifier nodes, and markdown headings/code
-        // blocks/tables carry no identifier nodes either.
+        // likewise have no identifier nodes, markdown headings/code
+        // blocks/tables carry no identifier nodes either, and plain-text
+        // prose has no identifier nodes at all.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -56,7 +57,8 @@ pub fn identifier_node_types(language: Language) -> &'static [&'static str] {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => &[],
+        | Language::Markdown
+        | Language::Text => &[],
     }
 }
 

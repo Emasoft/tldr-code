@@ -31,27 +31,29 @@ use std::path::{Path, PathBuf};
 // Language Support
 // =============================================================================
 
-/// Supported programming languages (28 variants — see `test_language_all_28_variants`)
+/// Supported programming languages (29 variants — see `test_language_all_29_variants`)
 // why: comment said 17, but OCaml (added later) brought the enum to 18,
 // and the formats extension (2025-09, "all tree-sitter formats" directive)
 // brought it to 25 with the data/config/markup/web/shell batch below; the
-// LaTeX batch (2025-11) brought it to 26, the log batch to 27, and the
-// markdown batch brought it to 28.
+// LaTeX batch (2025-11) brought it to 26, the log batch to 27, the
+// markdown batch to 28, and the plain-text batch to 29.
 //
 // Priority levels:
 // - P0: Python, TypeScript, JavaScript, Go (full support)
 // - P1: Rust, Java (full support)
 // - P2: C, C++, Ruby, Kotlin, Swift, C#, Scala, PHP, Lua, Luau, Elixir (basic support)
-// - P3 (formats): JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash, LaTeX, Log — parsed
-//   with their tree-sitter grammars; structural extraction is basic (these
-//   formats have no functions/classes in the source-code sense), and JSONL
-//   streams one JSON document per row (see `ast::jsonl`). tree-sitter-sql
-//   dropped — crates.io only publishes 0.0.2 (DerekStride grammar is
-//   source-only); revisit if a maintained sql crate targets ts 0.25.
-//   Log is the one P3 format with NO tree-sitter grammar at all: no
-//   maintained log grammar is published on crates.io (404 audit), so
-//   `.log` files are scanned by the native, streaming entry parser in
-//   `ast::logs` instead.
+// - P3 (formats): JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash, LaTeX, Log, Text,
+//   Markdown — parsed with their tree-sitter grammars (where one exists);
+//   structural extraction is basic (these formats have no functions/classes in
+//   the source-code sense), and JSONL streams one JSON document per row (see
+//   `ast::jsonl`). tree-sitter-sql dropped — crates.io only publishes 0.0.2
+//   (DerekStride grammar is source-only); revisit if a maintained sql crate
+//   targets ts 0.25.
+//   Log and Text are the two P3 formats with NO tree-sitter grammar at all:
+//   no maintained log grammar is published on crates.io (404 audit), and
+//   arbitrary prose has no syntax to parse — so `.log` files are scanned by
+//   the native, streaming entry parser in `ast::logs` and `.txt` files by
+//   the heuristic TOC scanner in `ast::toc` instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
@@ -129,6 +131,19 @@ pub enum Language {
     /// block and inline grammars separately with no combined language, so
     /// inline spans remain opaque text (see `ast::elements::walk_markdown`).
     Markdown,
+    /// Plain text (.txt, .text) — the plain-text batch. NO tree-sitter
+    /// grammar exists for arbitrary prose (there is nothing to parse it
+    /// WITH — plain text has no syntax), so `.txt` never parses through
+    /// tree-sitter (the `Log` no-grammar precedent, d1992302). Two native
+    /// scanners are the only consumers: the heuristic table-of-contents
+    /// scanner in [`crate::ast::toc`] (setext / ATX / ALL-CAPS / numbered
+    /// outline headings — every rule and its false-positive class is
+    /// documented there) surfaces `kind: "heading"` definitions through
+    /// `tldr structure <file>.txt`, and the reference scanner in
+    /// `ast::doclinks::scan_paths_and_urls` extracts bare URLs,
+    /// angle-bracketed paths, shell-escaped paths and plain path tokens as
+    /// document references (so `.txt` joins the document link graph).
+    Text,
 }
 
 impl Language {
@@ -174,6 +189,7 @@ impl Language {
             Language::Latex => &[".tex", ".sty", ".cls"],
             Language::Log => &[".log"],
             Language::Markdown => &[".md", ".markdown"],
+            Language::Text => &[".txt", ".text"],
         }
     }
 
@@ -278,6 +294,13 @@ impl Language {
             // and mislabeled the file (measured: `tldr structure README.md`
             // reported "rust"); `from_path` now resolves it directly.
             ".md" | ".markdown" => Some(Language::Markdown),
+            // Plain-text batch: `.txt`/`.text` resolve to Language::Text.
+            // There is NO tree-sitter grammar for prose — parsing never
+            // happens through `ParserPool` beyond the structural placeholder
+            // (see `parse_file_with_lang`'s Text branch); the heuristic TOC
+            // scanner in `ast::toc` and the reference scanner in
+            // `ast::doclinks::scan_paths_and_urls` are the only consumers.
+            ".txt" | ".text" => Some(Language::Text),
             ".swift" => Some(Language::Swift),
             ".cs" => Some(Language::CSharp),
             ".scala" => Some(Language::Scala),
@@ -656,6 +679,7 @@ impl Language {
             Language::Latex => "latex",
             Language::Log => "log",
             Language::Markdown => "markdown",
+            Language::Text => "text",
         }
     }
 
@@ -674,9 +698,9 @@ impl Language {
 
     /// Can this language act as a *project-level* signal?
     ///
-    /// Returns `false` for exactly the 10 "formats" variants (Json, Yaml,
-    /// Toml, Xml, Html, Css, Bash, Latex, Log, Markdown) and `true` for the
-    /// 18 source-code languages.
+    /// Returns `false` for exactly the 11 "formats" variants (Json, Yaml,
+    /// Toml, Xml, Html, Css, Bash, Latex, Log, Markdown, Text) and `true`
+    /// for the 18 source-code languages.
     ///
     /// Rationale: the formats variants are first-class for **per-file**
     /// analysis — `Language::from_path` resolves them, `tldr structure
@@ -716,6 +740,13 @@ impl Language {
     /// structure README.md` reports `language: "markdown"` and surfaces
     /// headings/code blocks/tables as elements.
     ///
+    /// Text joins the formats block (plain-text batch): `.txt`/`.text` files
+    /// are prose — READMEs, notes, specs — that exist in projects of every
+    /// implementation language, so letting them vote would reintroduce the
+    /// same false-dominance problem. Fully supported per-file: `tldr
+    /// structure notes.txt` reports `language: "text"` and surfaces the
+    /// heuristic TOC headings as elements (see `ast::toc`).
+    ///
     /// Sites that MUST consult this predicate (kept consistent):
     /// - `Language::from_directory` Stage-1 extension tally (project
     ///   dominant-language detection),
@@ -735,6 +766,7 @@ impl Language {
                 | Language::Latex
                 | Language::Log
                 | Language::Markdown
+                | Language::Text
         )
     }
 
@@ -769,6 +801,7 @@ impl Language {
             Language::Latex,
             Language::Log,
             Language::Markdown,
+            Language::Text,
         ]
     }
 }
@@ -1315,6 +1348,10 @@ impl std::str::FromStr for Language {
             "latex" | "tex" => Ok(Language::Latex),
             "log" => Ok(Language::Log),
             "markdown" | "md" => Ok(Language::Markdown),
+            // Plain-text batch: `--lang text` must work end to end (same
+            // reason the other formats were added here — clap routes every
+            // Option<Language> argument through this FromStr).
+            "text" | "txt" => Ok(Language::Text),
             _ => Err(format!("Unknown language: {}", s)),
         }
     }
@@ -3585,14 +3622,16 @@ mod tests {
     }
 
     #[test]
-    fn test_language_all_28_variants() {
+    fn test_language_all_29_variants() {
         // formats-extension-v1 (2025-09): 18 source languages + 7
         // tree-sitter data/config/markup formats (JSON, YAML, TOML, XML/SVG,
         // HTML, CSS, Bash) = 25; latex-formats-v1 (2025-11) added LaTeX
         // (.tex/.sty/.cls) = 26; the log batch added Log (.log, native
         // scanner, no tree-sitter grammar) = 27; the markdown batch added
-        // Markdown (.md/.markdown, tree-sitter-md block grammar) = 28.
-        assert_eq!(Language::all().len(), 28);
+        // Markdown (.md/.markdown, tree-sitter-md block grammar) = 28; the
+        // plain-text batch added Text (.txt/.text, heuristic TOC scanner,
+        // no tree-sitter grammar) = 29.
+        assert_eq!(Language::all().len(), 29);
     }
 
     #[test]
@@ -3732,8 +3771,14 @@ mod tests {
 
     #[test]
     fn test_language_from_path_unknown() {
-        let path = std::path::Path::new("readme.txt");
+        // plain-text batch: `readme.txt` used to be the "unknown extension"
+        // representative here — `.txt` now resolves to `Language::Text`
+        // (format-tier), so a genuinely unknown extension takes its place.
+        let path = std::path::Path::new("readme.xyz");
         assert_eq!(Language::from_path(path), None);
+        // And `.txt` itself resolves to the new format-tier variant.
+        let path = std::path::Path::new("readme.txt");
+        assert_eq!(Language::from_path(path), Some(Language::Text));
     }
 
     #[test]

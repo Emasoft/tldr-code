@@ -246,7 +246,8 @@ fn is_candidate_test_file(path: &Path, language: Language) -> bool {
             lower.contains("test") || lower.contains("spec")
         }
         // Formats extension (2025-09): data/config documents are never test
-        // files; log files neither; markdown documents neither (2026-09).
+        // files; log files neither; markdown documents neither (2026-09);
+        // plain text neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -256,7 +257,8 @@ fn is_candidate_test_file(path: &Path, language: Language) -> bool {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => false,
+        | Language::Markdown
+        | Language::Text => false,
     }
 }
 
@@ -311,7 +313,8 @@ fn matches_test_function(node: &Node, source: &[u8], language: Language) -> bool
         Language::C | Language::Cpp | Language::Ocaml => false,
         // Formats extension (2025-09): data/config documents have no tests;
         // log entries are not test functions either; markdown elements are
-        // not test functions either (2026-09).
+        // not test functions either (2026-09); plain-text TOC headings are
+        // not test functions either.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -321,7 +324,8 @@ fn matches_test_function(node: &Node, source: &[u8], language: Language) -> bool
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => false,
+        | Language::Markdown
+        | Language::Text => false,
     }
 }
 

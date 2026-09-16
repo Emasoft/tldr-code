@@ -12,6 +12,8 @@
 //! - `jsonl` - JSONL/NDJSON row streaming (one JSON document per row)
 //! - `logs` - native log-entry scanning for `.log` files (NO tree-sitter
 //!   grammar exists for logs; this scanner is the only consumer)
+//! - `toc` - heuristic table-of-contents scanning for `.txt`/`.text` files
+//!   (NO tree-sitter grammar exists for prose; the Log no-grammar precedent)
 //! - `ooxml` - OOXML containers (.docx/.xlsx/.pptx): in-memory unzip +
 //!   the XML element walker over the container's XML parts
 //! - `doclinks` - document link extraction: markdown/html/xml hyperlinks
@@ -28,6 +30,7 @@ pub mod jsonl;
 pub mod logs;
 pub mod ooxml;
 pub mod parser;
+pub mod toc;
 
 pub use count::{count_functions_canonical, count_functions_canonical_from_modules};
 pub use doclinks::extract_doc_links;
@@ -41,3 +44,4 @@ pub use jsonl::{
 pub use logs::{is_log_path, parse_log_file, stream_log_entries, LogEntry};
 pub use ooxml::{extract_ooxml, is_ooxml_path, OoxmlKind};
 pub use parser::ParserPool;
+pub use toc::{is_text_path, parse_text_file, scan_toc};

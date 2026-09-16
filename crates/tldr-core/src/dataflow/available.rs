@@ -2284,7 +2284,7 @@ fn binary_expr_node_kinds(lang: Language) -> &'static [&'static str] {
         Language::Swift => &["infix_expression"],
         // Formats extension (2025-09): no binary expressions in data/config
         // documents; log entries have no expressions either; markdown
-        // documents neither.
+        // documents neither; plain text neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -2294,7 +2294,8 @@ fn binary_expr_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => &[],
+        | Language::Markdown
+        | Language::Text => &[],
     }
 }
 

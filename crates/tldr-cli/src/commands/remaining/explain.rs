@@ -243,7 +243,8 @@ fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => &[],
+        | Language::Markdown
+        | Language::Text => &[],
     }
 }
 
@@ -290,6 +291,16 @@ fn get_parser(language: Language) -> Result<Parser, RemainingError> {
             return Err(RemainingError::parse_error(
                 PathBuf::new(),
                 "log files have no tree-sitter grammar; use 'tldr logs' for log entries"
+                    .to_string(),
+            ))
+        }
+        // Plain-text batch: prose has NO tree-sitter grammar either (there is
+        // no syntax to parse). TOC headings come from the heuristic scanner
+        // in `ast::toc`; explain cannot analyze a text "function" either.
+        Language::Text => {
+            return Err(RemainingError::parse_error(
+                PathBuf::new(),
+                "plain text has no tree-sitter grammar; use 'tldr structure' for text headings"
                     .to_string(),
             ))
         }
@@ -2333,6 +2344,7 @@ impl ExplainArgs {
             Language::Latex => "latex",
             Language::Log => "log",
             Language::Markdown => "markdown",
+            Language::Text => "text",
         };
 
         // Build report

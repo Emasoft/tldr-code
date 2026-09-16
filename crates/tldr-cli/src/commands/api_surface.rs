@@ -130,6 +130,7 @@ fn language_to_string(lang: Language) -> String {
         Language::Latex => "latex".to_string(),
         Language::Log => "log".to_string(),
         Language::Markdown => "markdown".to_string(),
+        Language::Text => "text".to_string(),
     }
 }
 

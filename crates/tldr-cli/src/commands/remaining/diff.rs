@@ -597,7 +597,8 @@ fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &[], // Lua has no class syntax
         Language::Ocaml => &["module_definition", "type_definition"],
         // Formats extension (2025-09): no classes in data/config documents;
-        // log entries are not classes; markdown documents neither (2026-09).
+        // log entries are not classes; markdown documents neither (2026-09);
+        // plain text neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -607,7 +608,8 @@ fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => &[],
+        | Language::Markdown
+        | Language::Text => &[],
     }
 }
 
@@ -630,7 +632,8 @@ fn get_class_body_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &[],
         Language::Ocaml => &[],
         // Formats extension (2025-09): no class bodies in data/config docs;
-        // log entries have no bodies either; markdown documents neither.
+        // log entries have no bodies either; markdown documents neither;
+        // plain text neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -640,7 +643,8 @@ fn get_class_body_kinds(language: Language) -> &'static [&'static str] {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => &[],
+        | Language::Markdown
+        | Language::Text => &[],
     }
 }
 
@@ -1613,7 +1617,8 @@ fn get_statement_node_kinds(lang: Language) -> &'static [&'static str] {
             "application",
         ],
         // Formats extension (2025-09): no statements in data/config documents;
-        // log lines are not statements; markdown elements are not statements.
+        // log lines are not statements; markdown elements are not statements;
+        // plain-text TOC headings are not statements.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -1623,7 +1628,8 @@ fn get_statement_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => &[],
+        | Language::Markdown
+        | Language::Text => &[],
     }
 }
 
@@ -1792,7 +1798,8 @@ fn find_function_body(func_node: Node, lang: Language) -> Option<Node> {
         Language::Lua | Language::Luau => &["block"],
         Language::Ocaml => &["let_binding"],
         // Formats extension (2025-09): no function bodies in data/config docs;
-        // log entries have none either; markdown documents neither.
+        // log entries have none either; markdown documents neither; plain
+        // text neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -1802,7 +1809,8 @@ fn find_function_body(func_node: Node, lang: Language) -> Option<Node> {
         | Language::Bash
         | Language::Latex
         | Language::Log
-        | Language::Markdown => &[],
+        | Language::Markdown
+        | Language::Text => &[],
     };
 
     let mut cursor = func_node.walk();
