@@ -4,11 +4,12 @@
 //! Supports `--type-aware` flag for Python type resolution (Phase 7-8).
 //! Auto-routes through daemon when available for ~35x speedup.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Args;
 
+use tldr_core::analysis::doc_impact::{document_impact, is_doc_language};
 use tldr_core::types::ImpactReport;
 use tldr_core::{
     build_project_call_graph, enrich_impact_with_references, impact_analysis_with_ast_fallback,
@@ -95,6 +96,62 @@ impl ImpactArgs {
         };
 
         let type_aware_msg = if self.type_aware { " (type-aware)" } else { "" };
+
+        // doclinks-v1 (document blast radius): a document FILE argument takes
+        // the document-link path — the transitive reverse-link closure over
+        // `tldr imports`' link targets (analysis::doc_impact), not a call
+        // graph. The file can arrive in EITHER positional slot:
+        //   `tldr impact <root>/b.md` — the doc path occupies the FUNCTION
+        //     slot, because impact's first positional is the function name
+        //     and a single argument never lands in `path`;
+        //   `tldr impact <func> <root>/b.md` — the doc path occupies the PATH
+        //     slot (issue-2 impact-file-arg-v1 branch above).
+        // The daemon route is INTENTIONALLY bypassed here: the daemon's
+        // Impact handler resolves the language with `resolve_language`
+        // (commands/daemon/daemon.rs:157-159), which DEFAULTS TO PYTHON when
+        // a client omits the hint, then feeds `build_project_call_graph` —
+        // which hard-rejects formats (callgraph/scanner.rs) — so a document
+        // target routed through the daemon would produce (and cache) a
+        // meaningless Python-typed code-graph report instead of the link
+        // closure. The references enrichment and the AST fallback further
+        // below are identifier-based and equally meaningless for documents,
+        // so the doc path returns before reaching either. `--file` and
+        // `--type-aware` stay registered but do not apply on the doc path.
+        let doc_target: Option<(PathBuf, PathBuf, Language)> = if self.path.is_file() {
+            Language::from_path(&self.path)
+                .filter(|l| is_doc_language(*l))
+                .map(|l| (self.path.clone(), analysis_root.clone(), l))
+        } else if Path::new(&self.function).is_file() {
+            Language::from_path(Path::new(&self.function))
+                .filter(|l| is_doc_language(*l))
+                .map(|l| {
+                    (
+                        PathBuf::from(&self.function),
+                        explain_project_root(Path::new(&self.function)),
+                        l,
+                    )
+                })
+        } else {
+            None
+        };
+        if let Some((doc_file, doc_root, doc_lang)) = doc_target {
+            writer.progress(&format!(
+                "Tracing document links into {} ({:?})...",
+                doc_file.display(),
+                doc_lang
+            ));
+            let report = document_impact(&doc_root, &doc_file, doc_lang, self.depth)?;
+            if writer.is_text() {
+                let text = format_impact_text(&report, self.type_aware);
+                writer.write_text(&text)?;
+            } else if writer.is_dot() {
+                let dot = format_impact_dot(&report);
+                writer.write_text(&dot)?;
+            } else {
+                writer.write(&report)?;
+            }
+            return Ok(());
+        }
 
         // Try daemon first for cached result
         if let Some(mut report) = try_daemon_route::<ImpactReport>(

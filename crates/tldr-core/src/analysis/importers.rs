@@ -202,8 +202,56 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
             }
             false
         }
+        // doclinks-v1: document languages (markdown/html/xml links now;
+        // css/latex wired ahead of the next batch) reference each other by
+        // PATH — delegate to the doc matcher.
+        Language::Markdown | Language::Html | Language::Xml | Language::Css | Language::Latex => {
+            doc_module_matches(import_module, target)
+        }
         _ => import_module == target,
     }
+}
+
+/// doclinks-v1: normalize a document link target / importers query for path
+/// comparison. Strips a trailing `#fragment` / `?query`, repeated leading
+/// `./`, and a trailing `/`.
+fn normalize_doc_path(path: &str) -> &str {
+    let mut p = path;
+    if let Some(pos) = p.find(['#', '?']) {
+        p = &p[..pos];
+    }
+    while let Some(stripped) = p.strip_prefix("./") {
+        p = stripped;
+    }
+    p.trim_end_matches('/')
+}
+
+/// Check if a document module (a link target path) matches the query.
+///
+/// doclinks-v1: document languages reference each other by PATH, not dotted
+/// module. Both sides are normalized (`normalize_doc_path`) then accepted on
+/// exact equality OR path-suffix — `docs/a/b.md` links match a query for
+/// `a/b.md` because document links resolve relative to the linking file's
+/// directory, so a user querying from any directory depth still finds the
+/// linker. The suffix rule is skipped when either side is an external URL
+/// (`://`), so `importers b.md` matches `docs/b.md` but never
+/// `https://cdn.example.com/b.md`.
+fn doc_module_matches(import_module: &str, target: &str) -> bool {
+    let import_norm = normalize_doc_path(import_module);
+    let target_norm = normalize_doc_path(target);
+    if import_norm.is_empty() || target_norm.is_empty() {
+        return false;
+    }
+    if import_norm == target_norm {
+        return true;
+    }
+    if !import_norm.contains("://")
+        && !target_norm.contains("://")
+        && import_norm.ends_with(&format!("/{}", target_norm))
+    {
+        return true;
+    }
+    false
 }
 
 /// Find the line number and text of an import statement
@@ -362,6 +410,60 @@ mod tests {
         assert!(module_matches("./utils", "./utils", Language::TypeScript));
         assert!(module_matches("./utils", "utils", Language::TypeScript));
         assert!(module_matches("utils", "./utils", Language::TypeScript));
+    }
+
+    // =========================================================================
+    // doclinks-v1: document languages match by PATH
+    // =========================================================================
+
+    #[test]
+    fn test_doc_module_matches_exact() {
+        assert!(module_matches("a.md", "a.md", Language::Markdown));
+        assert!(module_matches("./a.md", "a.md", Language::Markdown));
+        assert!(module_matches("a.md#frag", "a.md", Language::Markdown));
+        assert!(module_matches("docs/a.md?x=1", "docs/a.md", Language::Html));
+        assert!(module_matches("a.xsl", "a.xsl", Language::Xml));
+        // Css/Latex arms are wired ahead of the next batch.
+        assert!(module_matches("a.css", "a.css", Language::Css));
+        assert!(module_matches("a.tex", "a.tex", Language::Latex));
+    }
+
+    #[test]
+    fn test_doc_module_matches_path_suffix() {
+        assert!(module_matches("docs/a/b.md", "a/b.md", Language::Markdown));
+        assert!(module_matches("sub/b.md", "b.md", Language::Markdown));
+        // Sibling-prefix must NOT match: ab.md is not b.md.
+        assert!(!module_matches("ab.md", "b.md", Language::Markdown));
+    }
+
+    #[test]
+    fn test_doc_module_matches_external_urls_never_match_local() {
+        assert!(!module_matches(
+            "https://cdn.example.com/b.md",
+            "b.md",
+            Language::Markdown
+        ));
+        assert!(module_matches(
+            "https://cdn.example.com/b.md",
+            "https://cdn.example.com/b.md",
+            Language::Markdown
+        ));
+    }
+
+    #[test]
+    fn test_doc_module_matches_empty_after_normalization() {
+        assert!(!module_matches("#frag", "#frag", Language::Markdown));
+        assert!(!module_matches("", "", Language::Markdown));
+    }
+
+    #[test]
+    fn test_normalize_doc_path() {
+        assert_eq!(normalize_doc_path("./a/b.md"), "a/b.md");
+        assert_eq!(normalize_doc_path("././a.md"), "a.md");
+        assert_eq!(normalize_doc_path("a.md#frag"), "a.md");
+        assert_eq!(normalize_doc_path("a.md?q=1"), "a.md");
+        assert_eq!(normalize_doc_path("dir/"), "dir");
+        assert_eq!(normalize_doc_path("a.md"), "a.md");
     }
 
     #[test]

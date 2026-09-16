@@ -59,19 +59,28 @@ pub fn extract_imports_from_tree(
         Language::Lua | Language::Luau => extract_lua_imports(&root, source),
         Language::Kotlin => extract_kotlin_imports(&root, source),
         Language::Swift => extract_swift_imports(&root, source),
-        // Formats extension: JSON/YAML/TOML/XML(SVG)/HTML/CSS/Bash have no
-        // import statements in the source-code sense; log entries neither;
-        // markdown documents neither.
-        Language::Json
+        // doclinks-v1: markdown/html/xml documents DO carry references —
+        // hyperlinks. `extract_doc_links` emits one ImportInfo per link with
+        // `module` = the raw link target exactly as written — the same
+        // "path string rides `module`" decision the C extractor made for
+        // `#include "local.h"` (see `extract_c_imports` below and
+        // `ImportInfo`, types.rs:1579-1593) — `is_from = true` (the target is
+        // referenced by name at a point of use) and `alias` = provenance
+        // label (link text / attribute name / PI or DOCTYPE role).
+        Language::Markdown | Language::Html | Language::Xml => {
+            super::doclinks::extract_doc_links(language, source)
+        }
+        // Formats extension: the remaining formats have no link surface yet.
+        // Batches pending: CSS url()/@import and LaTeX \href/\include are the
+        // NEXT batch; JSON/YAML/TOML/Log have no import statements in the
+        // source-code sense, and neither does Bash.
+        Language::Css
+        | Language::Latex
+        | Language::Json
         | Language::Yaml
         | Language::Toml
-        | Language::Xml
-        | Language::Html
-        | Language::Css
-        | Language::Bash
-        | Language::Latex
         | Language::Log
-        | Language::Markdown => Vec::new(),
+        | Language::Bash => Vec::new(),
     };
 
     Ok(imports)

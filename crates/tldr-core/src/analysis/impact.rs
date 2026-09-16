@@ -986,7 +986,12 @@ fn build_caller_tree(
 // exponential, mislabeled work on cyclic call graphs. Threading the path
 // (`visited`) through the recursion restores real path-based cycle
 // detection while keeping the existing same-level duplicate-caller dedup.
-fn build_caller_tree_visited(
+//
+// doclinks-v1: `pub(crate)` so `analysis::doc_impact` can run the exact
+// same traversal over the document link graph — the BFS is key-based
+// ((file, function) pairs) and does not care that "<doc>" is not a real
+// function, so the cycle/truncation semantics are inherited verbatim.
+pub(crate) fn build_caller_tree_visited(
     file: &Path,
     func: &str,
     reverse_graph: &HashMap<FunctionKey, Vec<FunctionKey>>,

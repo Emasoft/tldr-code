@@ -1298,6 +1298,23 @@ impl std::str::FromStr for Language {
             "luau" => Ok(Language::Luau),
             "elixir" | "ex" => Ok(Language::Elixir),
             "ocaml" | "ml" => Ok(Language::Ocaml),
+            // doclinks-v1: the P3 formats join the parser so `--lang` accepts
+            // them end to end (clap routes Option<Language> args through this
+            // FromStr). `from_path`/`from_extension` already resolved the
+            // format extensions, but an EXPLICIT `--lang markdown` (e.g.
+            // `tldr importers a.md . --lang markdown` on the document link
+            // graph) failed with "Unknown language" because the formats were
+            // missing here. Names mirror `as_str()` plus common aliases.
+            "json" => Ok(Language::Json),
+            "yaml" | "yml" => Ok(Language::Yaml),
+            "toml" => Ok(Language::Toml),
+            "xml" | "svg" | "xsd" | "xsl" => Ok(Language::Xml),
+            "html" | "htm" | "xhtml" => Ok(Language::Html),
+            "css" => Ok(Language::Css),
+            "bash" | "sh" | "shell" => Ok(Language::Bash),
+            "latex" | "tex" => Ok(Language::Latex),
+            "log" => Ok(Language::Log),
+            "markdown" | "md" => Ok(Language::Markdown),
             _ => Err(format!("Unknown language: {}", s)),
         }
     }

@@ -38,6 +38,7 @@ pub mod change_impact;
 pub mod clones;
 pub mod dead;
 pub mod deps;
+pub mod doc_impact;
 pub mod hubs;
 pub mod impact;
 pub mod importers;
@@ -72,6 +73,7 @@ pub use deps::{
     is_python_stdlib, is_rust_internal, is_rust_stdlib, is_typescript_external,
     is_typescript_relative, DepCycle, DepEdge, DepKind, DepNode, DepStats, DepsOptions, DepsReport,
 };
+pub use doc_impact::{document_impact, is_doc_language};
 pub use hubs::{
     compute_hub_report, compute_hub_report_with_lines, compute_hub_scores, compute_in_degree,
     compute_out_degree, enumerate_function_lines, FunctionLineLookup, HubAlgorithm, HubReport,

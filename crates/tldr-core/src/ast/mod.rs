@@ -14,8 +14,11 @@
 //!   grammar exists for logs; this scanner is the only consumer)
 //! - `ooxml` - OOXML containers (.docx/.xlsx/.pptx): in-memory unzip +
 //!   the XML element walker over the container's XML parts
+//! - `doclinks` - document link extraction: markdown/html/xml hyperlinks
+//!   as ImportInfo entries (doclinks-v1)
 
 pub mod count;
+pub mod doclinks;
 pub mod elements;
 pub mod extract;
 pub mod extractor;
@@ -27,6 +30,7 @@ pub mod ooxml;
 pub mod parser;
 
 pub use count::{count_functions_canonical, count_functions_canonical_from_modules};
+pub use doclinks::extract_doc_links;
 pub use elements::extract_elements;
 pub use extract::{extract_file, extract_file_with_lang, extract_from_tree};
 pub use extractor::get_code_structure;

@@ -15,6 +15,47 @@
 
 ### Added
 
+- **Document links: the reference graph for non-code files (doclinks-v1).** `tldr imports` on
+  markdown/html/xml now emits the file's hyperlinks as `ImportInfo` entries — one per link, in
+  source order — so the existing import pipeline serves documents: `module` carries the raw link
+  target exactly as written (`./a.md`, `c.md#frag`, `https://example.com/x` stay untouched — the
+  same "path string rides `module`" decision the C extractor made for `#include "local.h"`),
+  `is_from` is `true` (referenced-by-name-at-a-point-of-use), and `alias` carries the provenance
+  label (markdown link text truncated to 100 chars / reference-definition label / the HTML
+  attribute name `href`/`src`/… / the XML role `xlink:href` / `xsi:schemaLocation` /
+  `xml-stylesheet` / `doctype-system`). Markdown extraction covers inline links (+ optional
+  title), images, autolinks (`<http…>`, `<path>` — HTML-ish bare tokens like `<div>` are
+  filtered), and reference definitions; inline code spans are masked (byte-length preserving) so
+  `` `[x](y.md)` `` stays inert — fenced code blocks are the NEXT batch, as are CSS `url()` and
+  LaTeX `\href`/\include extractors. HTML covers `href|src|poster|data|action|cite|background`
+  with double/single/unquoted values; XML/SVG covers the link attributes plus `xi:include` href,
+  the `<?xml-stylesheet … href="…"?>` PI and the DOCTYPE `SYSTEM "…"` literal (PIs and DOCTYPEs
+  are masked before the attribute pass so nothing double-reports). `data:` URIs and
+  `#fragment`-only anchors emit nothing; external http(s) URLs stay in the imports output but can
+  never resolve to project files. On top of that, `tldr importers <file> <root> --lang markdown`
+  works on documents (`module_matches` gained a doc arm: normalize both sides — strip
+  `#fragment`/`?query`, leading `./`, trailing `/` — then exact or path-suffix match, with
+  external URLs excluded from the suffix rule), and `tldr impact <root>/<doc>` computes the
+  **file-level blast radius**: the transitive reverse-link closure (every document linking to the
+  target, transitively) reusing the impact BFS verbatim — the reverse graph is keyed
+  `(file, "<doc>")` and the traversal never cared that the second key half is a function name, so
+  cycle detection, depth truncation and notes are inherited unchanged; `callgraph/scanner.rs` is
+  untouched. The report is a single-target `ImpactReport` keyed `"<file>:<doc>"` with root note
+  `discovered via document link`. The impact CLI takes document targets in either positional slot
+  (`tldr impact <root>/b.md` — the path lands in the function slot — or
+  `tldr impact <func> <root>/b.md`) and deliberately bypasses the daemon route: the daemon's
+  Impact handler defaults the language to Python (`resolve_language`) and feeds the code call
+  graph, which hard-rejects formats, so a document target would produce a meaningless cached
+  code-graph report; the identifier-based references enrichment is equally skipped. Link
+  resolution: strip fragment/query, then relative to the linking file (markdown/HTML relative-URL
+  semantics) with a project-root fallback, external/unresolvable targets contributing no edge.
+  Also unblocks `--lang <format>` end to end: `Language::from_str` (which backs every clap
+  `--lang` argument) now accepts the 10 format names it previously rejected with "Unknown
+  language" even though `from_path`/`from_extension` always resolved them. Unit-tested in
+  `ast::doclinks` (35 cases), `analysis::doc_impact` and `analysis::importers`; pinned end to end
+  by the new `doclinks_v1` CLI suite (imports fields, importers path matching, transitive closure
+  with depth truncation, external-URL absence, exit codes).
+
 - **Markdown format support: `tldr structure README.md`.** Markdown joins the supported formats as
   language 28 (`Language::Markdown` for `.md`/`.markdown`, signal=false like every other format — a
   directory of docs must never outvote source code), parsed with `tree-sitter-md =0.5.3`, the
