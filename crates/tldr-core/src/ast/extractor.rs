@@ -360,7 +360,8 @@ pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<S
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => {}
+        | Language::Bash
+        | Language::Latex => {}
     }
 
     functions
@@ -2420,7 +2421,8 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => None,
+        | Language::Bash
+        | Language::Latex => None,
     }
 }
 
@@ -2668,7 +2670,8 @@ fn anonymous_callable_kinds(language: Language) -> &'static [&'static str] {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => &[],
+        | Language::Bash
+        | Language::Latex => &[],
     }
 }
 

@@ -21,6 +21,8 @@
 //! | HTML     | `element`   | every `element` (paired or wrapping a `self_closing_tag`), `script_element`, and `style_element` | the tag name; `tag#id` when an `id` attribute exists | the whole element node incl. children |
 //! | CSS      | `selector`  | every `rule_set` — top level OR nested inside an at-rule block          | the full selector text, whitespace-collapsed (`h1,\n  .card` → `h1, .card`) | the whole `rule_set` |
 //! | CSS      | `at-rule`   | every BLOCK-bearing at-rule (`at_rule`, `media_statement`, `supports_statement`, `keyframes_statement`) | the at-keyword (`@media`, `@keyframes`, `@font-face`, …) | the whole statement incl. its block |
+//! | LaTeX    | `section`   | every sectioning command (`part`, `chapter`, `section`, `subsection`, `subsubsection`, `paragraph`, `subparagraph` — starred variants and KOMA `\addsec`/`\addchap`/`\addpart` fold into the same node kinds) | the heading text: the braced group after the command, whitespace-collapsed; when the heading embeds commands the raw braced text is kept; with no braced heading, the command token | the whole sectioning node — the grammar nests the section's content inside it, so it spans to the next sectioning command of equal-or-higher level (or `\end{document}`/EOF) |
+//! | LaTeX    | `environment` | every `\begin{env} … \end{env}` block (`generic_environment` plus the grammar's specialized `math`/`verbatim`/`listing`/`minted`/`comment`/`luacode`/`pycode`/`sageblock`/`sagesilent`/`asy`/`asydef` environment kinds); nested environments recurse | the environment name from `\begin{env}` | the whole environment node (`begin` → `end` incl. content) |
 //!
 //! # SVG (and other XML dialects)
 //!
@@ -33,8 +35,12 @@
 //! Non-elements never emit: XML prolog/doctypedecl/PIs/comments and HTML
 //! doctype/comments are skipped by kind, CSS `;`-terminated statements
 //! (`import_statement`, `charset_statement`, `namespace_statement`,
-//! `postcss_statement`) have no block and are not regions, and CSS
-//! declarations are not definitions.
+//! `postcss_statement`) have no block and are not regions, CSS
+//! declarations are not definitions, and LaTeX preamble commands
+//! (`\usepackage`, `\title`, `\label`, `\newcommand`, …), the
+//! environment-DEFINING commands (`environment_definition` = `\newenvironment`,
+//! `theorem_definition` = `\newtheorem`) and the brace/dollar math zones
+//! (`displayed_equation`, `inline_formula` — no begin/end pair) never emit.
 //!
 //! # Spans
 //!
@@ -81,6 +87,9 @@ pub fn extract_elements(language: Language, tree: &Tree, source: &str) -> Vec<De
         Language::Xml => walk_xml(root, source, &mut elements),
         Language::Html => walk_html(root, source, &mut elements),
         Language::Css => walk_css(root, source, &mut elements),
+        // LaTeX batch (2025-11): document markup joins the same engine
+        // (kinds `section` / `environment`).
+        Language::Latex => walk_latex(root, source, &mut elements),
         // Code languages never had elements.
         _ => {}
     }
@@ -628,6 +637,149 @@ fn css_at_rule_name(rule: &Node, source: &str) -> String {
 /// `h1,\n  .card` reads as `h1, .card`.
 fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+// =============================================================================
+// LaTeX — kind "section" per sectioning command + kind "environment" per
+// \begin{env} … \end{env} block
+// =============================================================================
+
+/// Node kinds of the LaTeX grammar that wrap a `\begin{env} … \end{env}`
+/// block (verified against `codebook-tree-sitter-latex-0.6.1/src/node-types.json`
+/// — the republished latex-lsp grammar: all of them carry required
+/// `begin`/`end` fields pointing at `begin`/`end` nodes). `generic_environment` covers every non-special-cased name
+/// (document, itemize, figure, table, center, …); the grammar gives the
+/// common special-content environments dedicated kinds (`math_environment`
+/// for equation/align/gather/multline/…, `verbatim_environment`,
+/// `listing_environment`, `minted_environment`, `comment_environment`,
+/// `luacode_environment`, `pycode_environment`, `sageblock_environment`,
+/// `sagesilent_environment`, `asy_environment`, `asydef_environment`).
+/// `environment_definition` (\newenvironment) and `theorem_definition`
+/// (\newtheorem) are NOT in this list — they define environments in the
+/// preamble, they do not open one.
+const LATEX_ENVIRONMENT_KINDS: &[&str] = &[
+    "generic_environment",
+    "math_environment",
+    "verbatim_environment",
+    "listing_environment",
+    "minted_environment",
+    "comment_environment",
+    "luacode_environment",
+    "pycode_environment",
+    "sageblock_environment",
+    "sagesilent_environment",
+    "asy_environment",
+    "asydef_environment",
+];
+
+/// LaTeX (`codebook_tree_sitter_latex::LANGUAGE`; serves .tex/.sty/.cls).
+/// Two element kinds, both shape-given by the grammar (verified against
+/// `codebook-tree-sitter-latex-0.6.1/src/node-types.json`, the republished
+/// latex-lsp/tree-sitter-latex grammar):
+///
+/// - `section`: the sectioning commands are DEDICATED named nodes — `part`,
+///   `chapter`, `section`, `subsection`, `subsubsection`, `paragraph`,
+///   `subparagraph` (one kind per level; starred variants `\section*` and the
+///   KOMA spellings `\addsec`/`\addchap`/`\addpart` fold into the same node
+///   kind). The grammar nests the section's CONTENT inside the sectioning
+///   node: a `section` node's allowed children include
+///   `subsection`/`subsubsection`/`paragraph`/`subparagraph` (its own level
+///   and below, never a sibling `section`), `chapter` includes `section` but
+///   not a sibling `chapter`, and so on down the hierarchy. A section node's
+///   byte range therefore ALREADY spans everything up to the next sectioning
+///   command of equal-or-higher level (or `\end{document}`/EOF) — the
+///   content-spanning region LaTeX semantics call for, delivered by the tree
+///   itself; no sibling-boundary math is needed (and none could be as
+///   faithful: the hierarchy is the grammar's, not reconstructible from
+///   sibling pointers alone).
+/// - `environment`: every begin/end-bearing environment node spans its whole
+///   `\begin{…} … \end{…}` range and nests (a `generic_environment`'s
+///   children include every environment kind), so nested environments
+///   recurse and each gets its own definition in source order.
+///
+/// Preamble commands and math zones never emit (see the module doc).
+fn walk_latex(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
+    let kind = node.kind();
+    if matches!(
+        kind,
+        "part"
+            | "chapter"
+            | "section"
+            | "subsection"
+            | "subsubsection"
+            | "paragraph"
+            | "subparagraph"
+    ) {
+        out.push(element_def(
+            "section",
+            latex_section_name(&node, source),
+            node,
+            source,
+        ));
+    } else if LATEX_ENVIRONMENT_KINDS.contains(&kind) {
+        if let Some(name) = latex_environment_name(&node, source) {
+            out.push(element_def("environment", name, node, source));
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_latex(child, source, out);
+    }
+}
+
+/// Heading text of a sectioning node: the source text of its braced `text`
+/// group (`curly_group` field `text`), whitespace-collapsed. If the heading
+/// embeds nested commands (`\section{The \emph{Fast} Method}`) the raw
+/// braced text is kept verbatim — word-collecting would silently drop the
+/// emphasised words. With no usable braced heading (degenerate `\section`
+/// with no argument) the command token itself names the element so the
+/// structure report still shows a navigable row.
+fn latex_section_name(section: &Node, source: &str) -> String {
+    if let Some(text) = section.child_by_field_name("text") {
+        // `curly_group` spans `{ … }`; the heading is the braced interior.
+        let raw = &source[text.byte_range()];
+        let inner = raw
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .unwrap_or(raw);
+        if !inner.contains('\\') {
+            let plain = collapse_whitespace(inner);
+            if !plain.is_empty() {
+                return plain;
+            }
+        }
+        let trimmed = inner.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    section
+        .child_by_field_name("command")
+        .map(|c| source[c.byte_range()].to_string())
+        .unwrap_or_default()
+}
+
+/// Environment name: the `begin` child's `name` field — a `curly_group_text`
+/// wrapping the bare environment word (`\begin{itemize}` → `itemize`). The
+/// grammar marks `name` required on `begin`, so the `None` path is reserved
+/// for malformed trees; an unusable name suppresses the element (matching
+/// the XML walker's behaviour for a tagless element).
+fn latex_environment_name(environment: &Node, source: &str) -> Option<String> {
+    let name = environment
+        .child_by_field_name("begin")?
+        .child_by_field_name("name")?;
+    let raw = &source[name.byte_range()];
+    let inner = raw
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(raw);
+    let name = collapse_whitespace(inner);
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }
 
 #[cfg(test)]

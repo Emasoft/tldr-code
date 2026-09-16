@@ -685,7 +685,8 @@ fn infer_visibility_from_name(
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => true,
+        | Language::Bash
+        | Language::Latex => true,
     }
 }
 

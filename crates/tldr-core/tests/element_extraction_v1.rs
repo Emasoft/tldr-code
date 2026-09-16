@@ -27,6 +27,11 @@
 //! - CSS   → `selector` per `rule_set` (whitespace-collapsed selector text,
 //!   incl. rules nested inside at-rules) + `at-rule` per block at-rule
 //!   (named after its at-keyword)
+//! - LaTeX → `section` per sectioning command (`\part`…`\subparagraph`; the
+//!   grammar nests each section's content inside it, so the region spans to
+//!   the next sectioning command of equal-or-higher level or `\end{document}`)
+//!   + `environment` per `\begin{env}…\end{env}` block (nested environments
+//!   recurse; `\newenvironment`/`\newtheorem` and math zones never emit)
 //!
 //! Every element pins:
 //! 1. EXACT `kind` / `name` / `line_start` / `line_end` (1-indexed), and
@@ -595,6 +600,110 @@ fn css_selectors_at_rules_and_at_rule_recursion() {
 }
 
 // =============================================================================
+// LaTeX — content-spanning sections + begin/end environments (nested recurse)
+// =============================================================================
+
+const LATEX_FIXTURE: &str = r#"\documentclass{article}
+\usepackage{amsmath}
+
+\begin{document}
+
+\section{Introduction}
+This is the intro.
+
+\subsection{Details}
+Some details here.
+\begin{equation}
+  E = mc^2
+\end{equation}
+
+\begin{itemize}
+  \item first
+  \item second
+\end{itemize}
+
+\section{Method}
+\label{sec:method}
+Body of method.
+
+\end{document}
+"#;
+
+#[test]
+fn latex_sections_span_content_and_environments_recurse() {
+    let defs = extract_elements("pinned.tex", LATEX_FIXTURE, Language::Latex);
+    assert_element_invariants(&defs, "pinned.tex");
+
+    // EXACT source-order sequence (pre-order = source order): the document
+    // environment first, then each section BEFORE its nested content. The
+    // `\label`, `\documentclass`, `\usepackage` and body text never emit.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("environment", "document"),
+        ("section", "Introduction"),
+        ("section", "Details"),
+        ("environment", "equation"),
+        ("environment", "itemize"),
+        ("section", "Method"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [pinned.tex]: expected exact section/environment sequence"
+    );
+
+    // SECTION REGION SEMANTICS: the grammar nests each section's content
+    // inside the sectioning node, so a section spans everything until the
+    // next sectioning command of equal-or-higher level (or \end{document}).
+    // `Introduction` (line 6) owns its content, the Details subsection and
+    // the equation/itemize environments, ending on the line BEFORE
+    // `\section{Method}` (line 19) — i.e. the `\end{itemize}` line 18.
+    let intro = find_element(&defs, "pinned.tex", "section", "Introduction");
+    assert_span(intro, "pinned.tex", "section:Introduction", 6, 18);
+    assert_byte_slice(
+        intro,
+        LATEX_FIXTURE,
+        "pinned.tex",
+        "\\section{Introduction}",
+    );
+
+    // The last section runs up to `\end{document}` but does not swallow the
+    // trailing blank line — the node ends with its last content line.
+    let method = find_element(&defs, "pinned.tex", "section", "Method");
+    assert_span(method, "pinned.tex", "section:Method", 20, 22);
+    assert_byte_slice(method, LATEX_FIXTURE, "pinned.tex", "\\section{Method}");
+
+    // The subsection is nested INSIDE Introduction's span (grammar-provided
+    // hierarchy) and carries its own definition.
+    let details = find_element(&defs, "pinned.tex", "section", "Details");
+    assert_span(details, "pinned.tex", "section:Details", 9, 18);
+    assert_byte_slice(
+        details,
+        LATEX_FIXTURE,
+        "pinned.tex",
+        "\\subsection{Details}",
+    );
+
+    // Environments span begin..end, nested inside their sections.
+    let document = find_element(&defs, "pinned.tex", "environment", "document");
+    assert_span(document, "pinned.tex", "environment:document", 4, 24);
+    assert_byte_slice(document, LATEX_FIXTURE, "pinned.tex", "\\begin{document}");
+
+    let equation = find_element(&defs, "pinned.tex", "environment", "equation");
+    assert_span(equation, "pinned.tex", "environment:equation", 11, 13);
+    assert_byte_slice(equation, LATEX_FIXTURE, "pinned.tex", "\\begin{equation}");
+
+    let itemize = find_element(&defs, "pinned.tex", "environment", "itemize");
+    assert_span(itemize, "pinned.tex", "environment:itemize", 15, 18);
+    assert_byte_slice(itemize, LATEX_FIXTURE, "pinned.tex", "\\begin{itemize}");
+}
+
+// =============================================================================
 // Cross-format: the JSON shape consumers see is the plain definitions array
 // =============================================================================
 
@@ -609,6 +718,7 @@ fn elements_flow_through_the_definitions_array_of_every_format() {
         ("icon.svg", SVG_FIXTURE, Language::Xml, 7),
         ("pinned.html", HTML_FIXTURE, Language::Html, 8),
         ("pinned.css", CSS_FIXTURE, Language::Css, 5),
+        ("pinned.tex", LATEX_FIXTURE, Language::Latex, 6),
     ] {
         let defs = extract_elements(filename, content, language);
         assert!(

@@ -67,7 +67,8 @@ pub fn extract_imports_from_tree(
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => Vec::new(),
+        | Language::Bash
+        | Language::Latex => Vec::new(),
     };
 
     Ok(imports)

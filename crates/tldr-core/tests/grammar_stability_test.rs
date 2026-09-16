@@ -98,6 +98,13 @@ fn test_grammar_node_types_stable() {
         pool.parse("class Foo {}", Language::Java).is_ok(),
         "Java grammar failed to load"
     );
+
+    // Formats extension - must parse (formats batch + latex)
+    assert!(
+        pool.parse("\\section{Intro}\nbody", Language::Latex)
+            .is_ok(),
+        "LaTeX grammar failed to load"
+    );
 }
 
 // =============================================================================
@@ -314,6 +321,44 @@ fn test_java_ast_node_types() {
         "package com.example;",
         Language::Java,
         "package_declaration",
+    );
+}
+
+// =============================================================================
+// LaTeX AST Node Types (codebook-tree-sitter-latex 0.6.1 — republished
+// latex-lsp/tree-sitter-latex grammar)
+// =============================================================================
+
+#[test]
+fn test_latex_ast_node_types() {
+    // Sectioning commands: DEDICATED node kinds, one per level (starred and
+    // KOMA variants fold into the same kind). The element walker
+    // (ast::elements::walk_latex) keys on exactly these names.
+    assert_node_type_exists("\\section{Intro}\nbody", Language::Latex, "section");
+    assert_node_type_exists("\\subsection{Sub}\nbody", Language::Latex, "subsection");
+    assert_node_type_exists("\\chapter{Ch}\nbody", Language::Latex, "chapter");
+
+    // Environments: generic + grammar-specialized kinds, all with
+    // begin/end fields; the `begin` node carries the `name` field.
+    assert_node_type_exists(
+        "\\begin{itemize}\n\\item x\n\\end{itemize}",
+        Language::Latex,
+        "generic_environment",
+    );
+    assert_node_type_exists(
+        "\\begin{equation}\nE = mc^2\n\\end{equation}",
+        Language::Latex,
+        "math_environment",
+    );
+    assert_node_type_exists(
+        "\\begin{verbatim}\nraw\n\\end{verbatim}",
+        Language::Latex,
+        "verbatim_environment",
+    );
+    assert_node_type_exists(
+        "\\begin{document}\n\\end{document}",
+        Language::Latex,
+        "begin",
     );
 }
 

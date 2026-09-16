@@ -51,7 +51,8 @@ pub fn identifier_node_types(language: Language) -> &'static [&'static str] {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => &[],
+        | Language::Bash
+        | Language::Latex => &[],
     }
 }
 

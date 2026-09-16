@@ -1123,7 +1123,8 @@ pub fn classify_reference_kind(node: &Node, source: &[u8], language: Language) -
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => ReferenceKind::Other,
+        | Language::Bash
+        | Language::Latex => ReferenceKind::Other,
     }
 }
 

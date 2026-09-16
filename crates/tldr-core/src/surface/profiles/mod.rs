@@ -70,6 +70,7 @@ pub(crate) fn profile_for(language: Language) -> Option<&'static SurfaceLanguage
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => None,
+        | Language::Bash
+        | Language::Latex => None,
     }
 }

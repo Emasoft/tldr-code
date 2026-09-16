@@ -137,7 +137,8 @@ impl LanguageConfig {
             | Language::Xml
             | Language::Html
             | Language::Css
-            | Language::Bash => Self::lua(),
+            | Language::Bash
+            | Language::Latex => Self::lua(),
         }
     }
 

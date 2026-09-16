@@ -1493,7 +1493,8 @@ fn map_language_to_api_language(lang: Language) -> Option<ApiLanguage> {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => None,
+        | Language::Bash
+        | Language::Latex => None,
     }
 }
 

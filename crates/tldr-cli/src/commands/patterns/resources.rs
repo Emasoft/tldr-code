@@ -611,7 +611,8 @@ fn get_resource_patterns(lang: Language) -> LangResourcePatterns {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => LangResourcePatterns {
+        | Language::Bash
+        | Language::Latex => LangResourcePatterns {
             creators: &[],
             closers: &[],
             function_kinds: &[],

@@ -1041,7 +1041,7 @@ let lone a = a
 // `element_extraction_v1` suite; here we pin only the transition:
 // the four formats carry their element kinds, and since batch E2 the markup
 // formats flow through the same engine (xml/svg/html → `element`,
-// css → `selector`/`at-rule`).
+// css → `selector`/`at-rule`, latex → `section`/`environment`).
 // =============================================================================
 
 #[test]
@@ -1072,6 +1072,51 @@ fn json_yaml_toml_bash_definitions_are_elements() {
             &["function"],
         ),
     ];
+
+    for (filename, content, language, expected_kinds) in cases {
+        let dir =
+            TempDir::new().unwrap_or_else(|e| panic!("symbol-fidelity-v1: tempdir failed: {e}"));
+        let path = dir.path().join(filename);
+        fs::write(&path, content)
+            .unwrap_or_else(|e| panic!("symbol-fidelity-v1: write {filename} failed: {e}"));
+        let structure = get_code_structure(&path, *language, 0, None)
+            .unwrap_or_else(|e| panic!("symbol-fidelity-v1: {filename} extraction failed: {e}"));
+        assert_eq!(
+            structure.files.len(),
+            1,
+            "symbol-fidelity-v1 [{filename}]: expected exactly one FileStructure"
+        );
+        let defs = &structure.files[0].definitions;
+        let kinds: Vec<&str> = defs.iter().map(|d| d.kind.as_str()).collect();
+        assert_eq!(
+            kinds, *expected_kinds,
+            "symbol-fidelity-v1 [{filename}]: expected element-kind sequence (source order), \
+             got {defs:#?}"
+        );
+        // Element byte spans are populated (code languages keep None).
+        for d in defs {
+            assert!(
+                d.byte_start.is_some() && d.byte_end.is_some(),
+                "symbol-fidelity-v1 [{filename}]: element {}:`{}` must carry byte spans",
+                d.kind,
+                d.name
+            );
+        }
+    }
+}
+
+#[test]
+fn latex_definitions_are_elements() {
+    // LaTeX (2025-11) flows through the same element engine: sectioning
+    // commands emit `section` (content-spanning — the grammar nests each
+    // section's content inside the sectioning node), `\begin{env}`…`\end{env}`
+    // blocks emit `environment`. `\label` and body text never emit.
+    let cases: &[(&str, &str, Language, &[&str])] = &[(
+        "pinned.tex",
+        "\\section{Intro}\nbody text\n\\begin{itemize}\n\\item a\n\\end{itemize}\n",
+        Language::Latex,
+        &["section", "environment"],
+    )];
 
     for (filename, content, language, expected_kinds) in cases {
         let dir =

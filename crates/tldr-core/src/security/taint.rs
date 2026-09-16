@@ -812,7 +812,8 @@ pub fn get_patterns(language: Language) -> &'static LanguagePatterns {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => &FORMATS_PATTERNS,
+        | Language::Bash
+        | Language::Latex => &FORMATS_PATTERNS,
     }
 }
 
@@ -3920,7 +3921,8 @@ fn get_ast_patterns(language: Language) -> AstLanguagePatterns {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => AstLanguagePatterns {
+        | Language::Bash
+        | Language::Latex => AstLanguagePatterns {
             sources: &[],
             sinks: &[],
             sanitizers: &[],
@@ -3996,7 +3998,8 @@ pub fn fastpath_pattern_strings(language: Language) -> &'static [&'static str] {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => &[],
+        | Language::Bash
+        | Language::Latex => &[],
     }
 }
 

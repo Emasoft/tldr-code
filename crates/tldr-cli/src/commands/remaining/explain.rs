@@ -239,7 +239,8 @@ fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => &[],
+        | Language::Bash
+        | Language::Latex => &[],
     }
 }
 
@@ -273,6 +274,7 @@ fn get_parser(language: Language) -> Result<Parser, RemainingError> {
         Language::Xml => tree_sitter_xml::LANGUAGE_XML.into(),
         Language::Html => tree_sitter_html::LANGUAGE.into(),
         Language::Css => tree_sitter_css::LANGUAGE.into(),
+        Language::Latex => codebook_tree_sitter_latex::LANGUAGE.into(),
         Language::Bash => tree_sitter_bash::LANGUAGE.into(),
     };
 
@@ -2311,6 +2313,7 @@ impl ExplainArgs {
             Language::Html => "html",
             Language::Css => "css",
             Language::Bash => "bash",
+            Language::Latex => "latex",
         };
 
         // Build report

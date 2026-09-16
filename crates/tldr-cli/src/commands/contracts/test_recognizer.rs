@@ -253,7 +253,8 @@ fn is_candidate_test_file(path: &Path, language: Language) -> bool {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => false,
+        | Language::Bash
+        | Language::Latex => false,
     }
 }
 
@@ -313,7 +314,8 @@ fn matches_test_function(node: &Node, source: &[u8], language: Language) -> bool
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => false,
+        | Language::Bash
+        | Language::Latex => false,
     }
 }
 

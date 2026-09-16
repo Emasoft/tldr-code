@@ -603,7 +603,8 @@ fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => &[],
+        | Language::Bash
+        | Language::Latex => &[],
     }
 }
 
@@ -632,7 +633,8 @@ fn get_class_body_kinds(language: Language) -> &'static [&'static str] {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => &[],
+        | Language::Bash
+        | Language::Latex => &[],
     }
 }
 
@@ -1611,7 +1613,8 @@ fn get_statement_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => &[],
+        | Language::Bash
+        | Language::Latex => &[],
     }
 }
 
@@ -1786,7 +1789,8 @@ fn find_function_body(func_node: Node, lang: Language) -> Option<Node> {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => &[],
+        | Language::Bash
+        | Language::Latex => &[],
     };
 
     let mut cursor = func_node.walk();

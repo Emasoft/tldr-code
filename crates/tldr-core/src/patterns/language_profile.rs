@@ -1459,7 +1459,8 @@ pub fn language_profile(language: crate::types::Language) -> Option<LanguageProf
         | crate::types::Language::Xml
         | crate::types::Language::Html
         | crate::types::Language::Css
-        | crate::types::Language::Bash => None,
+        | crate::types::Language::Bash
+        | crate::types::Language::Latex => None,
     }
 }
 

@@ -354,6 +354,8 @@ fn count_loc(source: &str, language: Language) -> usize {
         Language::Xml | Language::Html => vec!["<!--"],
         Language::Css => vec!["/*"],
         Language::Json => vec![],
+        // LaTeX batch (2025-11): `%` comments out the rest of a line.
+        Language::Latex => vec!["%"],
     };
 
     source

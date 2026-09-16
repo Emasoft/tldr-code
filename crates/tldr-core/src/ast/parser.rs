@@ -164,6 +164,12 @@ impl ParserPool {
             TldrLanguage::Html => Some(tree_sitter_html::LANGUAGE.into()),
             TldrLanguage::Css => Some(tree_sitter_css::LANGUAGE.into()),
             TldrLanguage::Bash => Some(tree_sitter_bash::LANGUAGE.into()),
+            // LaTeX batch (2025-11): document markup flows through the same
+            // format-tier grammar wiring. tree-sitter-latex exports its
+            // `LANGUAGE` LanguageFn through the tree-sitter-language bridge
+            // (like the formats above), so it loads against the pinned
+            // tree-sitter 0.25 runtime.
+            TldrLanguage::Latex => Some(codebook_tree_sitter_latex::LANGUAGE.into()),
         }
     }
 

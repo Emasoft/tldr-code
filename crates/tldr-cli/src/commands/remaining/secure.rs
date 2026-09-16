@@ -402,6 +402,7 @@ fn is_supported_secure_file(path: &std::path::Path, lang: Option<Language>) -> b
         Some(Language::Html) => matches!(ext, "html" | "htm"),
         Some(Language::Css) => ext == "css",
         Some(Language::Bash) => matches!(ext, "sh" | "bash"),
+        Some(Language::Latex) => matches!(ext, "tex" | "sty" | "cls"),
         None => matches!(ext, "py" | "rs"),
     }
 }

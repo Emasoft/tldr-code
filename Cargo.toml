@@ -54,6 +54,21 @@ tree-sitter-xml = "=0.7.0"
 tree-sitter-html = "=0.23.2"
 tree-sitter-css = "=0.23.2"
 tree-sitter-bash = "=0.23.3"
+# LaTeX (2025-11): document markup (.tex/.sty/.cls) — sections + environments
+# as elements. The audited `tree-sitter-latex =0.1.0` (crates.io, 2025-02-08)
+# is UNLINKABLE as published: its grammar.js declares `externals`, so the
+# generated parser.c references `tree_sitter_latex_external_scanner_*`, but the
+# package ships no scanner.c and its build.rs only compiles a scanner
+# conditionally (`if scanner_path.exists()`) → undefined-symbol link errors in
+# every consumer build (reproduced 2025-11). `codebook-tree-sitter-latex
+# =0.6.1` republishes the MAINTAINED grammar (latex-lsp/tree-sitter-latex)
+# with src/scanner.c included, a tree-sitter-language bridge `LANGUAGE`
+# LanguageFn (loads against the pinned ts 0.25 runtime like every format
+# grammar above) and the same section/environment node kinds the element
+# walker needs (verified against its src/node-types.json). Verified by
+# `cargo test -p tldr-core --test grammar_stability_test` + the latex parse
+# smoke test in tests/formats_grammar_test.rs.
+codebook-tree-sitter-latex = "=0.6.1"
 # NOTE: tree-sitter-sql dropped — crates.io only publishes 0.0.2 (DerekStride
 # grammar is source-only); revisit if a maintained sql crate targets ts 0.25.
 # Phase 3: Ruby grammar

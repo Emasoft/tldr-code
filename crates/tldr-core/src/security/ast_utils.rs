@@ -24,6 +24,7 @@ macro_rules! formats_langs {
             | Language::Html
             | Language::Css
             | Language::Bash
+            | Language::Latex
     };
 }
 

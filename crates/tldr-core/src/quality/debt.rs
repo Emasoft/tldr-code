@@ -572,6 +572,8 @@ fn is_comment_line(trimmed: &str, language: Language) -> bool {
         // Formats extension (2025-09): line comments per data format.
         Language::Yaml | Language::Toml | Language::Bash => trimmed.starts_with('#'),
         Language::Json | Language::Xml | Language::Html | Language::Css => false,
+        // LaTeX batch (2025-11): `%` comments out the rest of a line.
+        Language::Latex => trimmed.starts_with('%'),
     }
 }
 
@@ -603,6 +605,9 @@ fn comment_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Xml | Language::Html => &["comment"],
         Language::Css => &["line_comment", "block_comment"],
         Language::Json => &[],
+        // LaTeX batch (2025-11): the grammar has a dedicated `comment` node
+        // (plus `line_comment`/`block_comment` spellings).
+        Language::Latex => &["comment", "line_comment", "block_comment"],
     }
 }
 

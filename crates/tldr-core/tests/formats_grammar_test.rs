@@ -80,6 +80,54 @@ fn bash_parses_command() {
 }
 
 #[test]
+fn latex_parses_document_with_sections_and_environments() {
+    // Root kind + section/environment node kinds from the latex grammar
+    // (codebook-tree-sitter-latex 0.6.1, republished latex-lsp grammar). If a
+    // grammar bump renames these kinds, this fails loudly — the element
+    // walker in ast::elements keys on exactly these names.
+    let src = "\\documentclass{article}\n\
+               \\begin{document}\n\
+               \\section{Intro}\n\
+               text\n\
+               \\subsection{Details}\n\
+               \\begin{equation}\n\
+               E = mc^2\n\
+               \\end{equation}\n\
+               \\end{document}\n";
+    let tree = parse(src, Language::Latex).unwrap();
+    assert_eq!(tree.root_node().kind(), "source_file");
+    assert!(
+        !tree.root_node().has_error(),
+        "latex root: {}",
+        tree.root_node().kind()
+    );
+    for kind in [
+        "generic_environment",
+        "section",
+        "subsection",
+        "math_environment",
+    ] {
+        assert!(
+            tree_contains_kind(tree.root_node(), kind),
+            "latex tree must contain a `{kind}` node"
+        );
+    }
+}
+
+fn tree_contains_kind(node: tree_sitter::Node, kind: &str) -> bool {
+    if node.kind() == kind {
+        return true;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if tree_contains_kind(child, kind) {
+            return true;
+        }
+    }
+    false
+}
+
+#[test]
 fn new_languages_map_from_extension() {
     for (ext, expected) in [
         (".json", Language::Json),
@@ -93,6 +141,9 @@ fn new_languages_map_from_extension() {
         (".html", Language::Html),
         (".css", Language::Css),
         (".sh", Language::Bash),
+        (".tex", Language::Latex),
+        (".sty", Language::Latex),
+        (".cls", Language::Latex),
     ] {
         let got = Language::from_extension(ext).unwrap_or_else(|| panic!("{ext} should resolve"));
         assert_eq!(got, expected, "extension {ext}");
@@ -100,10 +151,10 @@ fn new_languages_map_from_extension() {
 }
 
 #[test]
-fn all_25_variants_have_str_and_extensions() {
+fn all_26_variants_have_str_and_extensions() {
     assert_eq!(
         Language::all().len(),
-        25,
+        26,
         "Language::all() must list every variant"
     );
     for lang in Language::all() {

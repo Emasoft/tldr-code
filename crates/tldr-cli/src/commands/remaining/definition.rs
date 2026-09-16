@@ -712,7 +712,8 @@ fn is_scope_node(kind: &str, language: Language) -> bool {
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => matches!(kind, "document" | "program" | "module" | "source_file"),
+        | Language::Bash
+        | Language::Latex => matches!(kind, "document" | "program" | "module" | "source_file"),
     }
 }
 
@@ -754,7 +755,8 @@ fn scan_scope_for_binding(
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => None,
+        | Language::Bash
+        | Language::Latex => None,
     }
 }
 
@@ -2552,7 +2554,8 @@ fn resolve_import_scope(
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => None,
+        | Language::Bash
+        | Language::Latex => None,
     };
 
     let Some((line_no, col)) = line_idx else {

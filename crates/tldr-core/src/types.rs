@@ -31,16 +31,17 @@ use std::path::{Path, PathBuf};
 // Language Support
 // =============================================================================
 
-/// Supported programming languages (25 variants — see `test_language_all_25_variants`)
+/// Supported programming languages (26 variants — see `test_language_all_26_variants`)
 // why: comment said 17, but OCaml (added later) brought the enum to 18,
 // and the formats extension (2025-09, "all tree-sitter formats" directive)
-// brought it to 25 with the data/config/markup/web/shell batch below.
+// brought it to 25 with the data/config/markup/web/shell batch below; the
+// LaTeX batch (2025-11) brought it to 26.
 ///
 /// Priority levels:
 /// - P0: Python, TypeScript, JavaScript, Go (full support)
 /// - P1: Rust, Java (full support)
 /// - P2: C, C++, Ruby, Kotlin, Swift, C#, Scala, PHP, Lua, Luau, Elixir (basic support)
-/// - P3 (formats): JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash — parsed
+/// - P3 (formats): JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash, LaTeX — parsed
 ///   with their tree-sitter grammars; structural extraction is basic (these
 ///   formats have no functions/classes in the source-code sense), and JSONL
 ///   streams one JSON document per row (see `ast::jsonl`). tree-sitter-sql
@@ -104,6 +105,9 @@ pub enum Language {
     Css,
     /// Bash/shell (.sh, .bash)
     Bash,
+    /// LaTeX (.tex, .sty, .cls) — document markup format (2025-11). Sections
+    /// and environments surface as element definitions (see `ast::elements`).
+    Latex,
 }
 
 impl Language {
@@ -146,6 +150,7 @@ impl Language {
             Language::Html => &[".html", ".htm", ".xhtml"],
             Language::Css => &[".css"],
             Language::Bash => &[".sh", ".bash"],
+            Language::Latex => &[".tex", ".sty", ".cls"],
         }
     }
 
@@ -238,6 +243,7 @@ impl Language {
             ".html" | ".htm" | ".xhtml" => Some(Language::Html),
             ".css" => Some(Language::Css),
             ".sh" | ".bash" => Some(Language::Bash),
+            ".tex" | ".sty" | ".cls" => Some(Language::Latex),
             ".swift" => Some(Language::Swift),
             ".cs" => Some(Language::CSharp),
             ".scala" => Some(Language::Scala),
@@ -613,6 +619,7 @@ impl Language {
             Language::Html => "html",
             Language::Css => "css",
             Language::Bash => "bash",
+            Language::Latex => "latex",
         }
     }
 
@@ -631,8 +638,8 @@ impl Language {
 
     /// Can this language act as a *project-level* signal?
     ///
-    /// Returns `false` for exactly the 7 "formats" variants (Json, Yaml, Toml,
-    /// Xml, Html, Css, Bash) and `true` for the 18 source-code languages.
+    /// Returns `false` for exactly the 8 "formats" variants (Json, Yaml, Toml,
+    /// Xml, Html, Css, Bash, Latex) and `true` for the 18 source-code languages.
     ///
     /// Rationale: the formats variants are first-class for **per-file**
     /// analysis — `Language::from_path` resolves them, `tldr structure
@@ -655,6 +662,11 @@ impl Language {
     /// formats block out of detection is the simpler, more predictable
     /// contract. Bash remains fully supported per-file.
     ///
+    /// LaTeX joins the formats block (2025-11): `.tex`/`.sty`/`.cls` are
+    /// document markup — a `docs/`-style accessory in code projects, not a
+    /// project-level language signal (same false-dominance argument as the
+    /// other formats). Fully supported per-file.
+    ///
     /// Sites that MUST consult this predicate (kept consistent):
     /// - `Language::from_directory` Stage-1 extension tally (project
     ///   dominant-language detection),
@@ -671,6 +683,7 @@ impl Language {
                 | Language::Html
                 | Language::Css
                 | Language::Bash
+                | Language::Latex
         )
     }
 
@@ -702,6 +715,7 @@ impl Language {
             Language::Html,
             Language::Css,
             Language::Bash,
+            Language::Latex,
         ]
     }
 }
@@ -3501,11 +3515,12 @@ mod tests {
     }
 
     #[test]
-    fn test_language_all_25_variants() {
+    fn test_language_all_26_variants() {
         // formats-extension-v1 (2025-09): 18 source languages + 7
         // tree-sitter data/config/markup formats (JSON, YAML, TOML, XML/SVG,
-        // HTML, CSS, Bash) = 25.
-        assert_eq!(Language::all().len(), 25);
+        // HTML, CSS, Bash) = 25; latex-formats-v1 (2025-11) added LaTeX
+        // (.tex/.sty/.cls) = 26.
+        assert_eq!(Language::all().len(), 26);
     }
 
     #[test]

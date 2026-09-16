@@ -1880,7 +1880,8 @@ fn extract_field_from_pattern(
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => None,
+        | Language::Bash
+        | Language::Latex => None,
     }
 }
 

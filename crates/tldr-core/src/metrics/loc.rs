@@ -472,6 +472,9 @@ fn is_single_line_comment(trimmed: &str, lang: Language) -> bool {
         // block-comment styles handled by the block-comment check.
         Language::Yaml | Language::Toml | Language::Bash => trimmed.starts_with('#'),
         Language::Json | Language::Xml | Language::Html | Language::Css => false,
+        // LaTeX batch (2025-11): `%` comments out the rest of a line (the
+        // escaped `\%` form never starts a line with a bare `%`).
+        Language::Latex => trimmed.starts_with('%'),
         // why: OCaml has no single-line comment syntax — every comment is a
         // `(* ... *)` block (possibly spanning one line). Treating a line
         // that merely starts with "(*" as already-closed single-line

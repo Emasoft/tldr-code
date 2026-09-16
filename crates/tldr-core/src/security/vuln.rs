@@ -380,7 +380,8 @@ fn descriptions_for(source_type: TaintSourceType, language: Language) -> &'stati
         | (_, Language::Xml)
         | (_, Language::Html)
         | (_, Language::Css)
-        | (_, Language::Bash) => "Untrusted input",
+        | (_, Language::Bash)
+        | (_, Language::Latex) => "Untrusted input",
     }
 }
 

@@ -33,13 +33,21 @@
   block at-rules (`@media`, `@keyframes`, `@supports`, …) emit `kind: "at-rule"` named after the
   at-keyword, and rules nested inside an at-rule block (media-query inner rules) surface as their
   own selectors while declarations and `;`-terminated statements never emit. XHTML (`.xhtml`)
-  now classifies as HTML and rides the HTML grammar. Names
+  now classifies as HTML and rides the HTML grammar. LaTeX (`.tex`/`.sty`/`.cls`) joins the same
+  engine: sectioning commands (`\part`, `\chapter`, `\section`, `\subsection`, `\subsubsection`,
+  `\paragraph`, `\subparagraph` — starred and KOMA variants included) emit `kind: "section"` with
+  the heading text as the name and a region that spans the section's content (the grammar nests
+  each section inside its parent, so a section owns everything up to the next sectioning command
+  of equal-or-higher level or `\end{document}`), and `\begin{env}`…`\end{env}` blocks (document,
+  itemize, figure, equation, verbatim, …) emit `kind: "environment"` with nested environments
+  recursing; `\newenvironment`/`\newtheorem` definitions and math zones never emit. Names
   are unquoted, output is in source order, and every element carries exact line spans — plus new
   additive `byte_start`/`byte_end` fields (omitted when absent, so existing JSON consumers and
   caches are unaffected) that address the element's bytes directly. Text mode lists the new kinds
   under an `Elements:` section.
 - **7 new formats parsed with tree-sitter** — JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash —
-  bringing the total to 25 languages. They are first-class for per-file analysis
+  bringing the total to 25 languages (26 with the LaTeX batch: `.tex`/`.sty`/`.cls`). They are
+  first-class for per-file analysis
   (`tldr structure app.config.toml`), but deliberately excluded from project-language *detection*
   and health's "supported files" gate (`Language::is_project_language_signal`): a directory of
   config files must never fabricate a dominant language, and a bare `package.json` in a monorepo

@@ -278,7 +278,8 @@ pub(crate) fn extract_functions_detailed(
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => {}
+        | Language::Bash
+        | Language::Latex => {}
     }
 
     functions
@@ -323,7 +324,8 @@ pub(crate) fn extract_classes_detailed(
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => {}
+        | Language::Bash
+        | Language::Latex => {}
     }
 
     classes
@@ -766,7 +768,8 @@ fn extract_module_constants(tree: &Tree, source: &str, language: Language) -> Ve
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash => Vec::new(),
+        | Language::Bash
+        | Language::Latex => Vec::new(),
     }
 }
 

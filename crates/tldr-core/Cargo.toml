@@ -48,6 +48,7 @@ tree-sitter-xml = { workspace = true }
 tree-sitter-html = { workspace = true }
 tree-sitter-css = { workspace = true }
 tree-sitter-bash = { workspace = true }
+codebook-tree-sitter-latex = { workspace = true }
 
 # File system traversal - Phase 2: tree command
 # M12: Use ignore crate for gitignore pattern handling
