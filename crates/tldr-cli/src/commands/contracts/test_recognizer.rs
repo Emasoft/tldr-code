@@ -246,7 +246,7 @@ fn is_candidate_test_file(path: &Path, language: Language) -> bool {
             lower.contains("test") || lower.contains("spec")
         }
         // Formats extension (2025-09): data/config documents are never test
-        // files.
+        // files; log files neither.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -254,7 +254,8 @@ fn is_candidate_test_file(path: &Path, language: Language) -> bool {
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => false,
+        | Language::Latex
+        | Language::Log => false,
     }
 }
 
@@ -307,7 +308,8 @@ fn matches_test_function(node: &Node, source: &[u8], language: Language) -> bool
         Language::Rust => rust_is_test_function(node, source),
         Language::CSharp => csharp_has_test_attribute(node, source),
         Language::C | Language::Cpp | Language::Ocaml => false,
-        // Formats extension (2025-09): data/config documents have no tests.
+        // Formats extension (2025-09): data/config documents have no tests;
+        // log entries are not test functions either.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -315,7 +317,8 @@ fn matches_test_function(node: &Node, source: &[u8], language: Language) -> bool
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => false,
+        | Language::Latex
+        | Language::Log => false,
     }
 }
 

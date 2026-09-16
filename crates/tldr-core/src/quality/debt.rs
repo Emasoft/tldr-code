@@ -574,6 +574,9 @@ fn is_comment_line(trimmed: &str, language: Language) -> bool {
         Language::Json | Language::Xml | Language::Html | Language::Css => false,
         // LaTeX batch (2025-11): `%` comments out the rest of a line.
         Language::Latex => trimmed.starts_with('%'),
+        // Log batch: a log line is event text, never a comment — a leading
+        // `#` in a log is log CONTENT.
+        Language::Log => false,
     }
 }
 
@@ -608,6 +611,9 @@ fn comment_node_kinds(language: Language) -> &'static [&'static str] {
         // LaTeX batch (2025-11): the grammar has a dedicated `comment` node
         // (plus `line_comment`/`block_comment` spellings).
         Language::Latex => &["comment", "line_comment", "block_comment"],
+        // Log batch: `.log` never parses through tree-sitter (no grammar) —
+        // no comment node kinds exist.
+        Language::Log => &[],
     }
 }
 

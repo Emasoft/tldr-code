@@ -9,6 +9,10 @@
 //! - `elements` - Element extraction for data/config formats (JSON/YAML/TOML/Bash)
 //! - `imports` - Language-specific import parsing
 
+//! - `jsonl` - JSONL/NDJSON row streaming (one JSON document per row)
+//! - `logs` - native log-entry scanning for `.log` files (NO tree-sitter
+//!   grammar exists for logs; this scanner is the only consumer)
+
 pub mod count;
 pub mod elements;
 pub mod extract;
@@ -16,6 +20,7 @@ pub mod extractor;
 pub mod function_finder;
 pub mod imports;
 pub mod jsonl;
+pub mod logs;
 pub mod parser;
 
 pub use count::{count_functions_canonical, count_functions_canonical_from_modules};
@@ -26,4 +31,5 @@ pub use imports::get_imports;
 pub use jsonl::{
     first_row_tree, is_jsonl_path, stream_jsonl, JsonlStreamReport, JsonlStreamSummary,
 };
+pub use logs::{is_log_path, parse_log_file, stream_log_entries, LogEntry};
 pub use parser::ParserPool;

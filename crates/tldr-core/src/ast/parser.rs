@@ -170,6 +170,13 @@ impl ParserPool {
             // (like the formats above), so it loads against the pinned
             // tree-sitter 0.25 runtime.
             TldrLanguage::Latex => Some(codebook_tree_sitter_latex::LANGUAGE.into()),
+            // Log batch: NO grammar. No maintained log grammar exists on
+            // crates.io (404 audit), so `Language::Log` deliberately has no
+            // tree-sitter mapping — a direct `parse(source, Log)` call is
+            // UnsupportedLanguage. Log content is consumed exclusively by
+            // the native scanner in `ast::logs`; `parse_file_with_lang`
+            // short-circuits before this would ever matter.
+            TldrLanguage::Log => None,
         }
     }
 
@@ -387,6 +394,27 @@ impl ParserPool {
                 // Empty (all-blank) JSONL: a valid empty parse, no content.
                 None => Ok((self.parse("", lang)?, String::new(), lang)),
             };
+        }
+
+        // Log batch: `.log` files NEVER go through tree-sitter — no
+        // maintained log grammar exists on crates.io (404 audit), and the
+        // native, streaming scanner in `ast::logs` is the ONLY consumer of
+        // log content. `parse_file_with_lang` still has to honor its
+        // `(Tree, String, Language)` contract, so — mirroring the
+        // all-blank-JSONL arm above — it returns an EMPTY tree with empty
+        // source without reading the file (a GiB log costs nothing here).
+        // The tree is a structural placeholder that Log consumers never
+        // inspect: the `get_code_structure` hook early-returns to
+        // `ast::logs` before any tree walk happens.
+        //
+        // The placeholder tree is produced by parsing `""` under the Bash
+        // grammar (an empty shell `program` — the least-surprising clean
+        // empty parse); asserting `!has_error()` is pinned by the unit test
+        // below. Direct `parse(source, Log)` calls (no file) still fail
+        // with UnsupportedLanguage, which is the honest answer.
+        if lang == TldrLanguage::Log {
+            let tree = self.parse("", TldrLanguage::Bash)?;
+            return Ok((tree, String::new(), lang));
         }
 
         // Read file content with UTF-8 lossy fallback - M2 mitigation
@@ -709,6 +737,41 @@ mod tests {
             "path-less TS parse of JSX is expected to produce ERROR nodes; \
              if it parses cleanly, the default grammar changed and callers \
              must be audited"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Log batch: Language::Log never parses through tree-sitter.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn test_parse_file_log_returns_clean_empty_tree() {
+        // `parse_file_with_lang` on a `.log` path must return an EMPTY tree
+        // + empty source WITHOUT reading the file (the native scanner in
+        // `ast::logs` is the only consumer of log content). The placeholder
+        // tree (empty Bash program) must still be a clean parse so no
+        // generic has_error() validation anywhere trips on it.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("server.log");
+        std::fs::write(&log_path, "2026-09-14T08:34:49Z ERROR big log content\n").unwrap();
+
+        let pool = ParserPool::new();
+        let (tree, source, lang) = pool.parse_file(&log_path).unwrap();
+        assert_eq!(lang, TldrLanguage::Log);
+        assert_eq!(source, "");
+        assert_eq!(tree.root_node().child_count(), 0, "empty program");
+        assert_eq!(
+            count_error_nodes(tree.root_node()),
+            0,
+            "placeholder empty tree must be a clean parse"
+        );
+
+        // Direct path-less parse of log SOURCE stays UnsupportedLanguage —
+        // logs have no grammar, by design.
+        let err = pool.parse("some log line", TldrLanguage::Log);
+        assert!(
+            matches!(err, Err(TldrError::UnsupportedLanguage(_))),
+            "parse(source, Log) must be UnsupportedLanguage, got {:?}",
+            err
         );
     }
 

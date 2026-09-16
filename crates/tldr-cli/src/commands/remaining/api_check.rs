@@ -1487,6 +1487,7 @@ fn map_language_to_api_language(lang: Language) -> Option<ApiLanguage> {
         Language::Ocaml => Some(ApiLanguage::Ocaml),
         // Formats extension (2025-09): no api-check rule pack for data/config
         // formats — None means "don't filter" (documented caller contract).
+        // Log files join them (log entries are not API calls).
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -1494,7 +1495,8 @@ fn map_language_to_api_language(lang: Language) -> Option<ApiLanguage> {
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => None,
+        | Language::Latex
+        | Language::Log => None,
     }
 }
 

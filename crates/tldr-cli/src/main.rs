@@ -43,10 +43,10 @@ use tldr_cli::commands::{
     DaemonStartArgs, DaemonStatusArgs, DaemonStopArgs, DeadArgs, DeadStoresArgs, DebtArgs,
     DefinitionArgs, DepsArgs, DiagnosticsArgs, DiceArgs, DiffArgs, DoctorArgs, ExplainArgs,
     ExtractArgs, FixArgs, HalsteadArgs, HealthArgs, HotspotsArgs, HubsArgs, ImpactArgs,
-    ImportersArgs, ImportsArgs, InheritanceArgs, InvariantsArgs, LocArgs, OrderArgs, PatternsArgs,
-    ReachingDefsArgs, ReferencesArgs, SecureArgs, SliceArgs, SmartSearchArgs, SmellsArgs,
-    SpecsArgs, StatsArgs, StructureArgs, TaintArgs, TodoArgs, TreeArgs, VerifyArgs, WarmArgs,
-    WhatbreaksArgs,
+    ImportersArgs, ImportsArgs, InheritanceArgs, InvariantsArgs, LocArgs, LogsArgs, OrderArgs,
+    PatternsArgs, ReachingDefsArgs, ReferencesArgs, SecureArgs, SliceArgs, SmartSearchArgs,
+    SmellsArgs, SpecsArgs, StatsArgs, StructureArgs, TaintArgs, TodoArgs, TreeArgs, VerifyArgs,
+    WarmArgs, WhatbreaksArgs,
 };
 // Pattern analysis commands
 use tldr_cli::commands::patterns::{
@@ -124,6 +124,15 @@ pub enum Command {
     /// Extract code structure (functions, classes, imports)
     #[command(visible_alias = "s")]
     Structure(StructureArgs),
+
+    /// Filter and list log entries from a log file
+    ///
+    /// Streams the file through the native log-entry scanner and prints the
+    /// entries matching all supplied filters: `--from`/`--to` (inclusive
+    /// timestamp window), `--level` (normalized severity), `--grep`
+    /// (raw-text substring).
+    #[command(name = "logs")]
+    Logs(LogsArgs),
 
     /// Build cross-file call graph
     #[command(visible_alias = "c")]
@@ -514,6 +523,7 @@ fn command_name(cmd: &Command) -> &'static str {
     match cmd {
         Command::Tree(_) => "tree",
         Command::Structure(_) => "structure",
+        Command::Logs(_) => "logs",
         Command::Calls(_) => "calls",
         Command::Impact(_) => "impact",
         Command::Dead(_) => "dead",
@@ -633,6 +643,7 @@ fn run_command(cli: &Cli) -> Result<()> {
     match &cli.command {
         Command::Tree(args) => args.run(cli.format, q),
         Command::Structure(args) => args.run(cli.format, q),
+        Command::Logs(args) => args.run(cli.format, q),
         Command::Calls(args) => args.run(cli.format, q),
         Command::Impact(args) => args.run(cli.format, q),
         Command::Dead(args) => args.run(cli.format, q),

@@ -449,7 +449,8 @@ pub fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => &[],
+        | Language::Latex
+        | Language::Log => &[],
     }
 }
 
@@ -510,7 +511,8 @@ pub fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
             "protocol_declaration",
             "extension_declaration",
         ],
-        // Formats extension: no class-like containers in data/config markup.
+        // Formats extension: no class-like containers in data/config markup;
+        // log files have none either.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -518,7 +520,8 @@ pub fn get_class_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => &[],
+        | Language::Latex
+        | Language::Log => &[],
     }
 }
 

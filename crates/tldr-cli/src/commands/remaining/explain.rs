@@ -232,7 +232,8 @@ fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["function_declaration", "function_definition"],
         Language::Elixir => &["call"], // Elixir def/defp are call nodes
         Language::Ocaml => &["value_definition"],
-        // Formats extension (2025-09): no functions in data/config documents.
+        // Formats extension (2025-09): no functions in data/config documents;
+        // log entries are not functions.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -240,7 +241,8 @@ fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => &[],
+        | Language::Latex
+        | Language::Log => &[],
     }
 }
 
@@ -276,6 +278,16 @@ fn get_parser(language: Language) -> Result<Parser, RemainingError> {
         Language::Css => tree_sitter_css::LANGUAGE.into(),
         Language::Latex => codebook_tree_sitter_latex::LANGUAGE.into(),
         Language::Bash => tree_sitter_bash::LANGUAGE.into(),
+        // Log batch: logs have NO tree-sitter grammar (crates.io 404 audit);
+        // entries come from the native `ast::logs` scanner. Explain cannot
+        // analyze a log "function", so fail with a pointed message instead.
+        Language::Log => {
+            return Err(RemainingError::parse_error(
+                PathBuf::new(),
+                "log files have no tree-sitter grammar; use 'tldr logs' for log entries"
+                    .to_string(),
+            ))
+        }
     };
 
     parser.set_language(&ts_language).map_err(|e| {
@@ -2314,6 +2326,7 @@ impl ExplainArgs {
             Language::Css => "css",
             Language::Bash => "bash",
             Language::Latex => "latex",
+            Language::Log => "log",
         };
 
         // Build report

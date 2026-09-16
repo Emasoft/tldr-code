@@ -69,6 +69,41 @@ pub fn get_code_structure(
         });
     }
 
+    // Log batch: `.log` files NEVER go through tree-sitter (no maintained
+    // log grammar exists on crates.io — 404 audit), so the whole
+    // parse-then-walk machinery is skipped via this early-return, exactly
+    // like the JSONL one above. Entries come from the native, streaming
+    // scanner in `ast::logs` and map onto `DefinitionInfo` with kind
+    // `"entry"`.
+    //
+    // Why NOT `extract_elements`: that engine walks tree-sitter trees, and
+    // Log has no tree — there is nothing for it to walk. `elements.rs` is
+    // deliberately untouched (its language match falls through to its code
+    // language arm); log entries are emitted here, from the scanner, in
+    // source order. The size policy exempts `.log` the same way it exempts
+    // `.jsonl` (see `fs::oversize::max_size_for`).
+    if root.is_file() && crate::ast::logs::is_log_path(root) {
+        let entries = crate::ast::logs::parse_log_file(root)?;
+        let definitions = entries.into_iter().map(log_entry_definition).collect();
+        let file_structure = crate::types::FileStructure {
+            path: root.to_path_buf(),
+            functions: Vec::new(),
+            classes: Vec::new(),
+            methods: Vec::new(),
+            method_infos: Vec::new(),
+            imports: Vec::new(),
+            definitions,
+        };
+        return Ok(CodeStructure {
+            root: root.to_path_buf(),
+            language: Some(Language::Log),
+            files: vec![file_structure],
+            files_skipped: 0,
+            warnings: Vec::new(),
+            jsonl_stream: None,
+        });
+    }
+
     // Handle single file case: extract structure directly
     if root.is_file() {
         let parent = root.parent().unwrap_or(root);
@@ -327,6 +362,32 @@ fn extract_file_structure(
     })
 }
 
+/// Map a parsed [`crate::ast::logs::LogEntry`] onto the `DefinitionInfo`
+/// channel so `tldr structure <file>.log` surfaces entries through the same
+/// `files[0].definitions` array every other format uses (log batch).
+///
+/// - `kind` = `"entry"`.
+/// - `name` = the normalized level (`error`/`warn`/`info`/`debug`), or
+///   `"entry"` for level-less entries (leading garbage, timestamp-only
+///   lines) — see `ast::logs` for the level map.
+/// - line/byte spans come straight from the scanner (byte spans are exact,
+///   CRLF handled there).
+/// - `signature` = the raw timestamp text, or empty when the entry has none
+///   — the closest thing a log line has to a signature.
+/// - `definition_line` = the entry's first line.
+fn log_entry_definition(entry: crate::ast::logs::LogEntry) -> DefinitionInfo {
+    DefinitionInfo {
+        name: entry.level.unwrap_or_else(|| "entry".to_string()),
+        kind: "entry".to_string(),
+        line_start: entry.line_start,
+        line_end: entry.line_end,
+        definition_line: Some(entry.line_start),
+        byte_start: Some(entry.byte_start),
+        byte_end: Some(entry.byte_end),
+        signature: entry.timestamp.unwrap_or_default(),
+    }
+}
+
 /// Extract function names from a syntax tree
 pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<String> {
     let mut functions = Vec::new();
@@ -353,7 +414,9 @@ pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<S
         Language::Lua => extract_lua_functions(&root, source, &mut functions),
         Language::Luau => extract_luau_functions(&root, source, &mut functions),
         // Formats extension (2025-09): data/config/markup documents have no
-        // source-code functions.
+        // source-code functions. Log files neither — log entries are NOT
+        // functions; they surface as `kind: "entry"` definitions from the
+        // `ast::logs` scanner via the `get_code_structure` early-return.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -361,7 +424,8 @@ pub fn extract_functions(tree: &Tree, source: &str, language: Language) -> Vec<S
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => {}
+        | Language::Latex
+        | Language::Log => {}
     }
 
     functions
@@ -2414,7 +2478,8 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
         }
 
         Language::Lua | Language::Luau | Language::Ocaml => None,
-        // Formats extension: no constants in data/config/markup documents.
+        // Formats extension: no constants in data/config/markup documents;
+        // log entries carry no constants either.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -2422,7 +2487,8 @@ fn try_constant_definition(node: Node, source: &str, language: Language) -> Opti
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => None,
+        | Language::Latex
+        | Language::Log => None,
     }
 }
 
@@ -2663,7 +2729,8 @@ fn anonymous_callable_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["function_definition"],
         Language::Ocaml => &["fun_expression"],
         Language::C => &[],
-        // Formats extension: no lambdas in data/config/markup documents.
+        // Formats extension: no lambdas in data/config/markup documents;
+        // log entries are not lambdas.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -2671,7 +2738,8 @@ fn anonymous_callable_kinds(language: Language) -> &'static [&'static str] {
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => &[],
+        | Language::Latex
+        | Language::Log => &[],
     }
 }
 

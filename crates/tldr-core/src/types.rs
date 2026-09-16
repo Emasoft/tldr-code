@@ -31,22 +31,26 @@ use std::path::{Path, PathBuf};
 // Language Support
 // =============================================================================
 
-/// Supported programming languages (26 variants — see `test_language_all_26_variants`)
+/// Supported programming languages (27 variants — see `test_language_all_27_variants`)
 // why: comment said 17, but OCaml (added later) brought the enum to 18,
 // and the formats extension (2025-09, "all tree-sitter formats" directive)
 // brought it to 25 with the data/config/markup/web/shell batch below; the
-// LaTeX batch (2025-11) brought it to 26.
-///
-/// Priority levels:
-/// - P0: Python, TypeScript, JavaScript, Go (full support)
-/// - P1: Rust, Java (full support)
-/// - P2: C, C++, Ruby, Kotlin, Swift, C#, Scala, PHP, Lua, Luau, Elixir (basic support)
-/// - P3 (formats): JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash, LaTeX — parsed
-///   with their tree-sitter grammars; structural extraction is basic (these
-///   formats have no functions/classes in the source-code sense), and JSONL
-///   streams one JSON document per row (see `ast::jsonl`). tree-sitter-sql
-///   dropped — crates.io only publishes 0.0.2 (DerekStride grammar is
-///   source-only); revisit if a maintained sql crate targets ts 0.25.
+// LaTeX batch (2025-11) brought it to 26, and the log batch brought it to 27.
+//
+// Priority levels:
+// - P0: Python, TypeScript, JavaScript, Go (full support)
+// - P1: Rust, Java (full support)
+// - P2: C, C++, Ruby, Kotlin, Swift, C#, Scala, PHP, Lua, Luau, Elixir (basic support)
+// - P3 (formats): JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash, LaTeX, Log — parsed
+//   with their tree-sitter grammars; structural extraction is basic (these
+//   formats have no functions/classes in the source-code sense), and JSONL
+//   streams one JSON document per row (see `ast::jsonl`). tree-sitter-sql
+//   dropped — crates.io only publishes 0.0.2 (DerekStride grammar is
+//   source-only); revisit if a maintained sql crate targets ts 0.25.
+//   Log is the one P3 format with NO tree-sitter grammar at all: no
+//   maintained log grammar is published on crates.io (404 audit), so
+//   `.log` files are scanned by the native, streaming entry parser in
+//   `ast::logs` instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
@@ -108,6 +112,15 @@ pub enum Language {
     /// LaTeX (.tex, .sty, .cls) — document markup format (2025-11). Sections
     /// and environments surface as element definitions (see `ast::elements`).
     Latex,
+    /// Log files (.log) — plain-text application/system logs (log batch).
+    /// NO tree-sitter grammar exists (crates.io audit: no maintained log
+    /// grammar is published), so logs NEVER parse through tree-sitter; the
+    /// native, streaming entry scanner in [`crate::ast::logs`] is the only
+    /// consumer, and `tldr structure <file>.log` emits one `entry` definition
+    /// per parsed log entry. Entries are heuristically delimited by
+    /// timestamps / level tokens — see the `ast::logs` module docs for the
+    /// full heuristic table.
+    Log,
 }
 
 impl Language {
@@ -151,6 +164,7 @@ impl Language {
             Language::Css => &[".css"],
             Language::Bash => &[".sh", ".bash"],
             Language::Latex => &[".tex", ".sty", ".cls"],
+            Language::Log => &[".log"],
         }
     }
 
@@ -244,6 +258,11 @@ impl Language {
             ".css" => Some(Language::Css),
             ".sh" | ".bash" => Some(Language::Bash),
             ".tex" | ".sty" | ".cls" => Some(Language::Latex),
+            // Log batch: `.log` resolves to Language::Log. There is NO
+            // tree-sitter grammar for logs — parsing never happens through
+            // `ParserPool` (see `parse_file_with_lang`'s Log branch); the
+            // native scanner in `ast::logs` is the only consumer.
+            ".log" => Some(Language::Log),
             ".swift" => Some(Language::Swift),
             ".cs" => Some(Language::CSharp),
             ".scala" => Some(Language::Scala),
@@ -620,6 +639,7 @@ impl Language {
             Language::Css => "css",
             Language::Bash => "bash",
             Language::Latex => "latex",
+            Language::Log => "log",
         }
     }
 
@@ -667,6 +687,11 @@ impl Language {
     /// project-level language signal (same false-dominance argument as the
     /// other formats). Fully supported per-file.
     ///
+    /// Log joins the formats block (log batch): `.log` files are runtime
+    /// output, not authored source — a directory of logs must never outvote
+    /// the code the logs came from. Fully supported per-file (native scanner,
+    /// see `ast::logs`).
+    ///
     /// Sites that MUST consult this predicate (kept consistent):
     /// - `Language::from_directory` Stage-1 extension tally (project
     ///   dominant-language detection),
@@ -684,6 +709,7 @@ impl Language {
                 | Language::Css
                 | Language::Bash
                 | Language::Latex
+                | Language::Log
         )
     }
 
@@ -716,6 +742,7 @@ impl Language {
             Language::Css,
             Language::Bash,
             Language::Latex,
+            Language::Log,
         ]
     }
 }
@@ -3515,12 +3542,13 @@ mod tests {
     }
 
     #[test]
-    fn test_language_all_26_variants() {
+    fn test_language_all_27_variants() {
         // formats-extension-v1 (2025-09): 18 source languages + 7
         // tree-sitter data/config/markup formats (JSON, YAML, TOML, XML/SVG,
         // HTML, CSS, Bash) = 25; latex-formats-v1 (2025-11) added LaTeX
-        // (.tex/.sty/.cls) = 26.
-        assert_eq!(Language::all().len(), 26);
+        // (.tex/.sty/.cls) = 26; the log batch added Log (.log, native
+        // scanner, no tree-sitter grammar) = 27.
+        assert_eq!(Language::all().len(), 27);
     }
 
     #[test]

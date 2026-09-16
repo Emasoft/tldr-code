@@ -36,6 +36,15 @@
 //!   files are streamed one JSON document per row
 //!   (`ast::jsonl::stream_jsonl`, bounded memory — one row in RAM at
 //!   a time), so file size is not a memory risk.
+//! - **Log files** (`.log`): no cap. These are streamed line-by-line by
+//!   the native entry scanner (`ast::logs::stream_log_entries`, bounded
+//!   memory — one line + one entry in RAM at a time), so file size is
+//!   not a memory risk either. The HONEST memory bound on the
+//!   `tldr structure` path is the parsed `Vec<LogEntry>` (one entry per
+//!   log event, `ast::logs::parse_log_file`), not the byte size: a GiB
+//!   log with millions of short entries allocates one small struct per
+//!   entry. The CLI's `tldr logs` command streams with filters applied
+//!   in the scan callback and never materialises unmatched entries.
 //!
 //! Callers that need to exercise the skip decision without
 //! multi-megabyte (let alone multi-GiB) fixtures can inject a flat cap
@@ -126,10 +135,15 @@ pub fn is_autogen_file(path: &Path) -> bool {
 ///   bounded memory — one row in RAM at a time), so file size is not a
 ///   memory risk. This is the format class the "chunk streaming" requirement
 ///   names explicitly.
+/// - `u64::MAX` for log files (`.log`): streamed line-by-line by the native
+///   entry scanner (`ast::logs::stream_log_entries`, bounded memory — one
+///   line + one entry in RAM at a time). The real memory bound on the
+///   structure path is the parsed `Vec<LogEntry>`, not the file size; the
+///   CLI's `tldr logs` streams with filters and holds only matches.
 /// - [`MAX_AUTOGEN_FILE_SIZE_BYTES`] when [`is_autogen_file`] is true.
 /// - [`MAX_FILE_SIZE_BYTES`] otherwise.
 pub fn max_size_for(path: &Path) -> u64 {
-    if crate::ast::jsonl::is_jsonl_path(path) {
+    if crate::ast::jsonl::is_jsonl_path(path) || crate::ast::logs::is_log_path(path) {
         u64::MAX
     } else if is_autogen_file(path) {
         MAX_AUTOGEN_FILE_SIZE_BYTES

@@ -15,6 +15,31 @@
 
 ### Added
 
+- **Log format support: `Language::Log` + the new `tldr logs` command.** `.log` files join the
+  supported formats as language 27 (signal=false, like the other formats — a directory of logs
+  never outvotes source code), with one twist: **no maintained log grammar exists on crates.io**
+  (404 audit), so logs never parse through tree-sitter at all. Entries come from a deterministic,
+  native, streaming scanner (`tldr-core/src/ast/logs.rs`) instead: a 1 MB-buffered line reader
+  groups lines into entries by timestamp shape (RFC3339/ISO, space-separated datetimes, syslog,
+  bracketed Apache/common-log, 10/13-digit epoch) or leading level token (`ERROR:` / `WARN -` /
+  `[error]`), normalizes levels to `error`/`warn`/`info`/`debug` (fatal/critical/emerg/alert/
+  panic/err → error; warning → warn; notice/information → info; trace/fine/finer/finest →
+  debug), and attaches continuation lines — stack traces — to the entry they belong to. Byte
+  offsets are tracked manually, so `byte_start`/`byte_end` stay exact under CRLF (the trailing
+  `\r` is excluded from content, documented). `tldr structure server.log` emits one
+  `kind: "entry"` definition per entry (name = level or `"entry"`, signature = the raw timestamp)
+  through the same `files[0].definitions` channel as every other format, and `.log` is size-cap
+  exempt like `.jsonl` — streamed means file size is never a memory risk (the honest bound on the
+  structure path is the parsed `Vec<LogEntry>`, not the bytes).
+  The new `tldr logs <file>` command filters entries while streaming (a GiB log with a narrow
+  window never materialises unmatched entries): `--from`/`--to` inclusive timestamp bounds
+  (comparable via a small std-only normalizer — epoch secs + nanos; syslog timestamps carry no
+  year, so they are excluded and counted in an `unfilterable` field rather than guessed),
+  `--level` (case-insensitive, alias-normalized: `WARNING` ≡ `warn`), and `--grep` (case-sensitive
+  substring over the entry's raw text, continuations included). JSON output is the all-new
+  `logs-command-v1` schema (`{file, total_entries, matched, unfilterable, entries[]}`); text mode
+  prints matched entries as their raw source lines with `--` separators.
+
 - **Element-level extraction for JSON/YAML/TOML/XML/SVG/HTML/CSS (+ Bash functions) via `tldr
   structure`.** The
   formats previously reported only empty `definitions` arrays; a new element engine

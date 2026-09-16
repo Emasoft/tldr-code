@@ -14,7 +14,10 @@ use crate::Language;
 /// for them — there are no calls/assignments/loops in a JSON document, so
 /// taint/security analyses find nothing (conservative, zero false positives).
 /// Format-specific security rules (e.g. XXE for XML, unsafe-deserialization
-/// for JSON) are future work.
+/// for JSON) are future work. LaTeX joined in 2025-11, and the log batch
+/// adds Log: `.log` files are event records, not imperative source — the
+/// native scanner (`ast::logs`) is their only consumer, and taint/security
+/// analyses find nothing in them.
 macro_rules! formats_langs {
     () => {
         Language::Json
@@ -25,6 +28,7 @@ macro_rules! formats_langs {
             | Language::Css
             | Language::Bash
             | Language::Latex
+            | Language::Log
     };
 }
 

@@ -32,6 +32,13 @@
 //!   the next sectioning command of equal-or-higher level or `\end{document}`)
 //!   + `environment` per `\begin{env}…\end{env}` block (nested environments
 //!   recurse; `\newenvironment`/`\newtheorem` and math zones never emit)
+//! - Log → `entry` per parsed log entry from the NATIVE scanner
+//!   (`ast::logs` — no tree-sitter grammar exists for logs), named after the
+//!   normalized level (`error`/`warn`/`info`/`debug`) or `"entry"` for
+//!   level-less entries; continuation lines (stack traces) join the entry's
+//!   region; signature = the raw timestamp text (or empty). Unlike the
+//!   tree-walk formats, entries set `definition_line` = the entry's start
+//!   line.
 //!
 //! Every element pins:
 //! 1. EXACT `kind` / `name` / `line_start` / `line_end` (1-indexed), and
@@ -704,6 +711,122 @@ fn latex_sections_span_content_and_environments_recurse() {
 }
 
 // =============================================================================
+// Log — native entry scanner (NO tree-sitter): entries as definitions
+// =============================================================================
+//
+// `.log` never reaches a tree-sitter tree (no grammar exists). The
+// `get_code_structure` hook early-returns to the `ast::logs` scanner, and
+// each entry maps onto `DefinitionInfo` with kind `"entry"`, name =
+// normalized level (or `"entry"` for level-less entries), signature = the
+// raw timestamp (or empty), and definition_line = the entry's first line.
+// `assert_element_invariants` is deliberately NOT applied here: log entries
+// DO set `definition_line` (the entry's start line is its declaration line).
+
+const LOG_FIXTURE: &str = "\
+boot garbage line
+2026-09-14T08:34:49Z INFO service started
+2026-09-14T08:34:50Z ERROR query failed
+Traceback (most recent call last):
+  File \"db.py\", line 42, in query
+2026-09-14 08:35:01,123 WARN slow query
+[error] disk usage 91%
+2026-09-14T08:36:00Z INFO healthy
+";
+
+#[test]
+fn log_entries_are_definitions_with_exact_spans() {
+    let defs = extract_elements("server.log", LOG_FIXTURE, Language::Log);
+
+    // EXACT source-order sequence: level-led name for timestamped entries,
+    // bare "entry" for the leading garbage line.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("entry", "entry"),
+        ("entry", "info"),
+        ("entry", "error"),
+        ("entry", "warn"),
+        ("entry", "error"),
+        ("entry", "info"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [server.log]: expected exact entry sequence"
+    );
+
+    // Every entry sets definition_line = its start line, and carries byte
+    // spans (the format-tier contract).
+    for d in &defs {
+        assert_eq!(
+            d.definition_line,
+            Some(d.line_start),
+            "element-extraction-v1 [server.log]: {}:`{}` definition_line must be the start line",
+            d.kind,
+            d.name
+        );
+        assert!(
+            d.byte_start.is_some() && d.byte_end.is_some(),
+            "element-extraction-v1 [server.log]: {}:`{}` must carry byte spans",
+            d.kind,
+            d.name
+        );
+    }
+
+    // Leading garbage: level-less, timestamp-less, single line.
+    let garbage = find_element(&defs, "server.log", "entry", "entry");
+    assert_span(garbage, "server.log", "entry:entry", 1, 1);
+    assert_eq!(
+        garbage.signature, "",
+        "garbage has no timestamp → empty signature"
+    );
+
+    // INFO entry: signature = the raw timestamp text.
+    let info = find_element(&defs, "server.log", "entry", "info");
+    assert_span(info, "server.log", "entry:info", 2, 2);
+    assert_eq!(info.signature, "2026-09-14T08:34:49Z");
+
+    // ERROR entry: the stack-trace continuation lines attach (lines 4-5),
+    // so the span covers the whole event region.
+    let error = find_element(&defs, "server.log", "entry", "error");
+    assert_span(error, "server.log", "entry:error", 3, 5);
+    assert_eq!(error.signature, "2026-09-14T08:34:50Z");
+    let line3_start = LOG_FIXTURE.find("2026-09-14T08:34:50Z").unwrap();
+    let line6_start = LOG_FIXTURE.find("2026-09-14 08:35:01,123").unwrap();
+    assert_eq!(error.byte_start, Some(line3_start as u64));
+    // byte_end is exclusive of line 5's trailing newline.
+    assert_eq!(error.byte_end, Some((line6_start - 1) as u64));
+    let slice = &LOG_FIXTURE[line3_start..line6_start - 1];
+    assert!(
+        slice.contains("Traceback"),
+        "region must cover the continuation"
+    );
+    assert!(slice.contains("db.py"), "region must cover the stack frame");
+
+    // WARN entry: space-separated datetime with comma millis as signature.
+    let warn = find_element(&defs, "server.log", "entry", "warn");
+    assert_span(warn, "server.log", "entry:warn", 6, 6);
+    assert_eq!(warn.signature, "2026-09-14 08:35:01,123");
+
+    // Bracket-level entry: level-led, no timestamp → empty signature. Two
+    // entries share the name `error`, so select this one by its line.
+    let bracket = defs
+        .iter()
+        .find(|d| d.kind == "entry" && d.name == "error" && d.line_start == 7)
+        .unwrap_or_else(|| {
+            panic!(
+                "element-extraction-v1 [server.log]: bracket error entry (line 7) not found.\n{defs:#?}"
+            )
+        });
+    assert_span(bracket, "server.log", "entry:error(bracket)", 7, 7);
+    assert_eq!(bracket.signature, "");
+}
+
+// =============================================================================
 // Cross-format: the JSON shape consumers see is the plain definitions array
 // =============================================================================
 
@@ -719,6 +842,7 @@ fn elements_flow_through_the_definitions_array_of_every_format() {
         ("pinned.html", HTML_FIXTURE, Language::Html, 8),
         ("pinned.css", CSS_FIXTURE, Language::Css, 5),
         ("pinned.tex", LATEX_FIXTURE, Language::Latex, 6),
+        ("server.log", LOG_FIXTURE, Language::Log, 6),
     ] {
         let defs = extract_elements(filename, content, language);
         assert!(

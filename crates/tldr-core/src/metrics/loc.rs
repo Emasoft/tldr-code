@@ -475,6 +475,9 @@ fn is_single_line_comment(trimmed: &str, lang: Language) -> bool {
         // LaTeX batch (2025-11): `%` comments out the rest of a line (the
         // escaped `\%` form never starts a line with a bare `%`).
         Language::Latex => trimmed.starts_with('%'),
+        // Log batch: `.log` lines are event text — a leading `#` or `//`
+        // in a log line is log CONTENT, not a comment, so nothing counts.
+        Language::Log => false,
         // why: OCaml has no single-line comment syntax — every comment is a
         // `(* ... *)` block (possibly spanning one line). Treating a line
         // that merely starts with "(*" as already-closed single-line

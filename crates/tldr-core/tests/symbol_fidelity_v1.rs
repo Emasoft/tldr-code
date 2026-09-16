@@ -1206,3 +1206,94 @@ fn xml_html_css_definitions_are_elements() {
         }
     }
 }
+
+/// LOG PIN (`log_entries_are_elements`, log batch): `.log` files never reach
+/// a tree-sitter tree (no maintained log grammar exists on crates.io), so
+/// the native, streaming scanner in `ast::logs` is the ONLY source of log
+/// definitions. `tldr structure <file>.log` must surface one `entry`
+/// definition per parsed log entry — named after the normalized level (or
+/// `"entry"` for level-less entries), with byte spans and
+/// `definition_line` = the entry's start line. A stack-trace continuation
+/// block must be absorbed into the failing entry's region rather than
+/// emitted as its own (garbage) definitions.
+#[test]
+fn log_entries_are_elements() {
+    let fixture = "\
+2026-09-14T08:34:49Z INFO service started
+2026-09-14T08:34:50Z ERROR query failed
+Traceback (most recent call last):
+  File \"db.py\", line 42, in query
+2026-09-14 08:35:01,123 WARN slow query
+[error] disk usage 91%
+";
+    let dir = TempDir::new().unwrap_or_else(|e| panic!("symbol-fidelity-v1: tempdir failed: {e}"));
+    let path = dir.path().join("server.log");
+    fs::write(&path, fixture)
+        .unwrap_or_else(|e| panic!("symbol-fidelity-v1: write server.log failed: {e}"));
+
+    let structure = get_code_structure(&path, Language::Log, 0, None)
+        .unwrap_or_else(|e| panic!("symbol-fidelity-v1: server.log extraction failed: {e}"));
+    assert_eq!(
+        structure.files.len(),
+        1,
+        "symbol-fidelity-v1 [server.log]: expected exactly one FileStructure"
+    );
+    assert_eq!(
+        structure.language,
+        Some(Language::Log),
+        "symbol-fidelity-v1 [server.log]: language must report log"
+    );
+    let defs = &structure.files[0].definitions;
+
+    // EXACT entry sequence, source order — one definition per entry.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("entry", "info"),
+        ("entry", "error"),
+        ("entry", "warn"),
+        ("entry", "error"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "symbol-fidelity-v1 [server.log]: expected exact entry sequence, got {defs:#?}"
+    );
+
+    // The stack-trace continuation lines attach to the ERROR entry (lines
+    // 2-4), so no extra definitions appear for them.
+    let error = defs
+        .iter()
+        .find(|d| d.name == "error" && d.line_start == 2)
+        .unwrap_or_else(|| {
+            panic!("symbol-fidelity-v1 [server.log]: ERROR entry (line 2) not found.\n{defs:#?}")
+        });
+    assert!(
+        error.line_end == 4,
+        "symbol-fidelity-v1 [server.log]: ERROR entry must absorb its stack trace (lines 2..=4), \
+         got {}..{}",
+        error.line_start,
+        error.line_end
+    );
+
+    // Every entry: byte spans present + definition_line = start line.
+    for d in defs {
+        assert!(
+            d.byte_start.is_some() && d.byte_end.is_some(),
+            "symbol-fidelity-v1 [server.log]: entry {}:`{}` must carry byte spans",
+            d.kind,
+            d.name
+        );
+        assert_eq!(
+            d.definition_line,
+            Some(d.line_start),
+            "symbol-fidelity-v1 [server.log]: entry {}:`{}` definition_line must be its start line",
+            d.kind,
+            d.name
+        );
+    }
+}

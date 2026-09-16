@@ -1116,7 +1116,7 @@ pub fn classify_reference_kind(node: &Node, source: &[u8], language: Language) -
         Language::Elixir => classify_elixir_reference(node, &parent, source),
         Language::Ocaml => classify_ocaml_reference(node, &parent, source),
         // Formats extension: no cross-reference semantics in data/config
-        // documents.
+        // documents; log entries have none either.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -1124,7 +1124,8 @@ pub fn classify_reference_kind(node: &Node, source: &[u8], language: Language) -
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => ReferenceKind::Other,
+        | Language::Latex
+        | Language::Log => ReferenceKind::Other,
     }
 }
 

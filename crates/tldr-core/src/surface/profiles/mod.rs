@@ -63,7 +63,8 @@ pub(crate) fn profile_for(language: Language) -> Option<&'static SurfaceLanguage
         Language::TypeScript => Some(&typescript::PROFILE),
         Language::Luau | Language::Ocaml => None,
         // Formats extension (2025-09): no API-surface profiles for
-        // data/config formats (a JSON document has no callable surface).
+        // data/config formats (a JSON document has no callable surface);
+        // log entries have no callable surface either.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -71,6 +72,7 @@ pub(crate) fn profile_for(language: Language) -> Option<&'static SurfaceLanguage
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => None,
+        | Language::Latex
+        | Language::Log => None,
     }
 }

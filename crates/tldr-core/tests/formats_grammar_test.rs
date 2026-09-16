@@ -144,17 +144,30 @@ fn new_languages_map_from_extension() {
         (".tex", Language::Latex),
         (".sty", Language::Latex),
         (".cls", Language::Latex),
+        (".log", Language::Log),
     ] {
         let got = Language::from_extension(ext).unwrap_or_else(|| panic!("{ext} should resolve"));
         assert_eq!(got, expected, "extension {ext}");
     }
+    // Log batch: `.log` detection also works through `from_path` (the path
+    // `tldr structure`/`tldr logs` resolve through). NO parse smoke test is
+    // possible for Log — there is no tree-sitter grammar — and that absence
+    // is itself pinned: parsing log source must stay UnsupportedLanguage.
+    assert_eq!(
+        Language::from_path(std::path::Path::new("/var/log/app.log")),
+        Some(Language::Log)
+    );
+    assert!(
+        tldr_core::ast::parser::parse("some log line", Language::Log).is_err(),
+        "logs have no tree-sitter grammar — direct parse must fail"
+    );
 }
 
 #[test]
-fn all_26_variants_have_str_and_extensions() {
+fn all_27_variants_have_str_and_extensions() {
     assert_eq!(
         Language::all().len(),
-        26,
+        27,
         "Language::all() must list every variant"
     );
     for lang in Language::all() {

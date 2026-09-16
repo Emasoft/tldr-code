@@ -80,7 +80,8 @@ fn function_node_kinds(lang: Language) -> &'static [&'static str] {
         // real-repo-fixes-v1 (P9.BUG-R6/R7): wire kotlin/swift surface forms
         // for top-level/standalone function definitions.
         Language::Kotlin | Language::Swift => &["function_declaration"],
-        // Formats extension (2025-09): no functions in data/config documents.
+        // Formats extension (2025-09): no functions in data/config documents;
+        // log entries are not functions.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -88,7 +89,8 @@ fn function_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => &[],
+        | Language::Latex
+        | Language::Log => &[],
     }
 }
 
@@ -133,7 +135,8 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
         // when files only contain extensions (e.g.
         // swift-collections/.../Span+Extras.swift).
         Language::Swift => &["class_declaration", "protocol_declaration"],
-        // Formats extension (2025-09): no classes in data/config documents.
+        // Formats extension (2025-09): no classes in data/config documents;
+        // log entries are not classes.
         Language::Json
         | Language::Yaml
         | Language::Toml
@@ -141,7 +144,8 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
         | Language::Html
         | Language::Css
         | Language::Bash
-        | Language::Latex => &[],
+        | Language::Latex
+        | Language::Log => &[],
     }
 }
 

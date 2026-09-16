@@ -130,7 +130,7 @@ impl LanguageConfig {
             Language::Swift => Self::swift(),
             // Formats extension (2025-09): contracts/SSA analysis targets
             // imperative code — data/config formats get the most permissive
-            // config (no call kinds, empty patterns).
+            // config (no call kinds, empty patterns). Log files join them.
             Language::Json
             | Language::Yaml
             | Language::Toml
@@ -138,7 +138,8 @@ impl LanguageConfig {
             | Language::Html
             | Language::Css
             | Language::Bash
-            | Language::Latex => Self::lua(),
+            | Language::Latex
+            | Language::Log => Self::lua(),
         }
     }
 

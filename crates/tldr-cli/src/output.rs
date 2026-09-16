@@ -431,13 +431,15 @@ pub fn format_structure_text(structure: &tldr_core::CodeStructure) -> String {
         // the JSON `definitions` array. Like every other section in this
         // formatter (none of which applies a cap), it renders all rows —
         // `--max-results` caps FILES upstream, not rows within a file.
+        // Log batch: log entries (`kind: "entry"`, from the native
+        // `ast::logs` scanner — not the element engine) render here too.
         let elements: Vec<&tldr_core::types::DefinitionInfo> = file
             .definitions
             .iter()
             .filter(|d| {
                 matches!(
                     d.kind.as_str(),
-                    "key" | "section" | "document" | "element" | "selector" | "at-rule"
+                    "key" | "section" | "document" | "element" | "selector" | "at-rule" | "entry"
                 )
             })
             .collect();
