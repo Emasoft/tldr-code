@@ -18,9 +18,14 @@ use super::error::{PatternsError, PatternsResult};
 // Resource Limits (TIGER-08 Mitigations)
 // =============================================================================
 
-/// Maximum file size for analysis (10 MB).
-/// Files larger than this will be rejected.
-pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+/// Maximum file size for analysis — unified with the central oversize policy
+/// (`tldr_core::fs::oversize::MAX_FILE_SIZE_BYTES`, the tree-sitter u32
+/// ceiling). Files larger than this will be rejected.
+// why: this duplicated the crate's own oversize policy as a separate
+// hardcoded literal (10 MB), which the parse-based analysis path already
+// enforces a second time via `tldr_core::fs::oversize::check_size`. Reuse
+// the single source of truth so the two gates cannot silently drift apart.
+pub const MAX_FILE_SIZE: u64 = tldr_core::fs::oversize::MAX_FILE_SIZE_BYTES;
 
 /// Warning threshold for file size (1 MB).
 /// Files larger than this emit a warning but are still processed.
@@ -621,7 +626,11 @@ mod tests {
     #[test]
     fn test_resource_limits_constants() {
         // Verify TIGER mitigation constants have sensible values
-        assert_eq!(MAX_FILE_SIZE, 10 * 1024 * 1024); // 10 MB
+        assert_eq!(
+            MAX_FILE_SIZE,
+            tldr_core::fs::oversize::MAX_FILE_SIZE_BYTES,
+            "MAX_FILE_SIZE must stay unified with the central oversize policy"
+        );
         assert_eq!(MAX_DIRECTORY_FILES, 1000);
         assert_eq!(MAX_AST_DEPTH, 100); // TIGER-08
         assert_eq!(MAX_ANALYSIS_DEPTH, 500);

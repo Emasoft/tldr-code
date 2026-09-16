@@ -3,7 +3,8 @@
 //! Implements the `tree` command functionality (spec Section 2.1.1).
 //!
 //! # Mitigations Addressed
-//! - M6: Large file memory (skip files > MAX_FILE_SIZE)
+//! - M6: Large file memory (oversize files are skipped by the central
+//!   `fs::oversize` policy at parse time, not here)
 //! - M9: Path handling platform (use PathBuf, dunce for normalization)
 //! - M12: Gitignore pattern edge cases (use ignore crate)
 //! - M13: Symlink cycle detection (walkdir with inode tracking)
@@ -17,9 +18,6 @@ use walkdir::{DirEntry, WalkDir};
 use crate::error::TldrError;
 use crate::types::{FileTree, IgnoreSpec, NodeType};
 use crate::TldrResult;
-
-/// Maximum file size to process (5MB) - M6 mitigation
-pub const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024;
 
 /// Default directories to skip during traversal.
 ///

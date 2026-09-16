@@ -7,7 +7,7 @@
 //! # Security Mitigations
 //!
 //! - TIGER-P3-01: Socket path validation (no temp dir escapes)
-//! - TIGER-P3-03: Message size limits (10MB max) to prevent OOM
+//! - TIGER-P3-03: Message size limits (64 MiB max) to prevent OOM
 //! - TIGER-P3-04: Symlink rejection at socket path
 //! - Unix sockets created with 0600 permissions (owner-only)
 //!
@@ -30,10 +30,20 @@ use crate::commands::daemon::types::{DaemonCommand, DaemonResponse};
 // Constants
 // =============================================================================
 
-/// Maximum message size in bytes (10MB)
+/// Maximum message size in bytes (64 MiB).
+///
 /// This prevents malicious clients from causing OOM via oversized messages.
-/// (TIGER-P3-03)
-pub const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
+/// (TIGER-P3-03) Sized for the payload class the daemon actually ships:
+/// structure / explain / extract responses for very large single files. The
+/// source-side ceiling is the tree-sitter u32 node-offset limit
+/// (`tldr_core::fs::oversize::MAX_FILE_SIZE_BYTES` = 4 GiB − 1), so a
+/// single-file structure payload with thousands of definitions can be orders
+/// of magnitude larger than the historical 10 MiB budget allowed — large
+/// payloads were being rejected at the IPC gate after the size policy had
+/// admitted the file. Framing logic is unchanged: newline-delimited JSON,
+/// with the bounded read still capped at `MAX_MESSAGE_SIZE + 1` before any
+/// allocation.
+pub const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
 
 /// Connection timeout in seconds
 pub const CONNECTION_TIMEOUT_SECS: u64 = 5;
@@ -656,8 +666,8 @@ mod tests {
 
     #[test]
     fn test_max_message_size_constant() {
-        // Verify 10MB limit
-        assert_eq!(MAX_MESSAGE_SIZE, 10 * 1024 * 1024);
+        // Verify 64MB limit
+        assert_eq!(MAX_MESSAGE_SIZE, 64 * 1024 * 1024);
     }
 
     #[test]

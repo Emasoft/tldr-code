@@ -11,21 +11,27 @@
 //!
 //! This module centralises the size policy:
 //!
-//! - **Normal source files**: 2 GiB cap (limits-stretch-v1, 2025-09 — was
-//!   10 MB; tree-sitter is RAM-bound, not size-bound, so the cap now targets
-//!   the 2 GB single-file navigation goal).
+//! - **Normal source files**: `u32::MAX` bytes (4 GiB − 1) cap. This is the
+//!   **tree-sitter technical ceiling**: tree-sitter stores node byte offsets
+//!   in `u32`, so no source larger than `u32::MAX` bytes can ever be parsed —
+//!   raising the cap past it would only move the failure from a clean
+//!   `FileTooLarge` skip to a bogus parse. The *practical* bound is RAM
+//!   (~5× file size including the syntax tree and analysis structures), not
+//!   this constant.
 //! - **Auto-generated / minified files** (`.d.ts`, `.min.js`,
-//!   `.min.css`, `.bundle.js`, `.bundle.css`): 64 MiB cap (was 512 KB).
+//!   `.min.css`, `.bundle.js`, `.bundle.css`): 512 MiB cap (was 64 MiB, and
+//!   512 KB before that).
 //!   These are
 //!   rarely valuable to analyse deeply (tens of thousands of
 //!   generated declarations or minified IIFEs) and are the most
 //!   common cause of pathological slowdowns. The historical 512 KB cap
 //!   was empirically chosen against the `ts-dom-gen` baselines tree
 //!   (60+ `*.generated.d.ts` artefacts in the 100 KB – 2.3 MB
-//!   range); limits-stretch-v1 raised it 128× so machine-generated
-//!   bundles are analyzed, while keeping the cap 32× below the
-//!   source-file cap preserves the 30 s-per-command guardrail for
-//!   directory walks.
+//!   range); limits-stretch-v1 raised it 128×, and the ceiling stretch
+//!   raised it again 8× to 512 MiB — still 8× below the tree-sitter
+//!   ceiling so the generated/minified skip heuristic keeps catching
+//!   genuinely pathological artefacts while the 30 s-per-command
+//!   guardrail for directory walks survives.
 //! - **Newline-delimited JSON** (`.jsonl` / `.ndjson`): no cap. These
 //!   files are streamed one JSON document per row
 //!   (`ast::jsonl::stream_jsonl`, bounded memory — one row in RAM at
@@ -50,31 +56,37 @@
 
 use std::path::Path;
 
-/// Maximum file size for normal source files, in bytes (2 GiB).
+/// Maximum file size for normal source files, in bytes (4 GiB − 1 =
+/// `u32::MAX`).
 ///
-/// limits-stretch-v1 (2025-09, "all tree-sitter formats" directive): raised
-/// from the historical 10 MB so that multi-hundred-MB generated sources and
-/// the 2 GB single-file navigation goal are admitted rather than skipped.
-/// tree-sitter (the binding library) imposes no source-size limit of its own
-/// — the real constraint is RAM (the syntax tree costs ~3-5× the source), so
-/// 2 GiB of source is the practical ceiling this tool commits to supporting.
-/// Note the trade-off: analysis time on a file this size is minutes, not
+/// This is the **tree-sitter technical ceiling**: tree-sitter stores node
+/// byte offsets in `u32`, so a source of `u32::MAX` bytes is the largest
+/// input that can ever be parsed — anything bigger cannot be represented in
+/// the tree and would fail deep inside the grammar, not at the policy gate.
+/// The cap therefore sits at exactly that ceiling (limits-stretch-v2 raised
+/// it from the limits-stretch-v1 2 GiB; the original cap was 10 MB).
+/// The *practical* bound is RAM, not this constant: a parsed file costs
+/// roughly 5× its size in memory (source string + syntax tree + analysis
+/// structures), so a file at the ceiling needs ~20 GiB of headroom. Note the
+/// trade-off: analysis time on a file this size is minutes, not
 /// milliseconds; whole-repo walks with several such files will be slow by
 /// choice.
-pub const MAX_FILE_SIZE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const MAX_FILE_SIZE_BYTES: u64 = u32::MAX as u64;
 
 /// Maximum file size for auto-generated or minified files, in bytes
-/// (64 MiB).
+/// (512 MiB).
 ///
 /// Applies to extensions reported as auto-gen by [`is_autogen_file`].
-/// limits-stretch-v1 (2025-09): raised 128× from the historical 512 KB —
-/// large machine-generated `.d.ts` bundles are now analyzed instead of
-/// skipped. The cap stays 32× below [`MAX_FILE_SIZE_BYTES`] on purpose:
-/// minified bundles are the most common trigger of super-linear analysis
-/// blowups (the `ts-dom-gen` 58 s whole-repo run that motivated the original
-/// cap), and a 30 s-per-command guardrail is still wanted for directory
-/// walks even when single files may be huge.
-pub const MAX_AUTOGEN_FILE_SIZE_BYTES: u64 = 64 * 1024 * 1024;
+/// limits-stretch-v1 (2025-09) raised this 128× from the historical 512 KB —
+/// large machine-generated `.d.ts` bundles are analyzed instead of skipped —
+/// and the ceiling stretch raised it another 8× to 512 MiB. The cap stays
+/// 8× below [`MAX_FILE_SIZE_BYTES`] on purpose: minified bundles are the
+/// most common trigger of super-linear analysis blowups (the `ts-dom-gen`
+/// 58 s whole-repo run that motivated the original cap), and keeping the
+/// skip heuristic 8× under the tree-sitter u32 ceiling preserves a
+/// meaningful generated/minified cut-off while the 30 s-per-command
+/// guardrail for directory walks survives.
+pub const MAX_AUTOGEN_FILE_SIZE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Suffixes that mark a file as auto-generated or minified.
 ///
@@ -303,8 +315,17 @@ mod tests {
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("huge.d.ts");
         // autogen cap + 1 byte: just over the auto-gen cap.
-        let bytes = vec![b'a'; (MAX_AUTOGEN_FILE_SIZE_BYTES as usize) + 1];
-        std::fs::write(&path, &bytes).unwrap();
+        //
+        // Sparse fixture: `File::set_len` extends the logical size to
+        // cap + 1 without writing cap + 1 bytes. `check_size` only
+        // stats the file (`md.len()`), never reads it, so the boundary
+        // decision is exercised identically at the REAL cap without a
+        // half-GiB temp write per test run (the cap grew 64 MiB →
+        // 512 MiB; materialising it would cost ~1.5 GiB across the
+        // three boundary tests below).
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(MAX_AUTOGEN_FILE_SIZE_BYTES + 1).unwrap();
+        drop(f);
         match check_size(&path) {
             SizeCheck::Oversize {
                 size_bytes,
@@ -324,9 +345,10 @@ mod tests {
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("borderline.d.ts");
         // Exactly the cap is allowed (the policy is "exceeds", not
-        // ">=").
-        let bytes = vec![b'a'; MAX_AUTOGEN_FILE_SIZE_BYTES as usize];
-        std::fs::write(&path, &bytes).unwrap();
+        // ">="). Sparse fixture — see the oversize sibling above.
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(MAX_AUTOGEN_FILE_SIZE_BYTES).unwrap();
+        drop(f);
         match check_size(&path) {
             SizeCheck::WithinLimit { size_bytes } => {
                 assert_eq!(size_bytes, MAX_AUTOGEN_FILE_SIZE_BYTES)
@@ -337,13 +359,15 @@ mod tests {
 
     #[test]
     fn check_size_within_limit_for_source_between_caps() {
-        // A non-autogen file above the auto-gen cap (64 MiB) but below
-        // the source cap (2 GiB) must NOT be flagged as oversize:
-        // the auto-gen cap doesn't apply to it.
+        // A non-autogen file above the auto-gen cap (512 MiB) but below
+        // the source cap (u32::MAX) must NOT be flagged as oversize:
+        // the auto-gen cap doesn't apply to it. Sparse fixture — see
+        // the oversize sibling above.
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("medium.ts");
-        let bytes = vec![b'a'; (MAX_AUTOGEN_FILE_SIZE_BYTES as usize) + 1024];
-        std::fs::write(&path, &bytes).unwrap();
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(MAX_AUTOGEN_FILE_SIZE_BYTES + 1024).unwrap();
+        drop(f);
         match check_size(&path) {
             SizeCheck::WithinLimit { .. } => {}
             other => panic!("expected WithinLimit, got {:?}", other),
@@ -371,7 +395,7 @@ mod tests {
     #[test]
     fn max_size_for_with_override_replaces_per_path_policy() {
         // The override applies regardless of the path's policy class —
-        // including source files (2 GiB) and autogen files (64 MiB),
+        // including source files (u32::MAX) and autogen files (512 MiB),
         // both far above any sane injected cap.
         for name in ["dom.ts", "dom.d.ts", "rows.jsonl"] {
             assert_eq!(
@@ -397,8 +421,8 @@ mod tests {
 
     #[test]
     fn check_size_with_override_flags_file_within_default_policy() {
-        // 4 KB is far below every per-path cap (2 GiB source / 64 MiB
-        // autogen / unlimited jsonl) but above the injected 1 KB cap —
+        // 4 KB is far below every per-path cap (u32::MAX source /
+        // 512 MiB autogen / unlimited jsonl) but above the injected 1 KB cap —
         // exactly the situation the warm-pass test hook exists for.
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("medium.py");

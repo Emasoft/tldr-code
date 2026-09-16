@@ -182,9 +182,6 @@ pub fn should_exclude(path: &Path, patterns: &[String]) -> bool {
 // Constants
 // =============================================================================
 
-/// Default maximum file size in bytes (10MB)
-pub const DEFAULT_MAX_FILE_SIZE: usize = 10 * 1024 * 1024;
-
 /// Default maximum file size in megabytes
 pub const DEFAULT_MAX_FILE_SIZE_MB: usize = 10;
 

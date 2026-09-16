@@ -66,5 +66,5 @@ pub use types::{
 pub use file_utils::{
     check_file_size, contains_path_traversal, has_binary_extension, is_path_within_project,
     is_symlink, resolve_symlink_safely, should_exclude, should_skip_path, skip_directories,
-    walk_source_files, WalkOptions, DEFAULT_MAX_FILE_SIZE, DEFAULT_MAX_FILE_SIZE_MB,
+    walk_source_files, WalkOptions, DEFAULT_MAX_FILE_SIZE_MB,
 };

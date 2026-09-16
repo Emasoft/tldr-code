@@ -43,7 +43,9 @@ use crate::output::OutputFormat;
 // Constants
 // =============================================================================
 
-/// Maximum file size to analyze (10 MB).
+/// Maximum file size to analyze — unified with the central oversize policy
+/// (`tldr_core::fs::oversize::MAX_FILE_SIZE_BYTES`, the tree-sitter u32
+/// ceiling).
 ///
 /// Per-file safety cap for the parser: an oversized file can tie up
 /// the tree-sitter parser or the line-scanner indefinitely. Unrelated
@@ -52,7 +54,11 @@ use crate::output::OutputFormat;
 /// cap — the legacy `MAX_DIRECTORY_FILES = 1000` cap was removed in
 /// VAL-006 because it silently truncated input on medium-to-large
 /// repos).
-const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+// why: this duplicated the crate's own oversize policy as a separate
+// hardcoded literal (10 MB), which the parse-based analysis path already
+// enforces a second time via `tldr_core::fs::oversize::check_size`. Reuse
+// the single source of truth so the two gates cannot silently drift apart.
+const MAX_FILE_SIZE: u64 = tldr_core::fs::oversize::MAX_FILE_SIZE_BYTES;
 
 // =============================================================================
 // CLI Arguments

@@ -31,6 +31,18 @@
   5 MB → 4 GiB — which also kills the old (5, 10] MB dual-cap hard-fail gap — and `.jsonl` is
   uncapped. The daemon warm pass's cap is injectable via `DaemonConfig.max_file_size` (default
   unchanged).
+  Extended by the ceiling stretch: source cap 2 GiB → 4 GiB − 1 (`u32::MAX`) — tree-sitter
+  stores node byte offsets in `u32`, so that is the largest input that can ever be parsed; the
+  practical bound is RAM (~5× file size), not the constant. The parse-pool cap moves to the
+  same ceiling (the old "4 GiB" literal was `2^32`, one byte past what u32 offsets can address),
+  so policy-passing files can no longer be rejected for size downstream. Autogen cap 64 MiB →
+  512 MiB (still 8× under the ceiling so the generated/minified skip heuristic stays
+  meaningful). The three command-local 10 MiB caps (`contracts`, `patterns`, `vuln`) now alias
+  `fs::oversize::MAX_FILE_SIZE_BYTES` instead of hard-coding literals, and two dead constants
+  were deleted (`fs::tree::MAX_FILE_SIZE`, `metrics::file_utils::DEFAULT_MAX_FILE_SIZE`). The
+  parser no longer double-copies every file: valid UTF-8 is moved into the source `String`
+  (zero-copy); only invalid UTF-8 pays for one lossy copy. Daemon IPC message limit 10 MiB →
+  64 MiB for large structure/explain payloads; framing unchanged.
 - **Single-file language resolution.** `tldr structure <file>` and `tldr search <root> <file>`
   resolve the language from the file's extension first, so `config.json` reports `json` instead of
   falling through to the parent directory's dominant language (which now excludes the formats) or

@@ -5,7 +5,9 @@
 //!
 //! # Mitigations Addressed
 //! - M1: Tree-sitter version matching (use pinned versions)
-//! - M2: Unicode/encoding handling (use from_utf8_lossy)
+//! - M2: Unicode/encoding handling (validate UTF-8 first — zero-copy move —
+//!   then fall back to lossy conversion only for invalid bytes; wide
+//!   encodings are rejected up front)
 //! - M13: Reuse parsers to reduce memory (parser pool)
 
 use std::collections::HashMap;
@@ -18,17 +20,25 @@ use crate::error::TldrError;
 use crate::types::Language as TldrLanguage;
 use crate::TldrResult;
 
-/// Maximum in-memory source size the parser pool will parse (4 GiB).
+/// Maximum in-memory source size the parser pool will parse
+/// (`u32::MAX` bytes = 4 GiB − 1 — the exact tree-sitter ceiling).
 ///
-/// limits-stretch-v1 (2025-09, "all tree-sitter formats" directive): the
-/// historical 5 MB M6 cap fought the centralized 10 MB size policy in
-/// `fs::oversize` — files in (5 MB, 10 MB] passed the policy check and then
-/// hard-failed here with a confusing "File too large: ... (max 5242880)".
-/// tree-sitter itself is memory-bound (no hard source-size limit; the tree
-/// costs ~3-5× the source in RAM), so the cap now sits ABOVE the policy cap
-/// (2 GiB, see `fs::oversize::MAX_FILE_SIZE_BYTES`) with headroom. Source
-/// strings enter this pool only after the caller-side policy check.
-pub const MAX_PARSE_SIZE: usize = 4 * 1024 * 1024 * 1024;
+/// Why not a round "4 GiB": tree-sitter stores node byte offsets in `u32`,
+/// so the largest parseable source is `u32::MAX` = 2^32 − 1 bytes. The old
+/// literal `4 * 1024 * 1024 * 1024` = 2^32 was one byte PAST that ceiling —
+/// a source that size could never have parsed anyway. The cap now equals the
+/// ceiling exactly and is aligned with the read-side policy cap
+/// (`fs::oversize::MAX_FILE_SIZE_BYTES`, also `u32::MAX as u64`), so a file
+/// that passes the policy check can never be rejected here for size: source
+/// strings enter this pool only after the caller-side policy check, and
+/// `String::from_utf8` on valid UTF-8 preserves the byte length.
+///
+/// History: the historical 5 MB M6 cap fought the centralized 10 MB size
+/// policy in `fs::oversize` — files in (5 MB, 10 MB] passed the policy check
+/// and then hard-failed here with a confusing "File too large: ... (max
+/// 5242880)". limits-stretch-v1 lifted it above the policy cap of the time;
+/// limits-stretch-v2 pins both to the same u32 ceiling.
+pub const MAX_PARSE_SIZE: u64 = u32::MAX as u64;
 
 /// TypeScript / JavaScript grammar dialect.
 ///
@@ -223,7 +233,7 @@ impl ParserPool {
         path: Option<&Path>,
     ) -> TldrResult<Tree> {
         // Check file size - M6 mitigation
-        if source.len() > MAX_PARSE_SIZE {
+        if (source.len() as u64) > MAX_PARSE_SIZE {
             return Err(TldrError::ParseError {
                 file: path
                     .map(|p| p.to_path_buf())
@@ -339,8 +349,9 @@ impl ParserPool {
         // through (structure, calls, smells, dead, secure, …), so
         // applying the cap here gives uniform skip behaviour across
         // commands. Auto-generated / minified files (`.d.ts`,
-        // `.min.js`, `.bundle.css`, …) get a stricter 64 MiB cap;
-        // normal source files keep the 2 GiB cap (limits-stretch-v1).
+        // `.min.js`, `.bundle.css`, …) get a stricter 512 MiB cap;
+        // normal source files keep the u32::MAX (4 GiB − 1) cap — the
+        // tree-sitter node-offset ceiling (limits-stretch-v2).
         // See `crate::fs::oversize` for the full policy.
         // WithinLimit / Unknown: fall through to the existing read path.
         // `Unknown` (stat failed) lets the existing I/O error handling
@@ -413,8 +424,22 @@ impl ParserPool {
             });
         }
 
-        // Convert to string with lossy UTF-8 handling
-        let source = String::from_utf8_lossy(&bytes).to_string();
+        // Convert to string, avoiding a copy for valid UTF-8. The old
+        // `String::from_utf8_lossy(&bytes).to_string()` always copied —
+        // even when the bytes were already valid UTF-8 (the common case),
+        // doubling peak memory on every file: the raw `Vec<u8>` AND its
+        // `String` clone were both live. `String::from_utf8` instead MOVES
+        // the buffer when the bytes are valid UTF-8 (zero-copy; the
+        // `Vec<u8>` is consumed), and only the invalid-UTF-8 fallback pays
+        // for one lossy copy (`FromUtf8Error::as_bytes` hands back the
+        // original bytes, so the lossy result is byte-identical to what
+        // `from_utf8_lossy(&bytes)` produced before). Wide encodings
+        // (UTF-16/32) were already rejected above, so this is purely a
+        // memory win with no behaviour change.
+        let source = match String::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        };
 
         // Parse the source, passing the path so the TSX dialect is picked
         // up for `.tsx` / `.jsx` files.

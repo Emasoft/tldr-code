@@ -18,9 +18,15 @@ use super::error::{ContractsError, ContractsResult};
 // Resource Limits (TIGER Mitigations)
 // =============================================================================
 
-/// Maximum file size for analysis (10 MB).
-/// Files larger than this will be rejected (TIGER-04 partial mitigation).
-pub const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+/// Maximum file size for analysis — unified with the central oversize policy
+/// (`tldr_core::fs::oversize::MAX_FILE_SIZE_BYTES`, the tree-sitter u32
+/// ceiling). Files larger than this will be rejected (TIGER-04 partial
+/// mitigation).
+// why: this duplicated the crate's own oversize policy as a separate
+// hardcoded literal (10 MB), which the parse-based analysis path already
+// enforces a second time via `tldr_core::fs::oversize::check_size`. Reuse
+// the single source of truth so the two gates cannot silently drift apart.
+pub const MAX_FILE_SIZE: u64 = tldr_core::fs::oversize::MAX_FILE_SIZE_BYTES;
 
 /// Warning threshold for file size (1 MB).
 /// Files larger than this emit a warning but are still processed.
@@ -741,11 +747,16 @@ mod tests {
         let temp = tempdir().unwrap();
         let _large_file = temp.path().join("large.txt");
 
-        // Write a file just over the limit (we can't actually create 10MB in tests easily,
-        // so we'll test the logic with a mock)
+        // Write a file just over the limit (we can't actually create a
+        // u32::MAX-byte file in tests easily, so we'll test the logic
+        // with a mock)
         // For now, just verify the constant value.
         let max_file_size = std::hint::black_box(MAX_FILE_SIZE);
-        assert_eq!(max_file_size, 10 * 1024 * 1024);
+        assert_eq!(
+            max_file_size,
+            tldr_core::fs::oversize::MAX_FILE_SIZE_BYTES,
+            "MAX_FILE_SIZE must stay unified with the central oversize policy"
+        );
     }
 
     #[test]
@@ -775,7 +786,11 @@ mod tests {
     #[test]
     fn test_resource_limits_constants() {
         // Verify TIGER mitigation constants have sensible values
-        assert_eq!(MAX_FILE_SIZE, 10 * 1024 * 1024); // 10 MB
+        assert_eq!(
+            MAX_FILE_SIZE,
+            tldr_core::fs::oversize::MAX_FILE_SIZE_BYTES,
+            "MAX_FILE_SIZE must stay unified with the central oversize policy"
+        );
         assert_eq!(MAX_CFG_DEPTH, 1000); // TIGER-03
         assert_eq!(MAX_SSA_NODES, 100_000); // TIGER-04
         assert_eq!(MAX_AST_DEPTH, 100); // TIGER-08

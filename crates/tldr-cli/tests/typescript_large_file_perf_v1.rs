@@ -12,9 +12,11 @@
 //! [`tldr_core::fs::oversize`] and enforces it at file-read time in
 //! [`tldr_core::ast::parser::parse_file_with_lang`]. Auto-generated
 //! / minified artefacts (`.d.ts`, `.min.js`, `.bundle.css`, …) get a
-//! stricter cap; normal source files get the general cap. Since
-//! limits-stretch-v1 (2025-09) those caps are 64 MiB and 2 GiB
-//! respectively (up from the historical 512 KB / 10 MB) — see
+//! stricter cap; normal source files get the general cap. Since the
+//! ceiling stretch (2025-09) those caps are 512 MiB and `u32::MAX`
+//! (4 GiB − 1 — the tree-sitter node-offset ceiling) respectively
+//! (up from the historical 512 KB / 10 MB, and from 64 MiB / 2 GiB
+//! under limits-stretch-v1) — see
 //! [`tldr_core::fs::oversize::MAX_AUTOGEN_FILE_SIZE_BYTES`] and
 //! [`tldr_core::fs::oversize::MAX_FILE_SIZE_BYTES`]. Oversize files
 //! surface as a structured warning + a non-zero `files_skipped`
@@ -26,11 +28,12 @@
 //!
 //! Fixture budget: these are CLI end-to-end tests, so no fixture is
 //! larger than ~1 MB. Under the stretched caps the smallest file the
-//! policy actually skips is 64 MiB + 1 byte (autogen) or 2 GiB + 1
-//! byte (source), so the two oversize-skip cases are `#[ignore]`-gated
-//! opt-ins — their fixtures are derived from the real constants
-//! (64 MiB + 16 KB and 1.5 × 64 MiB) and are stat-checked, never
-//! parsed, so the opt-in runs themselves stay fast. Everything else
+//! policy actually skips is 512 MiB + 1 byte (autogen) or 4 GiB − 1 +
+//! 1 byte (source), so the two oversize-skip cases are
+//! `#[ignore]`-gated opt-ins — their fixtures are derived from the
+//! real constants (512 MiB + 16 KB and 1.5 × 512 MiB) and are
+//! stat-checked, never parsed, so the opt-in runs themselves stay
+//! fast. Everything else
 //! here runs on small fixtures and pins the CURRENT policy
 //! observably: what used to be "a 768 KB `.d.ts` is skipped" is now
 //! "a 768 KB `.d.ts` is analysed".
@@ -76,8 +79,8 @@ fn structure_json(dir: &Path) -> Result<serde_json::Value, String> {
 /// lifetime.
 ///
 /// The bad file is sized at the REAL auto-gen cap
-/// ([`MAX_AUTOGEN_FILE_SIZE_BYTES`]) + 16 KB so it crosses the
-/// current 64 MiB threshold. That is far beyond the ~1 MB fixture
+/// ([`MAX_AUTOGEN_FILE_SIZE_BYTES`]) + 16 KB so it crosses the current
+/// 512 MiB threshold. That is far beyond the ~1 MB fixture
 /// budget of the default suite (and beyond the ~10 MB CLI-test
 /// budget generally), which is why the only test using this helper is
 /// `#[ignore]`-gated. The oversized file is stat-checked by the size
@@ -253,15 +256,15 @@ fn test_normal_ts_file_below_source_cap_not_skipped() {
 /// include the oversize file, and `warnings` must name it.
 ///
 /// **Why `#[ignore]`:** under the stretched policy the auto-gen cap is
-/// [`MAX_AUTOGEN_FILE_SIZE_BYTES`] (64 MiB), so the smallest fixture
-/// that crosses it is 64 MiB + 16 KB — far beyond the ~10 MB fixture
+/// [`MAX_AUTOGEN_FILE_SIZE_BYTES`] (512 MiB), so the smallest fixture
+/// that crosses it is 512 MiB + 16 KB — far beyond the ~10 MB fixture
 /// budget for CLI end-to-end tests. The oversized file is
 /// stat-checked, never parsed, so the run itself is fast in either
 /// profile. Opt-in:
 ///
 /// `timeout 600 cargo test -p tldr-cli --test typescript_large_file_perf_v1 -- --ignored test_skip_oversize_file_with_warning`
 #[test]
-#[ignore = "requires a 64 MiB + 16 KB fixture (MAX_AUTOGEN_FILE_SIZE_BYTES + 16 KB) to cross the stretched auto-gen cap; see doc comment for the opt-in command"]
+#[ignore = "requires a 512 MiB + 16 KB fixture (MAX_AUTOGEN_FILE_SIZE_BYTES + 16 KB) to cross the stretched auto-gen cap; see doc comment for the opt-in command"]
 fn test_skip_oversize_file_with_warning() {
     let dir = make_oversize_dts_dir();
 
@@ -333,21 +336,21 @@ fn test_skip_oversize_file_with_warning() {
 /// "auto-generated/minified files" warning label).
 ///
 /// **Why `#[ignore]`:** the straddle band under the stretched policy
-/// is (64 MiB, 2 GiB); the smallest honest fixture is
-/// 1.5 × [`MAX_AUTOGEN_FILE_SIZE_BYTES`] = 96 MiB — far beyond the
+/// is (512 MiB, 4 GiB − 1); the smallest honest fixture is
+/// 1.5 × [`MAX_AUTOGEN_FILE_SIZE_BYTES`] = 768 MiB — far beyond the
 /// ~10 MB fixture budget. The oversized file is stat-checked, never
 /// parsed, so the run itself is fast in either profile. Opt-in:
 ///
 /// `timeout 600 cargo test -p tldr-cli --test typescript_large_file_perf_v1 -- --ignored test_dts_files_have_lower_cap`
 #[test]
-#[ignore = "requires a 96 MiB fixture (1.5 x MAX_AUTOGEN_FILE_SIZE_BYTES) to straddle the stretched caps; see doc comment for the opt-in command"]
+#[ignore = "requires a 768 MiB fixture (1.5 x MAX_AUTOGEN_FILE_SIZE_BYTES) to straddle the stretched caps; see doc comment for the opt-in command"]
 fn test_dts_files_have_lower_cap() {
     let dir = tempdir().unwrap();
 
     // 1.5x the real auto-gen cap: strictly inside the (auto-gen,
     // source) straddle band. Sized deliberately so the auto-gen
     // branch is provably the rule that applied (a source-capped file
-    // would need 2 GiB).
+    // would need to reach the u32::MAX ceiling).
     let target_bytes =
         MAX_AUTOGEN_FILE_SIZE_BYTES as usize + MAX_AUTOGEN_FILE_SIZE_BYTES as usize / 2;
     assert!(
@@ -395,5 +398,177 @@ fn test_dts_files_have_lower_cap() {
          category (so users know why a sub-source-cap file was \
          rejected when the headline cap is the source cap); got: {}",
         warning
+    );
+}
+
+// =============================================================================
+// Ceiling-stretch opt-in e2e: ~80 MB single file, FEW large functions
+// =============================================================================
+
+/// Size class this e2e exists to prove: comfortably above the
+/// historical 64 MiB auto-gen cap (the size class that used to be
+/// auto-skipped) and far into the read/parse path toward the
+/// tree-sitter u32 ceiling.
+const TARGET_FILE_BYTES: usize = 80 * 1024 * 1024;
+
+/// Functions in the generated fixture — FEW functions, each huge.
+const FIXTURE_FUNCTION_COUNT: usize = 50;
+
+/// Statements per function — several hundred, each ~4 KB of payload.
+const FIXTURE_STATEMENTS_PER_FUNCTION: usize = 400;
+
+/// Bytes of string-literal payload per statement. 400 statements ×
+/// ~4 016 bytes ≈ 1.6 MB per function; × 50 functions ≈ 80 MB.
+const STATEMENT_PAYLOAD_BYTES: usize = 4000;
+
+/// Build the body of one huge but structurally trivial TypeScript
+/// function: `FIXTURE_STATEMENTS_PER_FUNCTION` `const` declarations,
+/// each a single ~`STATEMENT_PAYLOAD_BYTES`-byte ASCII string literal.
+///
+/// Deliberate shape choice: the file is enormous in BYTES but small in
+/// AST NODES (a string literal is a handful of nodes regardless of its
+/// byte length), so this exercises the READ + PARSE + EXTRACT path at
+/// the target scale (the thing the size policy gates) rather than
+/// spending the entire budget on a 40M-node walk. Payload is plain
+/// 'A' ASCII — valid UTF-8, so the parser's zero-copy move path is
+/// the one exercised. No call expressions anywhere, so the per-file
+/// `definitions` array contains exactly the 50 `kind: "function"`
+/// rows.
+fn build_big_function(idx: usize) -> String {
+    let payload = "A".repeat(STATEMENT_PAYLOAD_BYTES);
+    let mut out = String::with_capacity(
+        FIXTURE_STATEMENTS_PER_FUNCTION * (STATEMENT_PAYLOAD_BYTES + 32) + 128,
+    );
+    out.push_str(&format!(
+        "export function bigFunction{idx:02}(acc: number): number {{\n"
+    ));
+    for stmt in 0..FIXTURE_STATEMENTS_PER_FUNCTION {
+        out.push_str(&format!("  const s{idx:02}_{stmt:04} = \"{payload}\";\n"));
+    }
+    out.push_str("  return acc;\n}\n");
+    out
+}
+
+/// OPT-IN e2e — ceiling-stretch read path: `tldr structure` on an
+/// ~80 MB TypeScript file containing FEW large functions (50 functions
+/// × 400 statements each).
+///
+/// **What this proves** (and the default suite cannot, because every
+/// fixture there is ≤ ~1 MB):
+/// 1. The central oversize policy admits an ~80 MB single-file source
+///    (above the historical 64 MiB auto-gen cap, far below both
+///    current caps — autogen is 512 MiB, source is the tree-sitter
+///    `u32::MAX` ceiling), so the read path must take the file whole.
+/// 2. The parser handles a file this size end-to-end with the
+///    zero-copy UTF-8 conversion (valid UTF-8 is moved, not cloned —
+///    the old code double-copied every file).
+/// 3. Structure extraction stays correct at scale: exit 0, no
+///    `files_skipped`, no `warnings`, and exactly
+///    [`FIXTURE_FUNCTION_COUNT`] function definitions.
+///
+/// **Why `#[ignore]`:** generates an ~80 MB fixture and parses it —
+/// seconds of wall time and hundreds of MB of RAM, both unacceptable
+/// for a default `make test` profile. It does NOT run by default;
+/// run it explicitly, once per policy change, in release:
+///
+/// `timeout 900 cargo test -p tldr-cli --test typescript_large_file_perf_v1 --release -- --ignored test_structure_handles_80mb_few_large_functions`
+#[test]
+#[ignore = "generates and parses an ~80 MB TypeScript fixture (50 functions x 400 statements) to prove the ceiling-stretch read path; run in release with -- --ignored <name>, see doc comment"]
+fn test_structure_handles_80mb_few_large_functions() {
+    let dir = tempdir().unwrap();
+    let fixture = dir.path().join("big_few_functions.ts");
+
+    // ---- Generate the ~80 MB fixture. 50 functions, each with 400
+    // ~4 KB statements; verify the size band before spending the
+    // parse budget on it.
+    let started_gen = Instant::now();
+    let mut bytes: Vec<u8> = Vec::with_capacity(TARGET_FILE_BYTES + 1024 * 1024);
+    for idx in 0..FIXTURE_FUNCTION_COUNT {
+        bytes.extend_from_slice(build_big_function(idx).as_bytes());
+    }
+    let size = bytes.len();
+    assert!(
+        size > 64 * 1024 * 1024,
+        "fixture invariant: the file must exceed the historical 64 MiB \
+         auto-gen cap to exercise the ceiling-stretch read path; got {size} bytes"
+    );
+    assert!(
+        (size as u64) < MAX_AUTOGEN_FILE_SIZE_BYTES,
+        "fixture invariant: the file must sit below the current 512 MiB \
+         auto-gen cap so the source-cap path (not a skip) is what fires; \
+         got {size} bytes"
+    );
+    assert!(
+        (size as u64) < MAX_FILE_SIZE_BYTES,
+        "fixture invariant: the file must sit below the tree-sitter \
+         u32::MAX source cap; got {size} bytes"
+    );
+    fs::write(&fixture, &bytes).unwrap();
+    eprintln!(
+        "fixture: {} bytes ({:.1} MB) generated in {:?}",
+        size,
+        size as f64 / (1024.0 * 1024.0),
+        started_gen.elapsed()
+    );
+    drop(bytes);
+
+    // ---- Run `tldr structure` end-to-end. `structure_json` asserts
+    // exit 0 (it returns Err on non-success status).
+    let started = Instant::now();
+    let report = structure_json(dir.path()).unwrap_or_else(|e| panic!("{e}"));
+    let elapsed = started.elapsed();
+    eprintln!("tldr structure on ~80 MB: {elapsed:?}");
+
+    // ---- No skip indicators: `files_skipped` and `warnings` are
+    // additive fields, omitted entirely on a clean scan.
+    assert!(
+        report.get("files_skipped").is_none(),
+        "an ~80 MB source file below every current cap MUST NOT be \
+         skipped; report={}",
+        report
+    );
+    assert!(
+        report.get("warnings").is_none(),
+        "an ~80 MB source file below every current cap must produce no \
+         warnings; report={}",
+        report
+    );
+
+    // ---- Exactly the one fixture file was analysed.
+    let files = report
+        .get("files")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        files.len(),
+        1,
+        "the scan must analyse exactly the one fixture file; report={}",
+        report
+    );
+
+    // ---- And all 50 large functions were extracted. The fixture
+    // contains no call expressions, so the function-kind rows are the
+    // complete picture; count only `kind == "function"` so unrelated
+    // definition kinds (constants would be future additions) cannot
+    // mask a lost function.
+    let file_entry = &files[0];
+    let definitions = file_entry
+        .get("definitions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let function_count = definitions
+        .iter()
+        .filter(|d| d.get("kind").and_then(|k| k.as_str()) == Some("function"))
+        .count();
+    assert_eq!(
+        function_count,
+        FIXTURE_FUNCTION_COUNT,
+        "structure must extract exactly {} functions from the ~80 MB \
+         fixture; got {}; definitions={}",
+        FIXTURE_FUNCTION_COUNT,
+        function_count,
+        serde_json::to_string(&definitions).unwrap_or_default()
     );
 }
