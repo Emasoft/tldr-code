@@ -41,6 +41,14 @@ use tldr_core::{
 // =============================================================================
 
 /// Provide comprehensive function analysis.
+///
+/// # Performance
+///
+/// Caller/callee traversal scans the enclosing project to build the call
+/// graph and run the reference search: ~0.1s for a single file, seconds for
+/// small trees, and minutes for large repos. Use `--scope <dir>` to bound
+/// the scan to a subtree, or `--no-callers` when you only need
+/// function-local facts (signature, purity, complexity, callees).
 #[derive(Debug, Clone, Args)]
 pub struct ExplainArgs {
     /// Source file to analyze
@@ -49,9 +57,20 @@ pub struct ExplainArgs {
     /// Function name to explain
     pub function: String,
 
-    /// Call graph depth for callers/callees
+    /// Call graph depth for callers/callees (bounds the project-graph caller traversal)
     #[arg(long, default_value = "2")]
     pub depth: u32,
+
+    /// Directory bounding caller/callee graph traversal and the reference
+    /// search, instead of the auto-detected project root
+    #[arg(long)]
+    pub scope: Option<PathBuf>,
+
+    /// Skip caller discovery entirely (per-file walker, project call graph,
+    /// and reference scans); `callers` is emitted empty, every other field
+    /// unchanged
+    #[arg(long)]
+    pub no_callers: bool,
 
     /// Output file (stdout if not specified)
     #[arg(long, short = 'o')]
@@ -213,6 +232,14 @@ fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         Language::Lua | Language::Luau => &["function_declaration", "function_definition"],
         Language::Elixir => &["call"], // Elixir def/defp are call nodes
         Language::Ocaml => &["value_definition"],
+        // Formats extension (2025-09): no functions in data/config documents.
+        Language::Json
+        | Language::Yaml
+        | Language::Toml
+        | Language::Xml
+        | Language::Html
+        | Language::Css
+        | Language::Bash => &[],
     }
 }
 
@@ -239,6 +266,14 @@ fn get_parser(language: Language) -> Result<Parser, RemainingError> {
         Language::Elixir => tree_sitter_elixir::LANGUAGE.into(),
         Language::Ocaml => tree_sitter_ocaml::LANGUAGE_OCAML.into(),
         Language::Swift => tree_sitter_swift::LANGUAGE.into(),
+        // Formats extension (2025-09)
+        Language::Json => tree_sitter_json::LANGUAGE.into(),
+        Language::Yaml => tree_sitter_yaml::LANGUAGE.into(),
+        Language::Toml => tree_sitter_toml_ng::LANGUAGE.into(),
+        Language::Xml => tree_sitter_xml::LANGUAGE_XML.into(),
+        Language::Html => tree_sitter_html::LANGUAGE.into(),
+        Language::Css => tree_sitter_css::LANGUAGE.into(),
+        Language::Bash => tree_sitter_bash::LANGUAGE.into(),
     };
 
     parser.set_language(&ts_language).map_err(|e| {
@@ -1782,9 +1817,14 @@ fn enrich_with_project_graph(
     file: &std::path::Path,
     function: &str,
     language: Language,
+    project_root: &std::path::Path,
+    depth: u32,
 ) {
-    let project_root = explain_project_root(file);
-    let graph = match build_project_call_graph(&project_root, language, None, true) {
+    // explain-scoping-v1 (issue #6): the root is supplied by the caller —
+    // `--scope <dir>` when set, the detected project root otherwise — so
+    // this traversal never re-detects (and never walks outside) the
+    // boundary the user chose.
+    let graph = match build_project_call_graph(project_root, language, None, true) {
         Ok(g) => g,
         Err(_) => return,
     };
@@ -1803,9 +1843,9 @@ fn enrich_with_project_graph(
     if let Ok(impact) = impact_analysis_with_ast_fallback(
         &graph,
         function,
-        1, // direct callers only (consistent with the per-file walker)
+        depth as usize, // explain-scoping-v1 (issue #6): `--depth` now bounds this traversal (was hard-coded 1); CLI u32 → tldr_core usize
         None,
-        &project_root,
+        project_root,
         language,
     ) {
         for tree in impact.targets.values() {
@@ -1982,7 +2022,7 @@ fn enrich_with_project_graph(
                 // call-graph edges) so downstream consumers see a
                 // homogeneous shape.
                 let display = canonical
-                    .strip_prefix(&project_root)
+                    .strip_prefix(project_root)
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| canonical.display().to_string());
                 callee.file = display;
@@ -2012,14 +2052,17 @@ fn enrich_with_references(
     file: &std::path::Path,
     function: &str,
     language: Language,
+    project_root: &std::path::Path,
 ) {
-    let project_root = explain_project_root(file);
+    // explain-scoping-v1 (issue #6): the root is supplied by the caller so
+    // the reference scan honors `--scope <dir>` instead of re-detecting the
+    // enclosing project.
     let mut options = ReferencesOptions::new();
     options.kinds = Some(vec![ReferenceKind::Call]);
     options.language = Some(language.as_str().to_string());
     options.limit = Some(500); // generous; explain doesn't need to return everything
 
-    let report_refs = match find_references(function, &project_root, &options) {
+    let report_refs = match find_references(function, project_root, &options) {
         Ok(r) => r,
         Err(_) => return,
     };
@@ -2050,7 +2093,7 @@ fn enrich_with_references(
                 bare_options.kinds = Some(vec![ReferenceKind::Call]);
                 bare_options.language = Some(language.as_str().to_string());
                 bare_options.limit = Some(500);
-                if let Ok(bare_refs) = find_references(bare, &project_root, &bare_options) {
+                if let Ok(bare_refs) = find_references(bare, project_root, &bare_options) {
                     let dot_pat = format!(".{}(", bare);
                     let space_pat = format!(".{} (", bare);
                     for r in &bare_refs.references {
@@ -2200,6 +2243,27 @@ impl ExplainArgs {
             return Err(RemainingError::file_not_found(&self.file).into());
         }
 
+        // explain-scoping-v1 (issue #6): resolve the root that bounds
+        // caller/callee enrichment below. `--scope <dir>` overrides project
+        // root detection so the call-graph build and the reference scan only
+        // walk the given subtree; without it, the enclosing project root is
+        // detected from `file` exactly as before. Canonicalize the scope so
+        // relative/symlinked paths compare cleanly against the call graph's
+        // path forms — same normalization `explain_project_root` applies to
+        // `file`; fall back to the literal path on canonicalize failure
+        // (e.g. macOS /var -> /private/var tmpdir shenanigans), mirroring
+        // `smells.rs`. Resolved even under `--no-callers` so an invalid
+        // `--scope` still fails fast.
+        let project_root: PathBuf = match &self.scope {
+            Some(scope) => {
+                if !scope.exists() {
+                    anyhow::bail!("--scope directory does not exist: {}", scope.display());
+                }
+                dunce::canonicalize(scope).unwrap_or_else(|_| scope.clone())
+            }
+            None => explain_project_root(&self.file),
+        };
+
         // Detect language from file extension
         let language = Language::from_path(&self.file)
             .ok_or_else(|| RemainingError::parse_error(&self.file, "Unsupported language"))?;
@@ -2260,6 +2324,14 @@ impl ExplainArgs {
             Language::Elixir => "elixir",
             Language::Ocaml => "ocaml",
             Language::Swift => "swift",
+            // Formats extension (2025-09)
+            Language::Json => "json",
+            Language::Yaml => "yaml",
+            Language::Toml => "toml",
+            Language::Xml => "xml",
+            Language::Html => "html",
+            Language::Css => "css",
+            Language::Bash => "bash",
         };
 
         // Build report
@@ -2301,28 +2373,52 @@ impl ExplainArgs {
         // Find callees
         report.callees = find_callees(func_node, source_bytes, &file_path, &local_functions);
 
-        // Find callers
-        report.callers = find_callers(root, source_bytes, &self.function, &file_path, func_kinds);
+        // Find callers. explain-scoping-v1 (issue #6): `--no-callers` skips
+        // caller discovery entirely. The per-file walker, the whole-project
+        // call-graph build, and the full-project reference scan below are
+        // the dominant cost of `explain` — they scale with repo size, not
+        // with the function being explained — so skipping them is the speed
+        // lever when only function-local facts are needed. The JSON schema
+        // is untouched: `callers` stays an empty Vec and is still serialized
+        // as []; signature, purity, complexity, and callees are all computed
+        // as usual.
+        if !self.no_callers {
+            report.callers =
+                find_callers(root, source_bytes, &self.function, &file_path, func_kinds);
 
-        // explain-cross-command-consistency-v1 (P11.BUG-AGG-1): the
-        // per-file walker above only sees callers/callees defined in the
-        // same source file. Enrich with cross-file results from the
-        // project-wide call graph used by `tldr impact` /
-        // `tldr references` / `tldr context` so the four commands agree
-        // on relationships. Same-file results are preserved; only
-        // additional cross-file edges get appended.
-        enrich_with_project_graph(&mut report, &self.file, &self.function, language);
+            // explain-cross-command-consistency-v1 (P11.BUG-AGG-1): the
+            // per-file walker above only sees callers/callees defined in the
+            // same source file. Enrich with cross-file results from the
+            // project-wide call graph used by `tldr impact` /
+            // `tldr references` / `tldr context` so the four commands agree
+            // on relationships. Same-file results are preserved; only
+            // additional cross-file edges get appended.
+            enrich_with_project_graph(
+                &mut report,
+                &self.file,
+                &self.function,
+                language,
+                &project_root,
+                self.depth,
+            );
 
-        // ux-and-explain-completeness-v1 (P12.AGG12-1): some languages
-        // under-report call edges in the project call graph (e.g. C#,
-        // Kotlin, Scala class-method invocations). For those, `tldr
-        // references` still surfaces real call sites via text+AST
-        // verification. Mirror that data source so explain's caller list
-        // matches the "real" set users see from `tldr references`.
-        // Path-aware dedup means same-file walker results and
-        // call-graph results that already populated the list won't be
-        // duplicated.
-        enrich_with_references(&mut report, &self.file, &self.function, language);
+            // ux-and-explain-completeness-v1 (P12.AGG12-1): some languages
+            // under-report call edges in the project call graph (e.g. C#,
+            // Kotlin, Scala class-method invocations). For those, `tldr
+            // references` still surfaces real call sites via text+AST
+            // verification. Mirror that data source so explain's caller list
+            // matches the "real" set users see from `tldr references`.
+            // Path-aware dedup means same-file walker results and
+            // call-graph results that already populated the list won't be
+            // duplicated.
+            enrich_with_references(
+                &mut report,
+                &self.file,
+                &self.function,
+                language,
+                &project_root,
+            );
+        }
 
         // Output based on format
         if writer.is_text() {
