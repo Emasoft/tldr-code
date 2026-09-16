@@ -579,7 +579,7 @@ fn resolve_indexed_path(root: &Path, rel_path: &Path) -> PathBuf {
 /// `StructureEntry` values directly, avoiding a tree-sitter parse. When `None`,
 /// the file is parsed with tree-sitter as before.
 fn process_file_results(
-    rel_path: &PathBuf,
+    rel_path: &Path,
     results: &[&Bm25Result],
     root: &Path,
     language: Language,
@@ -611,13 +611,13 @@ fn process_file_results(
                     // so per-window results stay separate cards when
                     // tree-sitter parsing fails (recall guarantee).
                     let key = (
-                        rel_path.clone(),
+                        rel_path.to_path_buf(),
                         format!("{}:{}", rel_path.display(), result.line_start),
                     );
                     let entry = local_dedup.entry(key).or_insert_with(|| EnrichedResult {
                         name: rel_path.display().to_string(),
                         kind: "module".to_string(),
-                        file: rel_path.clone(),
+                        file: rel_path.to_path_buf(),
                         line_range: (result.line_start, result.line_end),
                         signature: result.snippet.lines().next().unwrap_or("").to_string(),
                         callers: Vec::new(),
@@ -652,11 +652,11 @@ fn process_file_results(
 
         match enclosing {
             Some(entry) => {
-                let key = (rel_path.clone(), entry.name.clone());
+                let key = (rel_path.to_path_buf(), entry.name.clone());
                 let enriched = local_dedup.entry(key).or_insert_with(|| EnrichedResult {
                     name: entry.name.clone(),
                     kind: entry.kind.clone(),
-                    file: rel_path.clone(),
+                    file: rel_path.to_path_buf(),
                     line_range: (entry.line_start, entry.line_end),
                     signature: entry.signature.clone(),
                     callers: Vec::new(),
@@ -699,7 +699,7 @@ fn process_file_results(
                     .trim()
                     .to_string();
                 let key = (
-                    rel_path.clone(),
+                    rel_path.to_path_buf(),
                     format!("{}:{}", rel_path.display(), result.line_start),
                 );
                 local_dedup.entry(key).or_insert_with(|| EnrichedResult {
@@ -708,7 +708,7 @@ fn process_file_results(
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_else(|| rel_path.display().to_string()),
                     kind: "module".to_string(),
-                    file: rel_path.clone(),
+                    file: rel_path.to_path_buf(),
                     line_range: (result.line_start, result.line_end),
                     signature: sig,
                     callers: Vec::new(),
