@@ -70,6 +70,14 @@ mod var_types; // call resolution logic (strategies 0-9)
 // construction.
 pub(crate) use scanner::is_supported_language;
 
+// issue #89 (change-impact `.` prefix mismatch): crate-level handle on the
+// path normalizer that call-graph construction itself uses for every edge
+// key. `analysis::change_impact` must funnel git-detected / explicit changed
+// files through the SAME function, otherwise `./src/callee.py` (project
+// spelled `.`) or absolute detected paths can never equal the graph's
+// `src/callee.py` keys.
+pub(crate) use module_path::normalize_path_relative_to_root;
+
 // Phase 14: Builder V2 with parallel processing (canonical)
 pub mod builder_v2;
 

@@ -24,6 +24,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 
 use crate::callgraph::build_project_call_graph;
+use crate::callgraph::normalize_path_relative_to_root;
 use crate::fs::tree::{collect_files, get_file_tree};
 use crate::types::{FunctionRef, IgnoreSpec, Language, ProjectCallGraph};
 use crate::TldrResult;
@@ -352,6 +353,21 @@ pub fn change_impact_extended(
         }
     };
 
+    // issue #89: normalize every detected path to the project-root-relative
+    // form the call graph uses for its edge keys. Detection joins git output
+    // lines against `project`, so `tldr change-impact .` yields
+    // `./src/callee.py` and an absolute project yields absolute paths, while
+    // `build_project_call_graph` keys edges by `src/callee.py` (via
+    // `normalize_path_relative_to_root`). Un-normalized, every set lookup
+    // that crosses the boundary — reverse call-graph traversal in
+    // `find_affected_functions_with_depth` and step 3 of
+    // `find_affected_tests` — silently misses. Explicit `--files` entries go
+    // through the same boundary so both spellings agree.
+    let files: Vec<PathBuf> = files
+        .into_iter()
+        .map(|p| normalize_changed_path(project, &p))
+        .collect();
+
     // Filter to only files matching the target language
     let changed_files: Vec<PathBuf> = files
         .into_iter()
@@ -440,7 +456,8 @@ pub fn change_impact_extended(
     );
 
     // Extract test functions from affected test files (Phase 4)
-    let affected_test_functions = extract_test_functions_from_files(&affected_tests, language);
+    let affected_test_functions =
+        extract_test_functions_from_files(project, &affected_tests, language);
 
     Ok(ChangeImpactReport {
         changed_files,
@@ -521,14 +538,21 @@ fn classify_detection_error(err: &crate::error::TldrError) -> ChangeImpactStatus
 }
 
 /// Extract test functions from a list of test files
+///
+/// issue #89: `test_files` entries are project-root-relative (the normalized
+/// form used everywhere else in the report), so reads must resolve against
+/// the project root. `PathBuf::join` replaces the base for absolute entries,
+/// so previously-absolute paths keep working unchanged.
 fn extract_test_functions_from_files(
+    project: &Path,
     test_files: &[PathBuf],
     language: Language,
 ) -> Vec<TestFunction> {
     let mut test_functions = Vec::new();
 
     for file in test_files {
-        if let Ok(content) = std::fs::read_to_string(file) {
+        let path = project.join(file);
+        if let Ok(content) = std::fs::read_to_string(&path) {
             test_functions.extend(extract_test_functions_from_content(
                 file, &content, language,
             ));
@@ -683,6 +707,41 @@ fn extract_test_functions_from_content(
     }
 
     functions
+}
+
+/// Normalize a detected changed-file path into the project-root-relative
+/// form used by call-graph edge keys (issue #89).
+///
+/// why: detection joins git output lines against `project`, so the resulting
+/// keys carry whatever spelling the user invoked with (`./src/x.py` for
+/// `tldr change-impact .`, absolute for an absolute root) while call-graph
+/// edges are keyed by `normalize_path_relative_to_root` output
+/// (`src/x.py`). Funneling both through the SAME normalizer keeps the two
+/// sets comparable; idempotent for already-relative spellings.
+///
+/// Relative inputs are resolved against `project` FIRST (git lines and
+/// `--files` entries are both project-relative) — `Path::canonicalize`
+/// alone would resolve them against the process cwd instead.
+fn normalize_changed_path(project: &Path, path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project.join(path)
+    };
+    let canonical_root = project.canonicalize().ok();
+    let normalized = normalize_path_relative_to_root(&absolute, project, canonical_root.as_deref());
+    // Belt-and-braces: the shared normalizer's last-resort fallback can
+    // leave a leading `./`; call-graph edge keys never carry one.
+    strip_dot_slash_prefix(&normalized)
+}
+
+/// Remove any leading `./` segments from a normalized path (`././x` → `x`).
+fn strip_dot_slash_prefix(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    match s.strip_prefix("./") {
+        Some(rest) => PathBuf::from(rest.trim_start_matches("./")),
+        None => path.to_path_buf(),
+    }
 }
 
 /// Detect changed files using git diff HEAD (uncommitted changes vs HEAD)
@@ -988,7 +1047,15 @@ fn get_all_project_files(project: &Path, language: Language) -> TldrResult<Vec<P
         true,
         Some(&IgnoreSpec::default()),
     )?;
-    Ok(collect_files(&tree, project))
+    // issue #89: the walk yields `project.join(relative)` paths, so a `.`
+    // project produces `./src/test_x.py` and an absolute project produces
+    // absolute paths — neither matches the now-root-relative changed-file
+    // keys (nor the graph's edge keys) in `find_affected_tests`. Normalize
+    // to the same root-relative form as the changed side.
+    Ok(collect_files(&tree, project)
+        .into_iter()
+        .map(|p| normalize_changed_path(project, &p))
+        .collect())
 }
 
 /// Check if a file is a test file based on language conventions
@@ -1619,5 +1686,242 @@ func TestLogout(t *testing.T) {
         let report: ChangeImpactReport =
             serde_json::from_str(legacy_json).expect("legacy JSON should deserialize");
         assert_eq!(report.status, ChangeImpactStatus::Completed);
+    }
+
+    // =========================================================================
+    // issue #89: `./` / absolute path-prefix mismatch between git-detected
+    // changed files and call-graph edge keys.
+    //
+    // `parse_git_diff_output` / `detect_git_changes_uncommitted` build paths
+    // via `project.join(line)`, so `tldr change-impact .` yields
+    // `./src/callee.py` (and an absolute project yields an absolute path)
+    // while call-graph edges carry root-relative keys (`src/callee.py`,
+    // see `normalize_path_relative_to_root`). Every set lookup that crosses
+    // that boundary (reverse-graph traversal, `find_affected_tests` step 3)
+    // then silently misses.
+    // =========================================================================
+
+    /// git repo fixture: `src/callee.py` <- `src/caller.py` <-
+    /// `src/test_caller.py`, all committed; then `src/callee.py` is modified
+    /// so `git diff HEAD` reports exactly that one file.
+    fn init_caller_fixture(project: &Path) {
+        let src = project.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("callee.py"), "def called_func():\n    return 42\n").unwrap();
+        std::fs::write(
+            src.join("caller.py"),
+            "from callee import called_func\n\n\ndef caller_func():\n    return called_func()\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("test_caller.py"),
+            "from caller import caller_func\n\n\ndef test_caller():\n    assert caller_func() == 42\n",
+        )
+        .unwrap();
+
+        init_git_repo_with_one_commit(project);
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(project)
+                .output()
+                .expect("git should be available in the test environment");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: stdout={} stderr={}",
+                args,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["add", "src"]);
+        run(&["commit", "-q", "-m", "fixture"]);
+
+        // Touch the callee AFTER the commit so GitHead detection reports it.
+        std::fs::write(
+            project.join("src/callee.py"),
+            "def called_func():\n    return 42\n\n\n# touched\n",
+        )
+        .unwrap();
+    }
+
+    /// The issue's failing test: with git-detected changes, the reverse
+    /// traversal must find the caller and step 3 of `find_affected_tests`
+    /// must match the test file — both only work when the changed-file keys
+    /// share the call graph's root-relative path format.
+    #[test]
+    fn test_git_detected_changes_match_call_graph_paths() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path();
+        init_caller_fixture(project);
+
+        let report = change_impact_extended(
+            project,
+            DetectionMethod::GitHead,
+            Language::Python,
+            10,
+            true,
+            &[],
+            None,
+        )
+        .expect("GitHead on a repo with changes should return Ok");
+
+        assert_eq!(
+            report.status,
+            ChangeImpactStatus::Completed,
+            "expected a Completed report, got {:?}",
+            report.status
+        );
+
+        // changed_files keys must be project-root-relative — the format the
+        // call-graph edge keys use (`./src/callee.py` or an absolute path
+        // never matches `src/callee.py` edges).
+        assert_eq!(
+            report.changed_files,
+            vec![PathBuf::from("src/callee.py")],
+            "git-detected changed files must be normalized to root-relative keys, got {:?}",
+            report.changed_files
+        );
+
+        let names: HashSet<&str> = report
+            .affected_functions
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert!(
+            names.contains("called_func"),
+            "the changed function itself must be affected, got: {:?}",
+            names
+        );
+        assert!(
+            names.contains("caller_func"),
+            "BUG (issue #89): reverse traversal failed to find caller_func — \
+             path format mismatch prevents the HashMap lookup. Got: {:?}",
+            names
+        );
+
+        assert!(
+            report
+                .affected_tests
+                .contains(&PathBuf::from("src/test_caller.py")),
+            "BUG (issue #89): find_affected_tests step 3 must match the test \
+             file against call-graph edge keys. Got: {:?}",
+            report.affected_tests
+        );
+    }
+
+    /// Unit pin for the boundary normalizer: every spelling a user can
+    /// produce must reduce to the call graph's root-relative key.
+    #[test]
+    fn test_normalize_changed_path_strips_dot_slash_prefix() {
+        use tempfile::TempDir;
+
+        // `tldr change-impact .` joins git lines against Path::new("."),
+        // yielding "./src/callee.py" (and "././src/callee.py" once the
+        // helper re-roots it). Both must normalize to "src/callee.py"
+        // regardless of what exists relative to the process cwd.
+        let dot_joined = Path::new(".").join("./src/callee.py");
+        assert_eq!(
+            normalize_changed_path(Path::new("."), &dot_joined),
+            PathBuf::from("src/callee.py"),
+            "`.`-project spelling must strip the ./ prefix"
+        );
+        assert_eq!(
+            normalize_changed_path(Path::new("."), Path::new("./src/callee.py")),
+            PathBuf::from("src/callee.py"),
+            "already-joined ./ spelling must also strip"
+        );
+
+        // Absolute project + absolute detected path -> root-relative key.
+        let tmp = TempDir::new().unwrap();
+        let abs = tmp.path().join("src/callee.py");
+        std::fs::create_dir_all(abs.parent().unwrap()).unwrap();
+        std::fs::write(&abs, "def called_func():\n    return 42\n").unwrap();
+        assert_eq!(
+            normalize_changed_path(tmp.path(), &abs),
+            PathBuf::from("src/callee.py"),
+            "absolute detected path must normalize to the root-relative key"
+        );
+        assert_eq!(
+            normalize_changed_path(tmp.path(), Path::new("src/callee.py")),
+            PathBuf::from("src/callee.py"),
+            "plain relative spelling is already canonical"
+        );
+    }
+
+    /// Both explicit spellings — `--files src/callee.py` and
+    /// `--files ./src/callee.py` — must normalize to the same root-relative
+    /// changed_files keys (and therefore find the same affected set).
+    #[test]
+    fn test_explicit_dot_slash_spelling_matches_relative_spelling() {
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path();
+        let src = project.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("callee.py"), "def called_func():\n    return 42\n").unwrap();
+        std::fs::write(
+            src.join("test_caller.py"),
+            "from callee import called_func\n\n\ndef test_caller():\n    assert called_func() == 42\n",
+        )
+        .unwrap();
+
+        let relative = change_impact_extended(
+            project,
+            DetectionMethod::Explicit,
+            Language::Python,
+            10,
+            true,
+            &[],
+            Some(vec![PathBuf::from("src/callee.py")]),
+        )
+        .expect("explicit relative spelling should not error");
+
+        let dot_slash = change_impact_extended(
+            project,
+            DetectionMethod::Explicit,
+            Language::Python,
+            10,
+            true,
+            &[],
+            Some(vec![PathBuf::from("./src/callee.py")]),
+        )
+        .expect("explicit ./ spelling should not error");
+
+        assert_eq!(
+            relative.changed_files,
+            vec![PathBuf::from("src/callee.py")],
+            "the plain relative spelling must yield the root-relative key"
+        );
+        assert_eq!(
+            dot_slash.changed_files, relative.changed_files,
+            "BUG (issue #89): `./`-prefixed spelling must normalize to the same \
+             key as the plain spelling, got {:?} vs {:?}",
+            dot_slash.changed_files, relative.changed_files
+        );
+
+        // The dot-slash spelling must not lose the caller chain either.
+        let names: HashSet<&str> = dot_slash
+            .affected_functions
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert!(
+            names.contains("test_caller"),
+            "BUG (issue #89): reverse traversal with the `./` spelling missed the \
+             test-file caller. Got: {:?}",
+            names
+        );
+        assert!(
+            dot_slash
+                .affected_tests
+                .contains(&PathBuf::from("src/test_caller.py")),
+            "BUG (issue #89): affected_tests with the `./` spelling missed the test \
+             file. Got: {:?}",
+            dot_slash.affected_tests
+        );
     }
 }
