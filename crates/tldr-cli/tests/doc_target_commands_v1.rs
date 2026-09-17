@@ -689,6 +689,13 @@ fn whatbreaks_doc_target_change_impact_reports_skipped_not_failed() {
 /// Control: a CODE file target (Python) keeps the REAL change-impact run —
 /// `success: true` with data and no skip state. The skip gate must only
 /// trigger for languages outside the call-graph's supported set.
+///
+/// change-impact issue #89 contract: the report's `changed_files` keys are
+/// PROJECT-ROOT-RELATIVE (the call-graph's edge-key format) regardless of
+/// how the target was spelled on the command line, so an absolute target
+/// and its root-relative spelling produce identical keys. The pre-#89
+/// absolute spelling pinned here originally could never match a graph edge
+/// key, silently degrading the affected-functions/affected-tests lookups.
 #[test]
 fn whatbreaks_code_target_change_impact_still_runs() {
     let dir = build_python_project();
@@ -724,5 +731,29 @@ fn whatbreaks_code_target_change_impact_still_runs() {
     );
     assert!(ci["error"].is_null(), "{json}");
     assert!(ci["data"].is_object(), "real change-impact data: {json}");
-    assert_eq!(ci["data"]["changed_files"][0], target.to_str().unwrap());
+    // issue #89: changed_files keys are project-root-relative — the call
+    // graph's edge-key format — even when the CLI target was absolute.
+    assert_eq!(
+        ci["data"]["changed_files"][0], "service.py",
+        "absolute target normalizes to the root-relative key: {json}"
+    );
+
+    // The root-relative spelling of the same target agrees: both spellings
+    // reduce to the same #89-normalized key.
+    let (_, rel_json) = run_json(
+        &[
+            "whatbreaks",
+            "service.py",
+            root.to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(rel_json["target_type"], "file");
+    assert_eq!(
+        rel_json["sub_results"]["change-impact"]["data"]["changed_files"][0], "service.py",
+        "relative target already carries the root-relative key: {rel_json}"
+    );
 }
