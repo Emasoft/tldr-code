@@ -441,17 +441,27 @@ pub fn get_function_node_kinds(language: Language) -> &'static [&'static str] {
         ],
         Language::Swift => &["function_declaration", "init_declaration"],
         Language::Ocaml => &["let_binding", "value_definition"],
+        // Bash/shell: `function_definition` is a REAL, region-bearing
+        // function node (tree-sitter-bash node-types.json: required `name`
+        // field of type `word`, required `body` field) for both spellings —
+        // `build() { … }` and `function build { … }`. Name and body
+        // extraction ride the generic `name`/`body` field arms below
+        // (`get_function_name` / `get_function_body`), so no per-language
+        // arm is needed. Without this kind, `tldr body env.sh build` failed
+        // with "Function 'build' not found" even though `tldr structure
+        // env.sh` listed the function (the element engine emitted it).
+        Language::Bash => &["function_definition"],
         // Formats extension: no function nodes in data/config/markup docs;
         // markdown headings/code blocks/tables are not functions either;
         // plain-text TOC headings are not functions either; CSV/TSV
-        // records/cells are not functions either.
+        // records/cells are not functions either. (Bash is deliberately NOT
+        // in this block — see above.)
         Language::Json
         | Language::Yaml
         | Language::Toml
         | Language::Xml
         | Language::Html
         | Language::Css
-        | Language::Bash
         | Language::Latex
         | Language::Log
         | Language::Markdown
@@ -1989,5 +1999,45 @@ fn foo() -> u32 {
         // Contiguous doc comment + attribute block belong to the region.
         assert_eq!(start, 2, "bounds must start at the attached doc comment");
         assert_eq!(end, 6);
+    }
+
+    // -- Bash function kinds (bash-function-kinds-v1): `function_definition`
+    //    is a real, region-bearing function node for both spellings; name
+    //    extraction rides the generic `name` field arm (tree-sitter-bash
+    //    node-types.json: `function_definition.fields.name` is a required
+    //    `word` node). --
+
+    #[test]
+    fn test_bash_function_bounds_paren_spelling() {
+        let source = "say_hi() {\n  echo \"hi\"\n}\n\nsay_hi\n";
+        let (start, end) = find_function_bounds(source, "say_hi", Language::Bash)
+            .expect("bash function bounds must resolve for the `name() {` spelling");
+        assert_eq!(start, 1, "bounds must span the whole function_definition");
+        assert_eq!(end, 3);
+    }
+
+    #[test]
+    fn test_bash_function_bounds_function_keyword_spelling() {
+        let source = "function greet {\n  echo \"hello\"\n}\n";
+        let (start, end) = find_function_bounds(source, "greet", Language::Bash)
+            .expect("bash function bounds must resolve for the `function name {` spelling");
+        assert_eq!(start, 1);
+        assert_eq!(end, 3);
+    }
+
+    #[test]
+    fn test_bash_function_body_node_is_found() {
+        let source = "say_hi() {\n  echo \"hi\"\n}\n";
+        let tree = parse(source, Language::Bash).unwrap();
+        let root = tree.root_node();
+        let node = find_function_node(root, "say_hi", Language::Bash, source)
+            .expect("bash function_definition must be found by name");
+        assert_eq!(node.kind(), "function_definition");
+        let name = get_function_name(node, Language::Bash, source);
+        assert_eq!(name.as_deref(), Some("say_hi"));
+        assert!(
+            get_function_body(node, Language::Bash).is_some(),
+            "bash function_definition must expose its `body` field"
+        );
     }
 }

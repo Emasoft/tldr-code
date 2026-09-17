@@ -687,9 +687,21 @@ pub fn find_text_candidates(
 
 /// Check if file is a source file for the given language.
 ///
-/// Uses `Language::from_path` to support all 18 languages (Python, TypeScript,
-/// JavaScript, Go, Rust, Java, C, C++, Ruby, Kotlin, Swift, C#, Scala, PHP,
-/// Lua, Luau, Elixir, OCaml).
+/// Uses `Language::from_path` to classify the file, then compares it
+/// against the requested filter. ALL 31 `Language` variants are enumerated:
+/// the 18 code languages (Python, TypeScript, JavaScript, Go, Rust, Java, C,
+/// C++, Ruby, Kotlin, Swift, C#, Scala, PHP, Lua, Luau, Elixir, OCaml) AND
+/// the 13 doc/native formats (Markdown, Text, Log, Csv, Tsv, Json, Yaml,
+/// Toml, Xml, Html, Css, Bash, Latex).
+///
+/// The filter is deliberately ENUMERATED, not accept-all (`_ => true`): an
+/// unrecognized language string must keep returning `false` so a typo or a
+/// stale caller of the library API (`ReferencesOptions.language` is a plain
+/// `Option<String>`) can never silently widen the search to every
+/// recognized file. The no-filter arm below stays the only "accept
+/// everything recognized" path. Unknown strings are unreachable from the
+/// CLI — `--lang` is parsed through `Language::FromStr`, and the strings
+/// compared here are exactly what `Language::as_str` emits.
 fn is_source_file(path: &Path, language: Option<&str>) -> bool {
     match Language::from_path(path) {
         Some(detected) => {
@@ -699,6 +711,7 @@ fn is_source_file(path: &Path, language: Option<&str>) -> bool {
                     // Check if detected language matches the requested filter
                     let normalized = lang.to_lowercase();
                     match normalized.as_str() {
+                        // -- Code languages (18) --
                         "python" => matches!(detected, Language::Python),
                         "typescript" => matches!(detected, Language::TypeScript),
                         "javascript" => {
@@ -719,6 +732,30 @@ fn is_source_file(path: &Path, language: Option<&str>) -> bool {
                         "luau" => matches!(detected, Language::Luau),
                         "elixir" => matches!(detected, Language::Elixir),
                         "ocaml" => matches!(detected, Language::Ocaml),
+                        // -- Doc/native formats (13) -- `--lang` accepts these
+                        //    names end to end since doclinks-v1
+                        //    (`Language::FromStr`), and the no-filter text-scan
+                        //    path already searches their files, so a filter
+                        //    naming one must accept exactly the files DETECTED
+                        //    as that format. Before this arm block existed,
+                        //    every doc language fell into the `_ => false` arm
+                        //    below and `tldr references --lang markdown`
+                        //    silently searched ZERO files.
+                        "json" => matches!(detected, Language::Json),
+                        "yaml" => matches!(detected, Language::Yaml),
+                        "toml" => matches!(detected, Language::Toml),
+                        "xml" => matches!(detected, Language::Xml),
+                        "html" => matches!(detected, Language::Html),
+                        "css" => matches!(detected, Language::Css),
+                        "bash" => matches!(detected, Language::Bash),
+                        "latex" => matches!(detected, Language::Latex),
+                        "log" => matches!(detected, Language::Log),
+                        "markdown" => matches!(detected, Language::Markdown),
+                        "text" => matches!(detected, Language::Text),
+                        "csv" => matches!(detected, Language::Csv),
+                        "tsv" => matches!(detected, Language::Tsv),
+                        // Unknown filter string: keep the filter strict (see
+                        // the doc comment — never silently accept-all).
                         _ => false,
                     }
                 }

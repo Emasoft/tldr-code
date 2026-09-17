@@ -4,6 +4,49 @@
 
 ### Fixed
 
+- **`tldr references <symbol> <path> --lang <doc-language>` no longer silently searches ZERO files.**
+  The language filter in `analysis/references.rs::is_source_file` enumerated only the 18 code
+  languages in its per-language arms, so every doc/native filter — `--lang markdown`, `--lang text`,
+  `--lang csv`, `--lang json`, … — fell into the `_ => false` arm: the walk filtered out every file,
+  reported `files_searched: 0`, `total_references: 0`, and exited 0 with no hint anything was wrong,
+  even though the SAME query without `--lang` found the matches (the no-filter arm accepts every
+  recognized file). The filter is now ENUMERATED across all 31 `Language` variants: the 18 code arms
+  keep their exact semantics (including JavaScript still accepting TypeScript files), and the 13
+  doc/native formats (Markdown, Text, Log, Csv, Tsv, Json, Yaml, Toml, Xml, Html, Css, Bash, Latex)
+  accept exactly the files DETECTED as the requested format — the same set the no-filter path already
+  scanned. Deliberately NOT accept-all: an unrecognized filter string keeps returning `false` so a
+  typo (the library API `ReferencesOptions.language` is a plain `Option<String>`; the CLI validates
+  through `Language::FromStr`) can never silently widen the search to every file. Pinned by
+  `references_doc_languages_v1.rs` (markdown across two files, text, csv, cross-format strictness,
+  no-filter regression control).
+- **`tldr body <file> <name>` resolves ELEMENT names (and Bash functions), not just function-kind
+  AST nodes.** Two gaps, one symptom ("Function 'say_hi' not found" / "Function 'Setup' not found"):
+  1. *Bash function kinds.* `function_finder::get_function_node_kinds` listed Bash in the
+     "no function nodes" formats block even though bash HAS real functions — tree-sitter-bash
+     0.23.3's `function_definition` is a region-bearing node with a required `name` field (type
+     `word`, covering both `build() { … }` and `function build { … }`) and a required `body` field,
+     and name/body extraction already rides the generic `name`/`body` field arms. Bash now resolves
+     through the FUNCTION path (same bounds as `structure`/`chop`, trailing newline included), pinned
+     by three tldr-core lib tests.
+  2. *Element-definition fallback.* `body` now falls back to the structure extractor's definition
+     table (the same `files[].definitions` array `tldr structure` reports) when the function-kind
+     search finds nothing: markdown headings, CSS selectors, JSON/YAML/TOML keys, TOML sections, CSV
+     records/cells, log entries, text headings, LaTeX sections, OOXML parts, classes, constants and
+     fields are all real, region-bearing definitions that are not functions. Extraction is
+     byte-first — definitions that carry `byte_start`/`byte_end` (all the format producers) are
+     sliced byte-faithfully (`source[byte_start..byte_end]` IS the element: a nested JSON key's body
+     starts mid-line at the quote); definitions with only a line span (code-language definitions keep
+     byte spans `None`) use the same line machinery as the function path minus the trailing newline —
+     an element region is the element itself. The name matches exactly (case-sensitive); when several
+     definitions share the name (same-named JSON keys at different depths, a CSV header cell vs a
+     record), the FIRST in source order wins — every definition producer emits pre-order, so vec
+     order IS source order (documented in `ast::elements`; the body envelope has no notes field, so
+     the rule lives in the code docs and here). The JSON envelope fills `function` with the requested
+     name and `line_start`/`line_end` from the definition; the not-found error shape is unchanged;
+     `--from/--to` behavior is untouched. Pinned by `body_elements_v1.rs` (11 tests: markdown
+     heading, css selector, csv record, json key first-match, log entry, text heading, python class
+     line-path, bash function, decorated-python-function fidelity control, text-mode verbatim bytes,
+     not-found error shape).
 - **Large `.yaml` files no longer silently extract ZERO definitions.** Root cause found and pinned
   empirically: tree-sitter-yaml's external scanner tracks the current source row in **`int16_t`**
   (`scanner.c:136/147` in the published 0.7.0 crate; incremented per newline at `:217/:230`), and the

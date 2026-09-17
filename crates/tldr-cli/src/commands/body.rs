@@ -22,6 +22,21 @@
 //! — so `tldr body f.py main` and `tldr structure f.py` agree on where
 //! `main` starts and ends.
 //!
+//! # Element-name resolution (body-elements-v1)
+//!
+//! When the function-kind search finds no node named `<name>`, the command
+//! falls back to the structure extractor's DEFINITION table (the same
+//! `files[].definitions` array `tldr structure` reports) before failing:
+//! markdown headings, CSS selectors, JSON/YAML/TOML keys, TOML sections, CSV
+//! records/cells, log entries, text headings, LaTeX sections, OOXML parts,
+//! classes, constants and fields are all real, region-bearing definitions
+//! that are not function-kind AST nodes. Definitions that carry exact byte
+//! offsets are sliced byte-faithfully (`source[byte_start..byte_end]` IS the
+//! element); the rest use the definition's 1-indexed line span minus its
+//! trailing newline. The name matches exactly (case-sensitive); the FIRST
+//! same-name definition in source order wins. `--from/--to` behavior is
+//! untouched.
+//!
 //! # Output
 //!
 //! - `--format json` / `--format compact`: a [`BodyResult`] document
@@ -43,12 +58,13 @@
 //! ```
 
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::Args;
 use serde::Serialize;
 
+use tldr_core::ast::extractor::get_code_structure;
 use tldr_core::ast::function_finder::find_function_bounds_from_path_or_source;
 use tldr_core::Language;
 
@@ -142,6 +158,113 @@ fn count_lines(bytes: &[u8], starts: &[usize]) -> usize {
     }
 }
 
+/// A resolved source span to slice out of the file.
+///
+/// body-elements-v1: `body <file> <name>` can resolve a name two ways —
+/// through the function-kind AST search (a 1-indexed line range, sliced with
+/// the line-offset machinery) or, as a fallback, through the structure
+/// extractor's definition table where the producer populated exact byte
+/// offsets (format elements, log entries, CSV records/cells, text headings —
+/// sliced byte-faithfully).
+#[derive(Debug, Clone, Copy)]
+enum ResolvedSpan {
+    /// 1-indexed inclusive line range: the span runs from the start of
+    /// `line_start` to the end of line `line_end`. `include_trailing_newline`
+    /// decides whether the newline terminating `line_end` is part of the
+    /// span: the function path and `--from/--to` ranges INCLUDE it (so the
+    /// body re-concatenates into the file losslessly), while the
+    /// element-definition line fallback EXCLUDES it — an element region is
+    /// the element itself, the same convention every byte-span producer
+    /// follows.
+    Lines {
+        line_start: u32,
+        line_end: u32,
+        include_trailing_newline: bool,
+    },
+    /// Exact byte range of an element definition — `source[start..end]` IS
+    /// the element (the region, not the surrounding lines: a nested JSON
+    /// key's bytes start mid-line at the quote). `line_start`/`line_end`
+    /// are the definition's line numbers and describe the range's lines.
+    Bytes {
+        start: usize,
+        end: usize,
+        line_start: u32,
+        line_end: u32,
+    },
+}
+
+/// Resolve `name` against the file's DEFINITION table — the same
+/// `files[].definitions` array `tldr structure` reports — after the
+/// function-kind search failed to find it.
+///
+/// This is the second half of body-elements-v1: headings, CSS selectors,
+/// JSON/YAML/TOML keys, TOML sections, CSV records/cells, log entries, text
+/// headings, LaTeX sections, OOXML parts, classes, constants and fields are
+/// all real, region-bearing definitions that are NOT function-kind AST
+/// nodes, so `tldr body <file> <name>` used to dead-end with "Function
+/// '<name>' not found" for every one of them.
+///
+/// Extraction, per definition:
+/// 1. **Byte-first.** Producers that populate `DefinitionInfo::byte_start`
+///    /`byte_end` (format elements, log entries, CSV records/cells, text
+///    headings, OOXML parts) give `source[byte_start..byte_end]` as the
+///    element's exact region — slice those bytes verbatim.
+/// 2. **Line fallback.** Code-language definitions keep byte spans `None`
+///    (element-extraction-v1); use the definition's 1-indexed
+///    `line_start`/`line_end` through the same line-offset machinery as the
+///    function path, MINUS the trailing newline — an element region is the
+///    element itself (the same convention every byte producer follows).
+///
+/// `name` matches exactly (case-sensitive). If several definitions share
+/// the name (same-named JSON keys at different depths, a CSV header cell vs
+/// a record, overloads), the FIRST match in source order wins: every
+/// definition producer emits pre-order (documented in `ast::elements`), so
+/// vec order IS source order. The body envelope has no notes field, so the
+/// first-match rule lives here and in the CHANGELOG rather than in the JSON.
+///
+/// `file_len` bounds-checks byte spans so a stale producer can never panic
+/// the slice downstream; an out-of-range or degenerate definition is
+/// skipped exactly like a non-match.
+fn find_element_span(
+    file: &Path,
+    name: &str,
+    language: Language,
+    file_len: usize,
+) -> Option<ResolvedSpan> {
+    // Single-file extraction: `max_results = 0` (unlimited), no ignore
+    // spec. A failed extraction (oversize file, unreadable, unsupported)
+    // degrades to "not found" — the caller's error shape stays unchanged.
+    let structure = get_code_structure(file, language, 0, None).ok()?;
+    for file_structure in &structure.files {
+        for def in &file_structure.definitions {
+            if def.name != name {
+                continue;
+            }
+            if let (Some(byte_start), Some(byte_end)) = (def.byte_start, def.byte_end) {
+                let start = byte_start as usize;
+                let end = byte_end as usize;
+                if end > start && end <= file_len && def.line_start >= 1 {
+                    return Some(ResolvedSpan::Bytes {
+                        start,
+                        end,
+                        line_start: def.line_start,
+                        line_end: def.line_end,
+                    });
+                }
+            } else if def.line_start >= 1 && def.line_end >= def.line_start {
+                return Some(ResolvedSpan::Lines {
+                    line_start: def.line_start,
+                    line_end: def.line_end,
+                    include_trailing_newline: false,
+                });
+            }
+            // Degenerate span on a name match: keep scanning — a later
+            // same-name definition may still be usable.
+        }
+    }
+    None
+}
+
 impl BodyArgs {
     /// Run the body command
     pub fn run(
@@ -193,7 +316,7 @@ impl BodyArgs {
         let total_lines = count_lines(&bytes, &starts);
 
         let mut warnings: Vec<String> = Vec::new();
-        let (function, line_start, line_end) = if let Some(function) = &self.function {
+        let (function, span) = if let Some(function) = &self.function {
             // Function mode: same bounds resolution path as `chop`, so
             // `body`, `structure`, and `chop` always agree on a function's
             // line span.
@@ -206,19 +329,32 @@ impl BodyArgs {
                     function
                 ),
             };
-            let (start, end) = match find_function_bounds_from_path_or_source(
+            let resolved = match find_function_bounds_from_path_or_source(
                 &self.file.to_string_lossy(),
                 function,
                 language,
             ) {
-                Some(bounds) => bounds,
-                None => anyhow::bail!(
-                    "Function '{}' not found in '{}'.",
-                    function,
-                    self.file.display()
-                ),
+                Some((start, end)) => ResolvedSpan::Lines {
+                    line_start: start,
+                    line_end: end,
+                    include_trailing_newline: true,
+                },
+                // body-elements-v1: the function-kind search found nothing,
+                // but the name may still be a definition that is NOT a
+                // function-kind node — a markdown heading, CSS selector,
+                // JSON key, CSV record, log entry, a class, a constant…
+                // Fall back to the definition table before giving up (the
+                // not-found error shape is unchanged when that fails too).
+                None => match find_element_span(&self.file, function, language, bytes.len()) {
+                    Some(span) => span,
+                    None => anyhow::bail!(
+                        "Function '{}' not found in '{}'.",
+                        function,
+                        self.file.display()
+                    ),
+                },
             };
-            (Some(function.clone()), start, end)
+            (Some(function.clone()), resolved)
         } else {
             // Range mode: validate, then clamp an over-long `--to` to the
             // last line with an advisory (never silently).
@@ -252,18 +388,52 @@ impl BodyArgs {
                     total_lines
                 );
             }
-            (None, from, to)
+            (
+                None,
+                ResolvedSpan::Lines {
+                    line_start: from,
+                    line_end: to,
+                    include_trailing_newline: true,
+                },
+            )
         };
 
         // -- Slice the exact byte span --------------------------------------
-        // Body bytes run from the start of `line_start` through the newline
-        // terminating `line_end` (that trailing \n is INCLUDED so that
-        // `body` re-concatenates into the original file losslessly).
-        let start_offset = starts[line_start as usize - 1];
-        let end_offset = if (line_end as usize) < total_lines {
-            starts[line_end as usize] // start of line `line_end + 1`
-        } else {
-            bytes.len() // last line: include everything up to EOF
+        // Line spans run from the start of `line_start`; the newline
+        // terminating `line_end` is included or not per
+        // `include_trailing_newline` (see `ResolvedSpan::Lines`). Byte spans
+        // are the element definition's exact region.
+        let (line_start, line_end, start_offset, end_offset) = match span {
+            ResolvedSpan::Lines {
+                line_start,
+                line_end,
+                include_trailing_newline,
+            } => {
+                let start_offset = starts[line_start as usize - 1];
+                let end_offset = if (line_end as usize) < total_lines {
+                    starts[line_end as usize] // start of line `line_end + 1`
+                } else {
+                    bytes.len() // last line: include everything up to EOF
+                };
+                // Element line spans end at the last CONTENT byte of
+                // `line_end` — strip the terminating newline (never strip
+                // past the span start: an empty line contributes nothing).
+                let end_offset = if !include_trailing_newline
+                    && end_offset > start_offset
+                    && bytes[end_offset - 1] == b'\n'
+                {
+                    end_offset - 1
+                } else {
+                    end_offset
+                };
+                (line_start, line_end, start_offset, end_offset)
+            }
+            ResolvedSpan::Bytes {
+                start,
+                end,
+                line_start,
+                line_end,
+            } => (line_start, line_end, start, end),
         };
         let body_bytes = &bytes[start_offset..end_offset];
 
