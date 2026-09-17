@@ -12,11 +12,17 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::analysis::doc_impact::is_doc_language;
-use crate::ast::imports::get_imports;
+use crate::ast::imports::get_imports_threadlocal;
 use crate::fs::sniff::sniff_extensionless_files;
 use crate::fs::tree::{collect_files, get_file_tree};
 use crate::types::{IgnoreSpec, ImporterInfo, ImportersReport, Language};
 use crate::TldrResult;
+use rayon::prelude::*;
+
+/// PERF-2: below this many files the parallel fan-out costs more than it
+/// saves; keep the sequential scan (same convention as deps.rs /
+/// arch_rules.rs / references.rs).
+const PARALLEL_MIN_FILES: usize = 4;
 
 /// Find all files that import a given module.
 ///
@@ -64,10 +70,35 @@ pub fn find_importers(
         ));
     }
 
+    // PERF-2: the per-file work (tree-sitter parse for import extraction
+    // plus the matching line scan) dominates this loop. Fan it out across
+    // rayon workers and merge the per-file results back in input order:
+    // `par_iter().map().collect()` yields items in input order, so
+    // `importers` keeps the exact walk order of the sequential scan, and
+    // the first non-recoverable error in input order is exactly the one
+    // the old sequential fail-fast returned first (files are independent,
+    // so the merged report is identical to the sequential one).
+    //
+    // Parser access goes through the per-thread parser cache
+    // (`get_imports_threadlocal`): the global pool's mutex is held across
+    // the whole `parse`, so pool-based parsing would serialize every
+    // worker.
+    let per_file: Vec<TldrResult<Option<ImporterInfo>>> = if files.len() > PARALLEL_MIN_FILES {
+        files
+            .par_iter()
+            .map(|(file_path, file_lang)| find_import_in_file(file_path, module, *file_lang))
+            .collect()
+    } else {
+        files
+            .iter()
+            .map(|(file_path, file_lang)| find_import_in_file(file_path, module, *file_lang))
+            .collect()
+    };
+
     let mut importers = Vec::new();
 
-    for (file_path, file_lang) in files {
-        match find_import_in_file(&file_path, module, file_lang) {
+    for result in per_file {
+        match result {
             Ok(Some(info)) => importers.push(info),
             Ok(None) => {}
             Err(e) => {
@@ -98,7 +129,10 @@ fn find_import_in_file(
     target_module: &str,
     language: Language,
 ) -> TldrResult<Option<ImporterInfo>> {
-    let imports = get_imports(file_path, language)?;
+    // PERF-2: parse through the per-thread parser cache — the parallel
+    // fan-out above shares this body, and the global pool's mutex (held
+    // across the whole `parse`) would serialize every rayon worker.
+    let imports = get_imports_threadlocal(file_path, language)?;
 
     for import in &imports {
         if module_matches(&import.module, target_module, language) {
