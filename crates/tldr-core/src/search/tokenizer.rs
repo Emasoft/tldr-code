@@ -5,6 +5,9 @@
 //! - snake_case: `process_data` -> `["process", "data"]`
 //! - PascalCase: `ProcessData` -> `["process", "data"]`
 //! - SCREAMING_CASE: `PROCESS_DATA` -> `["process", "data"]`
+//! - digit boundaries: `OAuth2Provider` -> `["oauth", "provider"]`,
+//!   `APIv2` -> `["api", "v2"]`, `Base64Encoder` -> `["base", "64", "encoder"]`
+//!   (issue #84; lone digits are dropped by `min_length`)
 //!
 //! # Mitigation M11
 //! This tokenizer must match the Python implementation exactly to ensure
@@ -183,13 +186,45 @@ impl Tokenizer {
         result
     }
 
-    /// Split a single identifier by camelCase and snake_case
+    /// Split a single identifier by camelCase, snake_case, and digit boundaries
     ///
     /// Examples:
     /// - `processData` -> `["process", "Data"]`
     /// - `process_data` -> `["process", "data"]`
     /// - `ProcessUserData` -> `["Process", "User", "Data"]`
     /// - `HTTPRequest` -> `["HTTP", "Request"]`
+    /// - `OAuth2Provider` -> `["OAuth", "2", "Provider"]` (issue #84)
+    /// - `APIv2` -> `["API", "v2"]`
+    /// - `JSONv3Parser` -> `["JSON", "v3", "Parser"]`
+    ///
+    /// # Boundary rules (issue #84)
+    ///
+    /// A new token starts before the current character when:
+    ///
+    /// 1. **Underscore** — snake_case delimiter.
+    /// 2. **lower→upper** — camelCase boundary (`processData`).
+    /// 3. **Acronym→word** — uppercase followed by lowercase, with more than
+    ///    one char accumulated (`HTTPRequest` -> `HTTP` | `Request`). The
+    ///    `current.len() > 1` guard keeps single-letter PascalCase prefixes
+    ///    (`IService`) whole (issue #8). This rule is skipped when the
+    ///    following lowercase char starts a *version marker* (`v` + digit),
+    ///    because `v2` is not a word start (`HTTPv2` must not split into
+    ///    `HTT` + `Pv2`).
+    /// 4. **letter→digit** — split when the accumulated token is at least
+    ///    `min_length` chars (`OAuth2` -> `OAuth` + `2`, `Base64` ->
+    ///    `Base` + `64`). Short letter runs stay glued to their digits so
+    ///    version suffixes like `v2` and `x86` survive as single tokens,
+    ///    preserving the pre-existing `processUserData_v2` -> `v2`
+    ///    convention.
+    /// 5. **Version marker** — a lowercase `v` preceded by an uppercase char
+    ///    and followed by a digit starts a new token (`APIv2` -> `API` +
+    ///    `v2`, `JSONv3Parser` -> `JSON` + `v3` + `Parser`).
+    /// 6. **digit→letter** — a digit run always ends before a following
+    ///    letter (`OAuth2Provider` -> `OAuth` + `2` + `Provider`).
+    ///
+    /// Before rule 4/6 existed, `OAuth2Provider` tokenized as
+    /// `["oauth2", "provider"]`: a query for `oauth` had no term to match in
+    /// the BM25 index and returned zero results (issue #84).
     fn split_identifier(&self, word: &str) -> Vec<String> {
         let mut tokens = Vec::new();
         let mut current = String::new();
@@ -210,20 +245,31 @@ impl Tokenizer {
             }
 
             let is_upper = ch.is_uppercase();
-            let next_is_lower = chars.get(i + 1).map(|c| c.is_lowercase()).unwrap_or(false);
+            let is_digit = ch.is_ascii_digit();
+            let next = chars.get(i + 1).copied();
+            let next_is_lower = next.map(|c| c.is_lowercase()).unwrap_or(false);
+            let next_is_digit = next.map(|c| c.is_ascii_digit()).unwrap_or(false);
+            // A lowercase 'v' immediately followed by a digit is a version
+            // marker (`v2`, `v3`), not the start of a word.
+            let next_is_version_marker = next == Some('v')
+                && chars
+                    .get(i + 2)
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false);
+            let prev_is_digit = current
+                .chars()
+                .last()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false);
 
-            // Start new token on:
-            // 1. Transition from lower to upper (camelCase boundary)
-            // 2. Transition from upper to upper+lower (HTTPRequest -> HTTP, Request)
-            //    — guarded by `current.len() > 1` so single-letter PascalCase
-            //    prefixes like `IService` / `XRequest` are NOT split at index 1
-            //    (issue #8); HTTPRequest still splits because at the boundary
-            //    `current` is "HTTP" with len 4.
-            // 3. After underscore
+            // Start new token on the boundary rules documented above.
             let should_split = !current.is_empty()
                 && (prev_was_underscore
                     || !prev_was_upper && is_upper
-                    || (is_upper && next_is_lower && current.len() > 1));
+                    || (is_upper && next_is_lower && !next_is_version_marker && current.len() > 1)
+                    || (is_digit && !prev_is_digit && current.len() >= self.min_length)
+                    || (!is_digit && prev_is_digit)
+                    || (ch == 'v' && prev_was_upper && next_is_digit));
 
             if should_split {
                 tokens.push(std::mem::take(&mut current));
@@ -356,6 +402,120 @@ mod tests {
             tokens.contains(&"http".to_string()) && tokens.contains(&"request".to_string()),
             "HTTPRequest must still split into ['http','request']; got: {:?}",
             tokens
+        );
+    }
+
+    // =========================================================================
+    // Issue #84 — digit boundaries and version markers
+    // =========================================================================
+
+    /// Issue #84: `OAuth2Provider` must yield an `oauth` token so a BM25
+    /// query for `oauth` can match. Pre-fix it tokenized as
+    /// `["oauth2", "provider"]` (digit glued to the acronym) and the query
+    /// `oauth` had no term to match — zero results.
+    #[test]
+    fn test_tokenize_oauth2_provider_emits_oauth() {
+        let tokenizer = Tokenizer::new();
+        let tokens = tokenizer.tokenize("OAuth2Provider");
+        assert!(
+            tokens.contains(&"oauth".to_string()),
+            "tokenize(\"OAuth2Provider\") must yield an 'oauth' token; got: {:?}",
+            tokens
+        );
+        assert!(
+            tokens.contains(&"provider".to_string()),
+            "tokenize(\"OAuth2Provider\") must yield 'provider'; got: {:?}",
+            tokens
+        );
+    }
+
+    /// Issue #84 codebase-inconsistency cluster: acronym + version marker
+    /// must split into the acronym and the `vN` marker.
+    #[test]
+    fn test_tokenize_acronym_version_marker() {
+        let tokenizer = Tokenizer::new();
+
+        let tokens = tokenizer.tokenize("APIv2");
+        assert_eq!(
+            tokens,
+            vec!["api".to_string(), "v2".to_string()],
+            "APIv2 must split into api + v2; got: {:?}",
+            tokens
+        );
+
+        let tokens = tokenizer.tokenize("JSONv3Parser");
+        assert_eq!(
+            tokens,
+            vec!["json".to_string(), "v3".to_string(), "parser".to_string()],
+            "JSONv3Parser must split into json + v3 + parser; got: {:?}",
+            tokens
+        );
+
+        let tokens = tokenizer.tokenize("HTTPv2");
+        assert_eq!(
+            tokens,
+            vec!["http".to_string(), "v2".to_string()],
+            "HTTPv2 must split into http + v2 (pre-fix: htt + pv2); got: {:?}",
+            tokens
+        );
+    }
+
+    /// Issue #84: `ProjectCallGraphV2` must expose both `graph` and `v2`
+    /// (pre-fix the digit glued to `graph` producing `graphv2`, so a query
+    /// for `graph` missed it).
+    #[test]
+    fn test_tokenize_pascal_case_with_version_suffix() {
+        let tokenizer = Tokenizer::new();
+        let tokens = tokenizer.tokenize("ProjectCallGraphV2");
+        assert_eq!(
+            tokens,
+            vec![
+                "project".to_string(),
+                "call".to_string(),
+                "graph".to_string(),
+                "v2".to_string()
+            ],
+            "ProjectCallGraphV2 must split into project + call + graph + v2; got: {:?}",
+            tokens
+        );
+    }
+
+    /// Digit boundaries in the middle of an identifier: the letter run ends
+    /// before the digits and the digits end before the next letter.
+    #[test]
+    fn test_tokenize_digit_boundaries() {
+        let tokenizer = Tokenizer::new();
+
+        let tokens = tokenizer.tokenize("Base64Encoder");
+        assert_eq!(
+            tokens,
+            vec!["base".to_string(), "64".to_string(), "encoder".to_string()],
+            "got: {:?}",
+            tokens
+        );
+
+        // `UTF8` -> utf + 8; the lone `8` is dropped by min_length=2.
+        let tokens = tokenizer.tokenize("UTF8");
+        assert_eq!(tokens, vec!["utf".to_string()], "got: {:?}", tokens);
+    }
+
+    /// Short letter runs keep their digit suffix so version markers like
+    /// `v2` (and `x86`) survive as single tokens — this pins the
+    /// pre-existing `processUserData_v2` -> `v2` convention that rule 4's
+    /// length guard preserves.
+    #[test]
+    fn test_tokenize_short_letter_run_keeps_digit_suffix() {
+        let tokenizer = Tokenizer::new();
+
+        assert_eq!(
+            tokenizer.tokenize("v2"),
+            vec!["v2".to_string()],
+            "bare v2 must stay a single token"
+        );
+        assert_eq!(
+            tokenizer.tokenize("x86"),
+            vec!["x86".to_string()],
+            "x86 must stay a single token"
         );
     }
 }

@@ -12,7 +12,9 @@ use tldr_core::search::embedding_client::EmbeddingClient;
 use tldr_core::search::hybrid::hybrid_search;
 use tldr_core::search::text::search;
 use tldr_core::search::tokenizer::Tokenizer;
-use tldr_core::{IgnoreSpec, Language, TldrError};
+use tldr_core::{
+    enriched_search, EnrichedSearchOptions, IgnoreSpec, Language, SearchMode, TldrError,
+};
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -359,6 +361,75 @@ mod bm25_tests {
 
         // THEN: Should still match (lowercase all tokens)
         assert!(!results.is_empty());
+    }
+}
+
+// =============================================================================
+// Enriched search — issue #84 regression (OAuth2Provider / "oauth")
+// =============================================================================
+
+/// Issue #84: the default BM25 and Hybrid search paths must find a file
+/// containing `OAuth2Provider` when queried with `oauth`. Pre-fix the
+/// tokenizer glued the digit to the acronym (`["oauth2", "provider"]`), so
+/// the query term `oauth` had nothing to match: BM25 returned 0 results and
+/// Hybrid (which intersects the BM25 list) returned 0 results too.
+mod issue_84_oauth2_search_tests {
+    use super::*;
+
+    fn oauth_fixture() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("oauth.rs"),
+            "pub struct OAuth2Provider {\n    pub client_id: String,\n}\n",
+        )
+        .unwrap();
+        tmp
+    }
+
+    #[test]
+    fn test_oauth2_search_via_enriched_bm25() {
+        let tmp = oauth_fixture();
+
+        let report = enriched_search(
+            "oauth",
+            tmp.path(),
+            Language::Rust,
+            EnrichedSearchOptions::default(),
+        )
+        .unwrap();
+
+        assert!(
+            !report.results.is_empty(),
+            "BM25 search for 'oauth' must find OAuth2Provider (issue #84); got 0 results in mode '{}'",
+            report.search_mode
+        );
+        assert!(
+            report.results.iter().any(|r| r.file.ends_with("oauth.rs")),
+            "results must include oauth.rs; got: {:?}",
+            report.results.iter().map(|r| &r.file).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_oauth2_search_via_hybrid() {
+        let tmp = oauth_fixture();
+
+        let options = EnrichedSearchOptions {
+            top_k: 10,
+            include_callgraph: false,
+            search_mode: SearchMode::Hybrid {
+                query: "oauth".to_string(),
+                pattern: "OAuth2Provider".to_string(),
+            },
+        };
+
+        let report = enriched_search("oauth", tmp.path(), Language::Rust, options).unwrap();
+
+        assert!(
+            !report.results.is_empty(),
+            "Hybrid search for 'oauth' + pattern 'OAuth2Provider' must return results (issue #84); got 0 results in mode '{}'",
+            report.search_mode
+        );
     }
 }
 

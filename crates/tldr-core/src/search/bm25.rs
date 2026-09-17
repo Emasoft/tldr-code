@@ -813,4 +813,40 @@ mod tests {
         assert_eq!(windows[0].3, "substring");
         assert_eq!((windows[0].0, windows[0].1), (1, 1));
     }
+
+    /// Regression test for issue #84 — a document containing
+    /// `OAuth2Provider` must be findable by a BM25 query for `oauth`.
+    /// Pre-fix the tokenizer produced `["oauth2", "provider"]` for
+    /// `OAuth2Provider`, so the query term `oauth` never matched any indexed
+    /// term and the search returned zero results (in BM25 mode and,
+    /// transitively, in Hybrid mode which intersects the BM25 list).
+    #[test]
+    fn test_bm25_oauth2_provider_found_via_oauth_query() {
+        let mut index = Bm25Index::new(1.5, 0.75);
+        index.add_document(
+            "oauth.rs",
+            "pub struct OAuth2Provider {\n    pub client_id: String,\n}",
+        );
+
+        let results = index.search("oauth", 10);
+        assert!(
+            !results.is_empty(),
+            "BM25 search for 'oauth' must find the OAuth2Provider document; got 0 results"
+        );
+        assert_eq!(results[0].file_path, PathBuf::from("oauth.rs"));
+        assert!(
+            results[0].matched_terms.contains(&"oauth".to_string()),
+            "matched terms must include 'oauth'; got {:?}",
+            results[0].matched_terms
+        );
+
+        // The full identifier and its subtokens must be findable too.
+        for query in ["OAuth2Provider", "oauth2provider", "provider", "oauth"] {
+            let results = index.search(query, 10);
+            assert!(
+                !results.is_empty(),
+                "BM25 search for '{query}' must find the OAuth2Provider document"
+            );
+        }
+    }
 }
