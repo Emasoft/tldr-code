@@ -15,6 +15,7 @@
 //! }
 //! ```
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -260,6 +261,10 @@ pub struct SmellFinding {
 }
 
 /// Report from smell detection
+///
+/// Deterministic serialization (issue #74): `by_file` is a `BTreeMap` so the
+/// JSON object keys (and any other traversal) are emitted in sorted path
+/// order instead of `HashMap` iteration order, which varies run-to-run.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SmellsReport {
     /// All detected smells
@@ -267,7 +272,7 @@ pub struct SmellsReport {
     /// Number of files scanned
     pub files_scanned: usize,
     /// Smells grouped by file
-    pub by_file: HashMap<PathBuf, Vec<SmellFinding>>,
+    pub by_file: BTreeMap<PathBuf, Vec<SmellFinding>>,
     /// Summary statistics
     pub summary: SmellsSummary,
     /// Number of smells excluded because their source file matched a test-file
@@ -318,12 +323,16 @@ impl Serialize for SmellsReport {
 }
 
 /// Summary statistics for smell detection
+///
+/// Deterministic serialization (issue #74): `by_type` is a `BTreeMap` so the
+/// JSON object keys are emitted in sorted order instead of `HashMap`
+/// iteration order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmellsSummary {
     /// Total number of smells found
     pub total_smells: usize,
     /// Count by smell type
-    pub by_type: HashMap<String, usize>,
+    pub by_type: BTreeMap<String, usize>,
     /// Average smells per file
     pub avg_smells_per_file: f64,
 }
@@ -543,8 +552,8 @@ pub fn detect_smells_with_walker_opts(
         (excluded, kept)
     };
 
-    // Group by file
-    let mut by_file: HashMap<PathBuf, Vec<SmellFinding>> = HashMap::new();
+    // Group by file (BTreeMap — issue #74: deterministic key order)
+    let mut by_file: BTreeMap<PathBuf, Vec<SmellFinding>> = BTreeMap::new();
     for smell in &smells {
         by_file
             .entry(smell.file.clone())
@@ -552,8 +561,8 @@ pub fn detect_smells_with_walker_opts(
             .push(smell.clone());
     }
 
-    // Calculate summary
-    let mut by_type: HashMap<String, usize> = HashMap::new();
+    // Calculate summary (BTreeMap — issue #74: deterministic key order)
+    let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
     for smell in &smells {
         *by_type.entry(smell.smell_type.to_string()).or_insert(0) += 1;
     }
@@ -3122,8 +3131,10 @@ fn sort_smells(all_smells: &mut [SmellFinding]) {
     });
 }
 
-fn build_smells_by_file(all_smells: &[SmellFinding]) -> HashMap<PathBuf, Vec<SmellFinding>> {
-    let mut by_file: HashMap<PathBuf, Vec<SmellFinding>> = HashMap::new();
+fn build_smells_by_file(all_smells: &[SmellFinding]) -> BTreeMap<PathBuf, Vec<SmellFinding>> {
+    // BTreeMap — issue #74: deterministic key order at the serialization
+    // boundary and for every other consumer.
+    let mut by_file: BTreeMap<PathBuf, Vec<SmellFinding>> = BTreeMap::new();
     for smell in all_smells {
         by_file
             .entry(smell.file.clone())
@@ -3134,7 +3145,9 @@ fn build_smells_by_file(all_smells: &[SmellFinding]) -> HashMap<PathBuf, Vec<Sme
 }
 
 fn build_smells_summary(all_smells: &[SmellFinding], files_scanned: usize) -> SmellsSummary {
-    let mut by_type: HashMap<String, usize> = HashMap::new();
+    // BTreeMap — issue #74: deterministic key order at the serialization
+    // boundary and for every other consumer.
+    let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
     for smell in all_smells {
         *by_type.entry(smell.smell_type.to_string()).or_insert(0) += 1;
     }

@@ -18,6 +18,7 @@
 //!     module-level docstring (:2206), class docstring (:2261),
 //!     function docstring (:2394)
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -110,10 +111,10 @@ fn cli_smells_text_does_not_panic_on_cjk_smell_name() {
             suggestion: None,
         }],
         files_scanned: 1,
-        by_file: HashMap::new(),
+        by_file: BTreeMap::new(),
         summary: SmellsSummary {
             total_smells: 1,
-            by_type: HashMap::new(),
+            by_type: BTreeMap::new(),
             avg_smells_per_file: 1.0,
         },
         excluded_test_smells: 0,

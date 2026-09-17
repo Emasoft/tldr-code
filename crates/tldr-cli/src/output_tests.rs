@@ -1109,7 +1109,7 @@ fn test_diagnostics_text_summary_pluralization() {
 // =============================================================================
 
 use crate::output::format_smells_text;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use tldr_core::quality::smells::{SmellFinding, SmellType, SmellsReport, SmellsSummary};
 
 /// Helper to create a SmellFinding for testing
@@ -1133,11 +1133,11 @@ fn make_smell(
 
 /// Helper to build a SmellsReport from a list of smells
 fn make_smells_report(smells: Vec<SmellFinding>) -> SmellsReport {
-    let mut by_file: HashMap<PathBuf, Vec<SmellFinding>> = HashMap::new();
+    let mut by_file: BTreeMap<PathBuf, Vec<SmellFinding>> = BTreeMap::new();
     for s in &smells {
         by_file.entry(s.file.clone()).or_default().push(s.clone());
     }
-    let mut by_type: HashMap<String, usize> = HashMap::new();
+    let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
     for s in &smells {
         *by_type.entry(format!("{}", s.smell_type)).or_default() += 1;
     }

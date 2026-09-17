@@ -24,7 +24,7 @@ pub use inheritance::*;
 pub use patterns::*;
 
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // =============================================================================
@@ -2736,10 +2736,15 @@ impl ProjectCallGraph {
 // =============================================================================
 
 /// Impact analysis report
+///
+/// Deterministic serialization (issue #74): `targets` is a `BTreeMap` so the
+/// JSON object keys are emitted in sorted "file:function" order instead of
+/// `HashMap` iteration order, which varies run-to-run when a symbol matches
+/// in multiple files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImpactReport {
     /// Map from target function name to its caller tree
-    pub targets: HashMap<String, CallerTree>,
+    pub targets: BTreeMap<String, CallerTree>,
     /// Total number of target functions analyzed
     pub total_targets: usize,
     /// Type resolution statistics (when --type-aware is enabled)

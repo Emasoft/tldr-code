@@ -48,7 +48,7 @@
 //! notes (entry point / cycle detected / truncated at depth limit) come from
 //! the BFS itself.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::analysis::impact::build_caller_tree_visited;
@@ -234,7 +234,9 @@ pub fn document_impact(
     // cycle / truncation) are inherited from the BFS.
     root_tree.note = Some(DOC_NOTE.to_string());
 
-    let mut targets = HashMap::new();
+    // BTreeMap — issue #74: deterministic key order in the serialized report
+    // (single entry today, but the map type must match `ImpactReport.targets`).
+    let mut targets = BTreeMap::new();
     targets.insert(
         format!("{}:{}", canonical_target.display(), DOC_NODE),
         root_tree,

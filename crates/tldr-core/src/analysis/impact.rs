@@ -15,7 +15,7 @@
 //! - Cycle detected: Mark as truncated: true
 //! - Ambiguous name: Return all matches
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::ast::extractor::{extract_functions, extract_methods};
@@ -129,7 +129,9 @@ pub fn impact_analysis(
     let reverse_graph = build_reverse_graph(call_graph);
 
     // Find all functions matching the target
-    let mut targets: HashMap<String, CallerTree> = HashMap::new();
+    // BTreeMap — issue #74: deterministic "file:function" key order in the
+    // serialized report when a symbol matches in multiple files.
+    let mut targets: BTreeMap<String, CallerTree> = BTreeMap::new();
     let mut found_any = false;
 
     for edge in call_graph.edges() {
@@ -371,7 +373,9 @@ pub fn impact_analysis_with_ast_fallback(
                         .unwrap_or_default();
 
                     // Function exists in AST but has no call edges
-                    let mut targets = HashMap::new();
+                    // BTreeMap — issue #74: deterministic key order (see
+                    // `impact_analysis`).
+                    let mut targets = BTreeMap::new();
                     for (func_name, func_file) in &locations {
                         let key = format!("{}:{}", func_file.display(), func_name);
                         let is_exported = function_is_exported(func_file, target_func, language);
