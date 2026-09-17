@@ -247,16 +247,19 @@ pub fn run_verify(
 }
 
 /// Collect source files for analysis.
+///
+/// issue-90: filter by the language's full **scan family**
+/// ([`Language::matches_for_scan`], the predicate form of
+/// `Language::scan_extensions()`) instead of a single hardcoded extension.
+/// The previous match mapped `Language::JavaScript` to `"ts"`, so the
+/// directory walk collected only `.ts` files: a pure-JS project reported
+/// `files_analyzed: 0` with empty sub-reports, and a mixed JS/TS project
+/// silently dropped every `.js`/`.jsx`/`.mjs`/`.cjs` file. This matches the
+/// mechanism `dead`, `structure`, the callgraph scanner, and the smells
+/// walker have used since language-coverage-fixes-v1; it also replaces the
+/// old `_ => "py"` fallback, which collected `.py` files for every
+/// non-listed language.
 fn collect_source_files(path: &Path, language: Language) -> ContractsResult<Vec<PathBuf>> {
-    let extension = match language {
-        Language::Python => "py",
-        Language::TypeScript | Language::JavaScript => "ts",
-        Language::Rust => "rs",
-        Language::Go => "go",
-        Language::Java => "java",
-        _ => "py", // Default to Python
-    };
-
     let mut files = Vec::new();
 
     if path.is_file() {
@@ -264,9 +267,7 @@ fn collect_source_files(path: &Path, language: Language) -> ContractsResult<Vec<
     } else {
         for entry in walk_project(path).filter(|e| {
             e.path().is_file()
-                && e.path()
-                    .extension()
-                    .is_some_and(|ext| ext == extension)
+                && language.matches_for_scan(e.path())
                 // Skip test files for main analysis
                 && !e.file_name().to_str().is_some_and(|n| n.starts_with("test_"))
         }) {
@@ -755,6 +756,30 @@ def test_validate_raises():
         validate("")
 "#;
 
+    const JAVASCRIPT_WITH_CONTRACTS: &str = r#"
+function constrained(x) {
+  if (x < 0) {
+    throw new RangeError("x must be non-negative");
+  }
+  return x * 2;
+}
+
+function unconstrained(y) {
+  return y * 3;
+}
+"#;
+
+    // The .ts control file: prove the JS fix did not break TypeScript
+    // collection in either direction of the JS/TS sibling family.
+    const TYPESCRIPT_CONTROL: &str = r#"
+function tsControl(a: number, b: number): number {
+  if (a < 0) {
+    throw new RangeError("a must be non-negative");
+  }
+  return a - b;
+}
+"#;
+
     // -------------------------------------------------------------------------
     // Full Sweep Tests
     // -------------------------------------------------------------------------
@@ -937,6 +962,92 @@ def test_validate_raises():
 
         // Should still run all analyses but detail is informational
         assert!(report.sub_results.contains_key("contracts"));
+    }
+
+    // -------------------------------------------------------------------------
+    // JavaScript collection (issue-90 regression)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_verify_collects_javascript_files_issue_90() {
+        // issue-90: `collect_source_files` mapped `Language::JavaScript` to the
+        // single extension "ts", so a pure-JS project reported
+        // `files_analyzed: 0` with an empty contracts report and the `.js`
+        // source was never collected. The .js file must now be scanned AND
+        // actually analyzed (contracts data non-empty, no sweep errors).
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join("index.js"), JAVASCRIPT_WITH_CONTRACTS).unwrap();
+
+        let report = run_verify(temp.path(), Language::JavaScript, false, None).unwrap();
+
+        assert_eq!(
+            report.files_analyzed, 1,
+            "the .js source file must be collected for a JavaScript project"
+        );
+
+        let contracts = report.sub_results.get("contracts").unwrap();
+        assert!(
+            !matches!(contracts.status, SubAnalysisStatus::Failed),
+            "contracts sweep over the .js file must not fail: {:?}",
+            contracts.error
+        );
+        let data = contracts.data.as_ref().expect("contracts data present");
+        let reports = data.as_array().expect("contracts data is an array");
+        assert!(
+            !reports.is_empty(),
+            "the .js file must actually be analyzed, not just counted"
+        );
+        assert!(
+            reports.iter().any(|r| r
+                .get("file")
+                .and_then(|f| f.as_str())
+                .is_some_and(|f| f.ends_with("index.js"))),
+            "contracts report must reference the collected .js file, got: {reports:?}"
+        );
+    }
+
+    #[test]
+    fn test_verify_collects_js_ts_sibling_family() {
+        // issue-90: the fix switches verify to the scan-family filter
+        // (`Language::matches_for_scan` / `scan_extensions()`), so BOTH sides
+        // of the JS/TS sibling family collect every family extension:
+        // JavaScript scans include .ts/.tsx and TypeScript scans include
+        // .js/.jsx/.mjs/.cjs — matching `dead`, `structure`, and the
+        // callgraph scanner. The .ts control proves TypeScript collection is
+        // unchanged (previously the only working side of the mapping).
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join("index.js"), JAVASCRIPT_WITH_CONTRACTS).unwrap();
+        fs::write(temp.path().join("comp.jsx"), JAVASCRIPT_WITH_CONTRACTS).unwrap();
+        fs::write(temp.path().join("boot.mjs"), JAVASCRIPT_WITH_CONTRACTS).unwrap();
+        fs::write(temp.path().join("boot.cjs"), JAVASCRIPT_WITH_CONTRACTS).unwrap();
+        fs::write(temp.path().join("util.ts"), TYPESCRIPT_CONTROL).unwrap();
+        fs::write(temp.path().join("comp.tsx"), TYPESCRIPT_CONTROL).unwrap();
+
+        let js_files = collect_source_files(temp.path(), Language::JavaScript).unwrap();
+        let ts_files = collect_source_files(temp.path(), Language::TypeScript).unwrap();
+
+        assert_eq!(
+            js_files.len(),
+            6,
+            "JavaScript scan must collect the full JS/TS family"
+        );
+        assert_eq!(
+            ts_files.len(),
+            6,
+            "TypeScript scan must collect the full JS/TS family"
+        );
+        assert!(
+            js_files
+                .iter()
+                .any(|f| f.extension().is_some_and(|e| e == "ts")),
+            ".ts control must still be collected under a JavaScript scan"
+        );
+        assert!(
+            ts_files
+                .iter()
+                .any(|f| f.extension().is_some_and(|e| e == "js")),
+            ".js files must be collected under a TypeScript scan"
+        );
     }
 
     // -------------------------------------------------------------------------
