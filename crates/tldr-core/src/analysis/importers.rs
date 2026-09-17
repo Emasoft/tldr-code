@@ -176,6 +176,19 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
             // Package path matching
             import_module == target || import_module.ends_with(&format!("/{}", target))
         }
+        // issue #79 (cluster CL-9): Php / Ruby / Lua / Luau imports are
+        // PATH-shaped (`use App\Models\User;`, `require '../models/user'`,
+        // `require("./nested/module")`) but had no dedicated arm, so they
+        // fell through to the exact-string-equality `_` fallback and every
+        // basename / suffix / relative-path query returned 0 importers.
+        // Match them with the same normalization class the sibling
+        // path-shaped arms use (Go's `/{}` suffix rule, the Java/Scala
+        // last-segment rule, the TS `./` trim): separator normalization,
+        // exact, segment-bounded path-suffix, and single-segment basename —
+        // never substring equality.
+        Language::Php | Language::Ruby | Language::Lua | Language::Luau => {
+            path_module_matches(import_module, target)
+        }
         // language-specific-bugs-v1 (P14.AGG14-11): Scala uses the same
         // dotted-FQCN syntax as Java (`import cats.effect.IO`) plus a
         // family of brace-, wildcard-, and rename-based selectors. The
@@ -265,6 +278,54 @@ fn module_matches(import_module: &str, target: &str, language: Language) -> bool
         }
         _ => import_module == target,
     }
+}
+
+/// issue #79 (cluster CL-9): path-shaped module matching for Php, Ruby and
+/// Lua/Luau.
+///
+/// Accepts when the imported module and the query name the same target under
+/// any of the spellings those languages legitimately produce:
+///
+/// 1. **exact** after separator/prefix normalization (`json` vs `json`,
+///    `App\Models\User` vs `App/Models/User`),
+/// 2. **path-suffix**, segment-bounded: `../models/user` matches
+///    `models/user`, `app/config/helpers.php` matches `config/helpers.php`
+///    — the Go `/{}` rule; `ab` never matches `b` and `els/user` never
+///    matches `models/user` because boundaries are `/` segments,
+/// 3. **basename**: a single-segment query matches the import's last
+///    segment (`App\Models\User` matches `User`) — the same last-segment
+///    class the Java/Scala arm and `doc_module_matches` use.
+///
+/// Substring matching is deliberately impossible: multi-segment targets go
+/// through rule 2 only, single-segment targets through rules 1 and 3 only.
+fn path_module_matches(import_module: &str, target: &str) -> bool {
+    // PHP namespaces are backslash-separated; every other path separator is
+    // a forward slash. Normalize both sides to slashes so a
+    // `Models\User`-style query and a `Models/User`-style query agree.
+    let import_norm = import_module.replace('\\', "/");
+    let target_norm = target.replace('\\', "/");
+    // `./`-prefixed requires/imports name the same target as the bare path;
+    // a leading `/` on a normalized import is a stray PHP `\` root.
+    let import_norm = import_norm.trim_start_matches("./").trim_start_matches('/');
+    let target_norm = target_norm.trim_start_matches("./");
+
+    if import_norm.is_empty() || target_norm.is_empty() {
+        return false;
+    }
+
+    if import_norm == target_norm {
+        return true;
+    }
+
+    if import_norm.ends_with(&format!("/{}", target_norm)) {
+        return true;
+    }
+
+    if !target_norm.contains('/') {
+        return import_norm.rsplit('/').next() == Some(target_norm);
+    }
+
+    false
 }
 
 /// doclinks-v1: normalize a document link target / importers query for path
@@ -468,6 +529,98 @@ mod tests {
     }
 
     // =========================================================================
+    // issue #79 (cluster CL-9): Php / Ruby / Lua / Luau imports are
+    // PATH-shaped, not dotted-module-shaped, but they fell through to the
+    // exact-string-equality `_` fallback arm — so `use App\Models\User;`
+    // never matched a basename target, `require_relative '../models/user'`
+    // never matched `models/user`, and `require("./nested/module")` never
+    // matched `nested/module`.
+    // =========================================================================
+
+    #[test]
+    fn test_module_matches_php_path_shapes() {
+        // FQCN import vs exact query — already worked pre-fix.
+        assert!(module_matches(
+            "App\\Models\\User",
+            "App\\Models\\User",
+            Language::Php
+        ));
+        // Basename target: `tldr importers User --lang php` (the issue repro).
+        assert!(module_matches("App\\Models\\User", "User", Language::Php));
+        // Path-suffix target; backslash namespaces normalize to slashes.
+        assert!(module_matches(
+            "App\\Models\\User",
+            "Models\\User",
+            Language::Php
+        ));
+        assert!(module_matches(
+            "App\\Models\\User",
+            "Models/User",
+            Language::Php
+        ));
+        // require/include file paths keep matching.
+        assert!(module_matches(
+            "config/helpers.php",
+            "helpers.php",
+            Language::Php
+        ));
+        // Segment equality only — never substrings or sibling prefixes.
+        assert!(!module_matches("App\\Models\\User", "ser", Language::Php));
+        assert!(!module_matches(
+            "App\\Models\\User",
+            "App\\Models\\Post",
+            Language::Php
+        ));
+        assert!(!module_matches(
+            "App\\Models\\UserRepository",
+            "User",
+            Language::Php
+        ));
+    }
+
+    #[test]
+    fn test_module_matches_ruby_path_shapes() {
+        // Gem-style requires keep matching exactly.
+        assert!(module_matches("json", "json", Language::Ruby));
+        // `./`-prefixed requires name the same target as the bare path.
+        assert!(module_matches("./helper", "helper", Language::Ruby));
+        assert!(module_matches("./lib/util", "lib/util", Language::Ruby));
+        // `require_relative` from a sibling directory (the issue repro):
+        // `../models/user` must match both the path-suffix and basename
+        // queries.
+        assert!(module_matches(
+            "../models/user",
+            "models/user",
+            Language::Ruby
+        ));
+        assert!(module_matches("../models/user", "user", Language::Ruby));
+        // Segment equality only — never substrings or sibling prefixes.
+        assert!(!module_matches("models/user", "ser", Language::Ruby));
+        assert!(!module_matches("models/user", "els/user", Language::Ruby));
+    }
+
+    #[test]
+    fn test_module_matches_lua_luau_path_shapes() {
+        // Relative `require("./nested/module")` must match the bare path
+        // (the issue repro) and its basename.
+        assert!(module_matches(
+            "./nested/module",
+            "nested/module",
+            Language::Luau
+        ));
+        assert!(module_matches("nested/module", "module", Language::Luau));
+        // Bare module-name requires keep matching exactly.
+        assert!(module_matches("socket", "socket", Language::Lua));
+        // Segment equality only — never substrings or sibling prefixes.
+        assert!(!module_matches("nested/module", "modul", Language::Luau));
+        assert!(!module_matches(
+            "nested/module",
+            "ed/module",
+            Language::Luau
+        ));
+    }
+
+    // =========================================================================
     // doclinks-v1: document languages match by PATH
     // =========================================================================
 
@@ -540,6 +693,105 @@ mod tests {
         assert_eq!(report.total, 1, "the sniffed .bashrc must be an importer");
         assert!(report.importers[0].file.ends_with(".bashrc"));
         assert!(report.importers[0].import_statement.contains("source"));
+    }
+
+    // =========================================================================
+    // issue #79 (cluster CL-9) end-to-end: one fixture per affected language,
+    // exercised through `find_importers` the way the CLI drives it.
+    // =========================================================================
+
+    /// PHP: `use App\Models\User;` in a controller must be found when the
+    /// query is the basename `User` (PSR-4 `app/Models/User.php` layout).
+    #[test]
+    fn find_importers_matches_php_fqcn_basename_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("app/Models")).unwrap();
+        std::fs::create_dir_all(dir.path().join("app/Http")).unwrap();
+        std::fs::write(
+            dir.path().join("app/Models/User.php"),
+            "<?php\n\nnamespace App\\Models;\n\nclass User\n{\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("app/Http/UserController.php"),
+            "<?php\n\nnamespace App\\Http;\n\nuse App\\Models\\User;\n\nclass UserController\n{\n}\n",
+        )
+        .unwrap();
+
+        let report = find_importers(dir.path(), "User", Language::Php).unwrap();
+        assert_eq!(
+            report.total, 1,
+            "BUG (issue #79): the FQCN `use App\\Models\\User` must match the \
+             basename target `User`, got {:?}",
+            report.importers
+        );
+        assert!(report.importers[0].file.ends_with("UserController.php"));
+        assert!(report.importers[0]
+            .import_statement
+            .contains("App\\Models\\User"));
+
+        // The path-suffix spelling resolves to the same importer.
+        let suffix_report = find_importers(dir.path(), "Models/User", Language::Php).unwrap();
+        assert_eq!(suffix_report.total, 1);
+    }
+
+    /// Ruby: `require_relative '../models/user'` from a sibling directory
+    /// must be found by both the path-suffix and the basename query.
+    #[test]
+    fn find_importers_matches_ruby_require_relative() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("app/models")).unwrap();
+        std::fs::create_dir_all(dir.path().join("app/controllers")).unwrap();
+        std::fs::write(dir.path().join("app/models/user.rb"), "class User\nend\n").unwrap();
+        std::fs::write(
+            dir.path().join("app/controllers/users_controller.rb"),
+            "require_relative '../models/user'\n\nclass UsersController\nend\n",
+        )
+        .unwrap();
+
+        let report = find_importers(dir.path(), "models/user", Language::Ruby).unwrap();
+        assert_eq!(
+            report.total, 1,
+            "BUG (issue #79): require_relative '../models/user' must match the \
+             `models/user` query, got {:?}",
+            report.importers
+        );
+        assert!(report.importers[0].file.ends_with("users_controller.rb"));
+
+        let basename_report = find_importers(dir.path(), "user", Language::Ruby).unwrap();
+        assert_eq!(
+            basename_report.total, 1,
+            "BUG (issue #79): require_relative basename query `user` must match, \
+             got {:?}",
+            basename_report.importers
+        );
+    }
+
+    /// Luau: a relative `require("./nested/module")` must match the bare
+    /// `nested/module` query.
+    #[test]
+    fn find_importers_matches_luau_relative_require() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/nested")).unwrap();
+        std::fs::write(
+            dir.path().join("src/nested/module.luau"),
+            "local M = {}\nreturn M\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("src/main.luau"),
+            "local module = require(\"./nested/module\")\n\nreturn module\n",
+        )
+        .unwrap();
+
+        let report = find_importers(dir.path(), "nested/module", Language::Luau).unwrap();
+        assert_eq!(
+            report.total, 1,
+            "BUG (issue #79): require(\"./nested/module\") must match the \
+             `nested/module` query, got {:?}",
+            report.importers
+        );
+        assert!(report.importers[0].file.ends_with("main.luau"));
     }
 
     #[test]
