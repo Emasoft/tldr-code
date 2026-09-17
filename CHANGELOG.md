@@ -378,20 +378,26 @@
   resolve the language from the file's extension first, so `config.json` reports `json` instead of
   falling through to the parent directory's dominant language (which now excludes the formats) or
   Python.
-- **Large-file byte-accuracy e2e suite for the formats tranche** (`crates/tldr-core/tests/large_file_accuracy_v1.rs`).
-  One `#[ignore]`-gated test per format — json, yaml, toml, xml, html, css, bash, latex, markdown,
-  csv, tsv, log, text — each assembling a ≥100 MiB fixture from a small deterministic unit and
-  asserting that probed definition bodies reproduce the generated source **byte for byte**, through
-  both the element byte spans (`source[byte_start..byte_end]` must BE the element) and the
-  line-span path (`line_start..line_end` sliced over a line-starts table minus one trailing `\n`),
-  plus per-fixture invariants: `files_skipped == 0`, no warnings, the size-policy class
-  (`u64::MAX` for the streamed `.log`/`.csv`/`.tsv`, `u32::MAX` otherwise) and a definition-count
-  floor. The whole generated source is kept in memory and sliced directly, so a span bug can never
-  hide behind a re-read. Opt-in, sequential (one fixture's peak RAM at a time):
-  `timeout 3600 cargo test -p tldr-core --test large_file_accuracy_v1 --release -- --ignored --test-threads=1`
-  (default `cargo test` runs must stay `13 ignored; 0 failed`). Twelve of the thirteen run green
-  (~220 s total); the yaml test is gated on an engine defect the suite discovered — pinned in the
-  test file.
+- **Large-file byte-accuracy e2e suite — all 31 languages (13 formats + 18 code)** (`crates/tldr-core/tests/large_file_accuracy_v1.rs`).
+  One `#[ignore]`-gated test per language — formats: json, yaml, toml, xml, html, css, bash, latex,
+  markdown, csv, tsv, log, text; code: python, typescript, javascript, go, rust, java, c, cpp, ruby,
+  kotlin, swift, c#, scala, php, lua, luau, elixir, ocaml — each assembling a ≥100 MiB fixture from
+  a small deterministic unit and asserting that probed definition bodies reproduce the generated
+  source **byte for byte**, through the element byte spans (`source[byte_start..byte_end]` must BE
+  the element) or the line-span path (`line_start..line_end` sliced over a line-starts table minus
+  one trailing `\n` — code-language definitions are line-span only), plus per-fixture invariants:
+  `files_skipped == 0`, no warnings, the size-policy class (`u64::MAX` for the streamed
+  `.log`/`.csv`/`.tsv`, `u32::MAX` otherwise) and a definition-count floor. The whole generated
+  source is kept in memory and sliced directly, so a span bug can never hide behind a re-read. The
+  code tranche keeps unit counts ~60 with single-string-token bodies and no call expressions (the
+  intra-file call-graph builder is O(functions × tree nodes)) and pins decorator/attribute/
+  doc-comment fidelity at scale — every 10th unit's probe body starts at the attached-trivia line,
+  mirroring symbol_fidelity_v1 — and each test first runs a cheap 3-unit sanity parse of its own
+  generator. Opt-in, sequential (`--test-threads=1` is load-bearing — one fixture's peak RAM at a
+  time): `timeout 3600 cargo test -p tldr-core --test large_file_accuracy_v1 --release -- --ignored --test-threads=1`
+  (default `cargo test` runs must stay `31 ignored; 0 failed`). All thirty-one run green; the yaml
+  test runs on the document-aligned chunk parsing that fixed the tree-sitter-yaml int16 row
+  overflow the formats tranche originally discovered.
 
 ## v0.4.1-fork.1 — 2026-09-05
 

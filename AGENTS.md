@@ -14,7 +14,9 @@ make dev     # debug build
 make lint    # clippy --workspace -- -D warnings
 make fmt     # cargo fmt --check
 make test    # lib-only tests — the DEFAULT and only sanctioned bulk verification
+timeout 3600 cargo test -p tldr-core --test large_file_accuracy_v1 --release -- --ignored --test-threads=1   # 100MB byte-accuracy e2e (all languages)
 ```
+- In the accuracy-suite command, `--test-threads=1` is load-bearing (multi-GB peak RAM per test).
 
 ## Test safety policy (MANDATORY)
 - `make test` runs `cargo test -p tldr-core --lib` + `cargo test -p tldr-cli --lib` ONLY. Use it.

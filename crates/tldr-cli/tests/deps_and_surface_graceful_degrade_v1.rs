@@ -18,6 +18,7 @@
 
 use assert_cmd::Command;
 use std::fs;
+use std::io::Write as _;
 use tempfile::tempdir;
 use tldr_core::fs::oversize::MAX_AUTOGEN_FILE_SIZE_BYTES;
 
@@ -30,6 +31,20 @@ fn tldr_cmd() -> Command {
 /// `structure`. This test reproduces the canonical
 /// `dom.generated.d.ts` shape: one valid `.ts` plus one oversize `.d.ts`
 /// in a tempdir.
+///
+/// FIXTURE CHOICE — SPARSE, NOT MATERIALISED (deps-oversize-fixture-v1): the
+/// exercised command path is `DepsArgs::run` → `analyze_dependencies` →
+/// `partition_files_by_size` → `check_size`, which STATS the file and, on
+/// `Oversize`, skips it WITHOUT ever reading it — so a sparse fixture
+/// (`File::set_len`, the same trick `fs::oversize`'s own boundary tests and
+/// `ooxml_structure_v1` use) exercises the REAL 512 MiB auto-gen cap at
+/// ~zero I/O cost. The injectable-cap seam alternative (secure.rs
+/// `max_file_size_override`, a `#[arg(skip)]` in-process field) is
+/// unreachable from a spawned-binary integration test without adding a new
+/// env-var surface, and `#[ignore]`-gating would only hide a test that a
+/// sparse fixture keeps fast and in the default path. The leading
+/// declaration keeps the artefact shape recognisable; the zero-filled hole
+/// beyond it is never parsed on this path.
 #[test]
 fn test_deps_skips_oversize_files_gracefully() {
     let dir = tempdir().unwrap();
@@ -42,14 +57,14 @@ fn test_deps_skips_oversize_files_gracefully() {
     .unwrap();
 
     // 1 oversize auto-generated `.d.ts` (above the autogen cap so the
-    // size policy triggers). We pad past the cap with whitespace so the
-    // file is structurally valid TypeScript declarations.
-    let mut bytes: Vec<u8> = Vec::new();
-    bytes.extend_from_slice(b"export declare const padded: string;\n");
-    let pad_size = (MAX_AUTOGEN_FILE_SIZE_BYTES as usize) + 16 * 1024; // cap + 16KB
-    bytes.extend(std::iter::repeat(b' ').take(pad_size));
-    bytes.extend_from_slice(b"\n");
-    fs::write(dir.path().join("dom.generated.d.ts"), bytes).unwrap();
+    // size policy triggers). Sparse: `set_len` extends the logical size
+    // cap + 16KB past the small declaration header without writing those
+    // bytes — the deps path only stats oversize files, never reads them.
+    let mut f = fs::File::create(dir.path().join("dom.generated.d.ts")).unwrap();
+    f.write_all(b"export declare const padded: string;\n")
+        .unwrap();
+    f.set_len(MAX_AUTOGEN_FILE_SIZE_BYTES + 16 * 1024).unwrap(); // cap + 16KB
+    drop(f);
 
     let output = tldr_cmd()
         .arg("deps")

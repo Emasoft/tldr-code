@@ -1,4 +1,4 @@
-//! Large-file byte-accuracy e2e (formats tranche) — 100 MiB per format.
+//! Large-file byte-accuracy e2e — 100 MiB per language (13 formats + 18 code).
 //!
 //! Every test in this suite assembles a ≥ 100 MiB fixture from a small,
 //! deterministic unit, extracts its structure through the REAL public entry
@@ -8,10 +8,12 @@
 //! `source[byte_start..byte_end]` must BE the element) and through the
 //! line-span path (`line_start/line_end` sliced over a `line_starts` table
 //! minus one trailing `\n`). It also pins the suite-level invariants on every
-//! format: `files_skipped == 0`, `warnings` empty, the size-policy cap for the
-//! format's class (`u64::MAX` for the streamed `.log`/`.csv`/`.tsv` classes,
-//! `u32::MAX` for tree-sitter formats incl. `.txt`), and a floor on the
-//! definition count.
+//! language: `files_skipped == 0`, `warnings` empty, the size-policy cap for
+//! the file's class (`u64::MAX` for the streamed `.log`/`.csv`/`.tsv` classes,
+//! `u32::MAX` for tree-sitter formats and code languages), and a floor on the
+//! definition count. Element kinds carry byte spans and are verified on the
+//! byte path; code-language definitions are line-span only and are verified
+//! on the line path.
 //!
 //! # Design
 //!
@@ -34,6 +36,37 @@
 //!   the suite-level asserts, and a precomputed `line_starts` table.
 //! - [`assert_byte_exact`] — the per-probe byte-exact assertion.
 //!
+//! # Code tranche (18 languages)
+//!
+//! One test per code language — python, typescript, javascript, go, rust,
+//! java, c, cpp, ruby, kotlin, swift, csharp, scala, php, lua, luau, elixir,
+//! ocaml — driven by [`run_code_case`], which first runs a cheap 3-unit
+//! sanity parse (the generator itself is validated — parseability, the
+//! definition floor, and byte-exact probes — on a ~5 MB fixture BEFORE the
+//! 100 MiB assembly spends a minute on it), then the full run. Three shapes
+//! keep the code tranche tractable:
+//!
+//! - **~60 units of ~1.8 MB.** `build_intra_file_call_graph` (ast/extract.rs)
+//!   walks the whole tree once per function to collect calls —
+//!   O(functions × tree nodes). The format tranche's ~14k units would turn
+//!   that into a multi-billion-step walk; ~60 units keep it at a few hundred
+//!   thousand.
+//! - **Bodies are one string token, no calls.** Every body block is a single
+//!   string literal (triple-quoted / raw / template / heredoc / adjacent
+//!   concatenation, whichever the language offers) containing no call
+//!   expression: the syntax tree stays tiny AND the call graph has no edges
+//!   to build.
+//! - **Ceilings respected.** 62 content lines of ~29 KB per unit: max column
+//!   ~29 KB and ~4k rows per file — both far under the 32-bit tree-sitter
+//!   point ceilings and the int16 row counter that overflowed in
+//!   tree-sitter-yaml (yaml-chunk-v1).
+//!
+//! Every 10th unit carries decorator / attribute / annotation / doc-comment
+//! trivia ABOVE the declaration and the probe body STARTS at that trivia
+//! line, mirroring symbol_fidelity_v1's attached-trivia region semantics at
+//! 100 MiB scale; every test probes the head units, the [`CODE_KEEP_STRIDE`]
+//! stride units and the last unit.
+//!
 //! # Opt-in
 //!
 //! Each test materialises a 100 MiB fixture and holds the source plus the
@@ -46,7 +79,7 @@
 //! ```
 //!
 //! The default (`cargo test -p tldr-core --test large_file_accuracy_v1`) must
-//! compile-and-skip: `13 ignored; 0 failed`. All thirteen run green.
+//! compile-and-skip: `31 ignored; 0 failed`. All thirty-one run green.
 //! (yaml-chunk-v1: the yaml test previously carried a defect pin —
 //! tree-sitter-yaml's scanner overflows its int16 row counter at source row
 //! 32768 — fixed by document-aligned chunk parsing in `ast::yaml_chunk`.)
@@ -159,8 +192,8 @@ impl Fixture {
 /// `\n` and the probe's `line` is the definition's 0-based line WITHIN the
 /// unit (or `UNANCHORED_LINE`); `assemble` rewrites it into the absolute
 /// line from the running line count. Probes are kept for the head units, the
-/// stride units and the last unit. Panics unless the final size is ≥ target
-/// and ≤ target + 2 unit sizes (the last repeat may overshoot).
+/// `keep_stride` units and the last unit. Panics unless the final size is ≥
+/// target and ≤ target + 2 unit sizes (the last repeat may overshoot).
 fn assemble(
     dir: tempfile::TempDir,
     filename: &str,
@@ -168,6 +201,7 @@ fn assemble(
     unit_builder: impl Fn(usize) -> (String, Probe),
     target_bytes: usize,
     trailer: &str,
+    keep_stride: usize,
 ) -> Fixture {
     let mut source = String::with_capacity(target_bytes + target_bytes / 8);
     source.push_str(prefix);
@@ -184,7 +218,7 @@ fn assemble(
         if probe.line != UNANCHORED_LINE {
             probe.line += lines + 1;
         }
-        if units < KEEP_HEAD || units % KEEP_STRIDE == 0 {
+        if units < KEEP_HEAD || units % keep_stride == 0 {
             probes.push(probe);
         } else {
             // Keep only the most recent non-kept probe as the EOF candidate —
@@ -227,7 +261,7 @@ fn assemble(
         _dir: dir,
         source,
         probes,
-        // Every unit contributes at least one definition in all 13 formats.
+        // Every unit contributes at least one definition in all 31 languages.
         min_defs: units,
         units,
     }
@@ -429,9 +463,40 @@ fn run_case(
     unit_builder: impl Fn(usize) -> (String, Probe),
     min_defs: impl Fn(usize) -> usize,
 ) {
+    run_case_with_stride(
+        language,
+        filename,
+        prefix,
+        trailer,
+        unit_builder,
+        min_defs,
+        KEEP_STRIDE,
+    );
+}
+
+/// [`run_case`] with an explicit probe stride — the code tranche's ~60-unit
+/// files need a tighter stride than the format tests' [`KEEP_STRIDE`] for
+/// mid-file probes to exist at all.
+fn run_case_with_stride(
+    language: Language,
+    filename: &str,
+    prefix: &str,
+    trailer: &str,
+    unit_builder: impl Fn(usize) -> (String, Probe),
+    min_defs: impl Fn(usize) -> usize,
+    keep_stride: usize,
+) {
     let started = Instant::now();
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut fx = assemble(dir, filename, prefix, unit_builder, TARGET_BYTES, trailer);
+    let mut fx = assemble(
+        dir,
+        filename,
+        prefix,
+        unit_builder,
+        TARGET_BYTES,
+        trailer,
+        keep_stride,
+    );
     fx.min_defs = min_defs(fx.units);
     let verified = verify_fixture(&fx, language);
     for probe in &fx.probes {
@@ -465,6 +530,25 @@ fn language_tag(language: Language) -> &'static str {
         Language::Tsv => "tsv",
         Language::Log => "log",
         Language::Text => "text",
+        // Code tranche.
+        Language::Python => "python",
+        Language::TypeScript => "typescript",
+        Language::JavaScript => "javascript",
+        Language::Go => "go",
+        Language::Rust => "rust",
+        Language::Java => "java",
+        Language::C => "c",
+        Language::Cpp => "cpp",
+        Language::Ruby => "ruby",
+        Language::Kotlin => "kotlin",
+        Language::Swift => "swift",
+        Language::CSharp => "csharp",
+        Language::Scala => "scala",
+        Language::Php => "php",
+        Language::Lua => "lua",
+        Language::Luau => "luau",
+        Language::Elixir => "elixir",
+        Language::Ocaml => "ocaml",
         _ => "other",
     }
 }
@@ -905,6 +989,624 @@ fn text_unit(i: usize) -> (String, Probe) {
 #[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
 fn text_100mib_byte_exact() {
     run_case(Language::Text, "large.txt", "", "", text_unit, |units| {
+        units
+    });
+}
+
+// =============================================================================
+// Code tranche — 18 languages × ~100 MiB, ~60 units of ~1.8 MB each (see the
+// "# Code tranche" module docs for the three load-bearing shapes: low unit
+// counts vs the call graph's O(functions × tree nodes) walk, single-string-
+// token bodies with no call expressions, and the row/column ceilings).
+//
+// Fidelity at scale: every 10th unit carries decorator / attribute /
+// annotation / doc-comment trivia ABOVE the declaration and the probe body
+// STARTS at that trivia line (symbol_fidelity_v1 semantics at 100 MiB).
+// Bodies deliberately avoid call expressions — string literals and plain
+// identifiers only — so the intra-file call graph has no edges and the
+// per-function whole-tree walk has nothing to do but terminate.
+// =============================================================================
+
+/// One content chunk (~77 bytes); repeated to build a body line.
+const CODE_CHUNK: &str =
+    "0123456789abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ unit payload ";
+/// Repeats per content line → ~29 KB lines (comfortably below every scanner
+/// column ceiling, including int16-class ones).
+const CODE_CHUNK_REPEATS: usize = 380;
+/// Content lines per unit body → ~1.8 MB units → ~60 units per 100 MiB file.
+const CODE_BODY_LINES: usize = 62;
+/// Fidelity trivia rides every 10th unit.
+const CODE_TRIVIA_EVERY: usize = 10;
+/// Probe stride for the code cases: a ~60-unit file needs a tighter stride
+/// than the format tests' [`KEEP_STRIDE`] for mid-file probes to exist.
+const CODE_KEEP_STRIDE: usize = 12;
+
+/// The ~1.8 MB body block shared by every code-language unit: 62 identical
+/// content lines. Identical across units ON PURPOSE — per-unit identity lives
+/// in the declaration line, which each probe pins by absolute line number
+/// before the body comparison runs.
+fn code_body_block() -> String {
+    let line = CODE_CHUNK.repeat(CODE_CHUNK_REPEATS);
+    let mut s = String::with_capacity(CODE_BODY_LINES * (line.len() + 1));
+    for _ in 0..CODE_BODY_LINES {
+        s.push_str(&line);
+        s.push('\n');
+    }
+    s
+}
+
+/// The line-span probe every code-language builder emits: the definition's
+/// region (declaration + attached trivia above) is the WHOLE unit less one
+/// trailing newline, starting on the unit's first line.
+fn code_probe(name: impl Into<String>, unit: &str) -> Probe {
+    Probe::line_span(name, unit.strip_suffix('\n').unwrap_or(unit).to_string(), 0)
+}
+
+/// One cheap sanity parse per code-language test: build THREE full-size units
+/// with the real builder at indices 0, 5 and 10 — enough to cover every probe
+/// flavour the builder emits (the fidelity cadence is every 10th unit) —
+/// extract through the real entry point, and assert the suite invariants plus
+/// byte exactness of every probe. A generator that does not parse, yields
+/// fewer definitions than its floor, or disagrees with its own probes panics
+/// HERE, on a ~5 MB fixture, instead of after a 100 MiB assembly.
+fn sanity_parse_three_units(
+    language: Language,
+    filename: &str,
+    prefix: &str,
+    trailer: &str,
+    unit_builder: &impl Fn(usize) -> (String, Probe),
+    min_defs: &impl Fn(usize) -> usize,
+) {
+    let dir = tempfile::tempdir().expect("sanity tempdir");
+    let mut source = String::new();
+    source.push_str(prefix);
+    let mut lines: u32 = source.matches('\n').count() as u32;
+    let mut probes = Vec::new();
+    for i in [0usize, 5, 10] {
+        let (unit, mut probe) = unit_builder(i);
+        assert!(unit.ends_with('\n'), "unit source must end with \\n");
+        if probe.line != UNANCHORED_LINE {
+            probe.line += lines + 1;
+        }
+        probes.push(probe);
+        source.push_str(&unit);
+        lines += unit.matches('\n').count() as u32;
+    }
+    source.push_str(trailer);
+    std::fs::write(dir.path().join(filename), source.as_bytes()).expect("write sanity fixture");
+    let fx = Fixture {
+        path: dir.path().join(filename),
+        _dir: dir,
+        source,
+        probes,
+        min_defs: min_defs(3),
+        units: 3,
+    };
+    let started = Instant::now();
+    let verified = verify_fixture(&fx, language);
+    for probe in &fx.probes {
+        assert_byte_exact(&fx, &verified, probe);
+    }
+    println!(
+        "{:>8}: sanity OK — 3 units, {} defs, {:?}",
+        language_tag(language),
+        verified.structure.files[0].definitions.len(),
+        started.elapsed()
+    );
+}
+
+/// Shared code-language test driver: the cheap sanity parse first, then the
+/// full 100 MiB run with the code stride.
+fn run_code_case(
+    language: Language,
+    filename: &str,
+    prefix: &str,
+    trailer: &str,
+    unit_builder: impl Fn(usize) -> (String, Probe),
+    min_defs: impl Fn(usize) -> usize,
+) {
+    sanity_parse_three_units(
+        language,
+        filename,
+        prefix,
+        trailer,
+        &unit_builder,
+        &min_defs,
+    );
+    run_case_with_stride(
+        language,
+        filename,
+        prefix,
+        trailer,
+        unit_builder,
+        min_defs,
+        CODE_KEEP_STRIDE,
+    );
+}
+
+// -----------------------------------------------------------------------------
+// python — `def unit_N():` over a huge triple-quoted string. Every 10th def
+// gets `@deco_N` above it; the probe body starts at the decorator line
+// (tree-sitter-python climbs the `decorated_definition` wrapper).
+// -----------------------------------------------------------------------------
+
+fn python_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("@deco_{i}\n")
+    } else {
+        String::new()
+    };
+    let unit = format!("{head}def unit_{i}():\n    S = \"\"\"\n{body}\"\"\"\n    return S\n");
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn python_100mib_byte_exact() {
+    run_code_case(Language::Python, "large.py", "", "", python_unit, |units| {
+        units
+    });
+}
+
+// -----------------------------------------------------------------------------
+// rust — huge `pub fn` over a raw string; every 10th unit is a derived struct
+// and every 20th (interleaved) fn carries `#[inline]`. Both attribute kinds
+// are sibling `attribute_item`s that attach via the contiguous-sibling walk,
+// so their probes include the attribute line.
+// -----------------------------------------------------------------------------
+
+fn rust_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let (head, decl) = if i % CODE_TRIVIA_EVERY == 0 {
+        (
+            String::from("#[derive(Clone)]\n"),
+            format!("pub struct Unit{i} {{ a: u32 }}\n"),
+        )
+    } else if i % (2 * CODE_TRIVIA_EVERY) == CODE_TRIVIA_EVERY {
+        (
+            String::from("#[inline]\n"),
+            format!("pub fn unit_{i}() {{\n    let s = r#\"\n{body}\"#;\n}}\n"),
+        )
+    } else {
+        (
+            String::new(),
+            format!("pub fn unit_{i}() {{\n    let s = r#\"\n{body}\"#;\n}}\n"),
+        )
+    };
+    let unit = format!("{head}{decl}");
+    let name = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("Unit{i}")
+    } else {
+        format!("unit_{i}")
+    };
+    (unit.clone(), code_probe(name, &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn rust_100mib_byte_exact() {
+    run_code_case(Language::Rust, "large.rs", "", "", rust_unit, |units| units);
+}
+
+// -----------------------------------------------------------------------------
+// typescript — huge exported functions over a template literal; every 10th
+// unit is a decorated exported class (`@dec` above `export` sits INSIDE the
+// `export_statement` wrapper, so the probe starts at the decorator line).
+// -----------------------------------------------------------------------------
+
+fn typescript_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let (head, decl) = if i % CODE_TRIVIA_EVERY == 0 {
+        (
+            String::from("@dec\n"),
+            format!("export class Unit{i} {{ a: number }}\n"),
+        )
+    } else {
+        (
+            String::new(),
+            format!("export function unit_{i}() {{\n    let s = `\n{body}`;\n    return s;\n}}\n"),
+        )
+    };
+    let unit = format!("{head}{decl}");
+    let name = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("Unit{i}")
+    } else {
+        format!("unit_{i}")
+    };
+    (unit.clone(), code_probe(name, &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn typescript_100mib_byte_exact() {
+    run_code_case(
+        Language::TypeScript,
+        "large.ts",
+        "",
+        "",
+        typescript_unit,
+        |units| units,
+    );
+}
+
+// -----------------------------------------------------------------------------
+// javascript — huge exported functions; every 10th carries a JSDoc block
+// above (attached sibling comment — the probe includes it).
+// -----------------------------------------------------------------------------
+
+fn javascript_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("/** jsdoc for unit_{i} */\n")
+    } else {
+        String::new()
+    };
+    let unit = format!(
+        "{head}export function unit_{i}() {{\n    let s = `\n{body}`;\n    return s;\n}}\n"
+    );
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn javascript_100mib_byte_exact() {
+    run_code_case(
+        Language::JavaScript,
+        "large.js",
+        "",
+        "",
+        javascript_unit,
+        |units| units,
+    );
+}
+
+// -----------------------------------------------------------------------------
+// java — one class of static methods; every 10th method carries a javadoc
+// comment AND `@Override` above it (annotations live INSIDE the declaration
+// node via `modifiers`, the javadoc is an attached sibling — the probe
+// includes both lines). The body is a text block.
+// -----------------------------------------------------------------------------
+
+fn java_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("    /** doc for unit_{i} */\n    @Override\n")
+    } else {
+        String::new()
+    };
+    let unit = format!(
+        "{head}    public static void unit_{i}() {{\n        String s = \"\"\"\n{body}        \"\"\";\n    }}\n"
+    );
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn java_100mib_byte_exact() {
+    run_code_case(
+        Language::Java,
+        "large.java",
+        "public class Big {\n",
+        "}\n",
+        java_unit,
+        |units| units + 1, // + the wrapping class
+    );
+}
+
+// -----------------------------------------------------------------------------
+// go — huge functions over a raw (backtick) string; every 10th carries a doc
+// comment above (attached sibling — the probe includes it).
+// -----------------------------------------------------------------------------
+
+fn go_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("// doc for unit_{i}\n")
+    } else {
+        String::new()
+    };
+    let unit = format!("{head}func unit_{i}() {{\n\ts := `\n{body}`\n\t_ = s\n}}\n");
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn go_100mib_byte_exact() {
+    run_code_case(Language::Go, "large.go", "", "", go_unit, |units| units);
+}
+
+// -----------------------------------------------------------------------------
+// ruby — huge methods over a multi-line double-quoted string; every 10th
+// carries a `#` comment above (the probe includes it).
+// -----------------------------------------------------------------------------
+
+fn ruby_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("# doc for unit_{i}\n")
+    } else {
+        String::new()
+    };
+    let unit = format!("{head}def unit_{i}\n  s = \"\n{body}\"\n  s\nend\n");
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn ruby_100mib_byte_exact() {
+    run_code_case(Language::Ruby, "large.rb", "", "", ruby_unit, |units| units);
+}
+
+// -----------------------------------------------------------------------------
+// lua / luau — huge functions over a `[[` long-bracket string; every 10th
+// carries a `--` comment above (the probe includes it).
+// -----------------------------------------------------------------------------
+
+fn lua_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("-- doc for unit_{i}\n")
+    } else {
+        String::new()
+    };
+    let unit = format!("{head}function unit_{i}()\n\tlocal s = [[\n{body}]]\n\treturn s\nend\n");
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn lua_100mib_byte_exact() {
+    run_code_case(Language::Lua, "large.lua", "", "", lua_unit, |units| units);
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn luau_100mib_byte_exact() {
+    run_code_case(Language::Luau, "large.luau", "", "", lua_unit, |units| {
+        units
+    });
+}
+
+// -----------------------------------------------------------------------------
+// kotlin — huge functions over a raw triple-quoted string; every 10th carries
+// a KDoc block above (attached sibling comment — the probe includes it).
+// -----------------------------------------------------------------------------
+
+fn kotlin_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("/** doc for unit_{i} */\n")
+    } else {
+        String::new()
+    };
+    let unit = format!("{head}fun unit_{i}() {{\n    val s = \"\"\"\n{body}\"\"\"\n}}\n");
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn kotlin_100mib_byte_exact() {
+    run_code_case(Language::Kotlin, "large.kt", "", "", kotlin_unit, |units| {
+        units
+    });
+}
+
+// -----------------------------------------------------------------------------
+// swift — huge functions over a multi-line `"""` string; every 10th carries a
+// `///` doc comment above (attached sibling — the probe includes it).
+// -----------------------------------------------------------------------------
+
+fn swift_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("/// doc for unit_{i}\n")
+    } else {
+        String::new()
+    };
+    let unit = format!("{head}func unit_{i}() {{\n    let s = \"\"\"\n{body}\"\"\"\n}}\n");
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn swift_100mib_byte_exact() {
+    run_code_case(
+        Language::Swift,
+        "large.swift",
+        "",
+        "",
+        swift_unit,
+        |units| units,
+    );
+}
+
+// -----------------------------------------------------------------------------
+// c# — static methods inside one class (methods need a type scope), bodies in
+// a verbatim `@"…"` string; every 10th carries a `///` doc comment above (the
+// probe includes it).
+// -----------------------------------------------------------------------------
+
+fn csharp_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("    /// <doc>unit_{i}</doc>\n")
+    } else {
+        String::new()
+    };
+    let unit = format!(
+        "{head}    public static void unit_{i}()\n    {{\n        var s = @\"\n{body}\";\n    }}\n"
+    );
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn csharp_100mib_byte_exact() {
+    run_code_case(
+        Language::CSharp,
+        "large.cs",
+        "public class Big {\n",
+        "}\n",
+        csharp_unit,
+        |units| units + 1, // + the wrapping class
+    );
+}
+
+// -----------------------------------------------------------------------------
+// scala — huge defs over a triple-quoted string; every 10th carries a scaladoc
+// block above (attached sibling comment — the probe includes it).
+// -----------------------------------------------------------------------------
+
+fn scala_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("/** doc for unit_{i} */\n")
+    } else {
+        String::new()
+    };
+    let unit = format!("{head}def unit_{i}(): Unit = {{\n    val s = \"\"\"\n{body}\"\"\"\n}}\n");
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn scala_100mib_byte_exact() {
+    run_code_case(
+        Language::Scala,
+        "large.scala",
+        "",
+        "",
+        scala_unit,
+        |units| units,
+    );
+}
+
+// -----------------------------------------------------------------------------
+// php — huge functions over a heredoc; every 10th carries a docblock above
+// (attached sibling comment — the probe includes it).
+// -----------------------------------------------------------------------------
+
+fn php_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("/** doc for unit_{i} */\n")
+    } else {
+        String::new()
+    };
+    let unit = format!("{head}function unit_{i}()\n{{\n    $s = <<<EOT\n{body}EOT;\n}}\n");
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn php_100mib_byte_exact() {
+    run_code_case(
+        Language::Php,
+        "large.php",
+        "<?php\n",
+        "",
+        php_unit,
+        |units| units,
+    );
+}
+
+// -----------------------------------------------------------------------------
+// c / cpp — huge functions whose body strings are chains of adjacent literals
+// (C strings cannot span lines); cpp's every 10th function carries a `///`
+// doc comment above (attached sibling — the probe includes it).
+// -----------------------------------------------------------------------------
+
+/// Turn the body block into a chain of adjacent string literals, one physical
+/// line each — C string literals concatenate, so this is one initialiser.
+fn c_string_chain(body: &str) -> String {
+    body.lines().map(|l| format!("        \"{l}\"\n")).collect()
+}
+
+fn c_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let chain = c_string_chain(&body);
+    let unit =
+        format!("void unit_{i}(void)\n{{\n    const char *s =\n{chain}    ;\n    (void)s;\n}}\n");
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+fn cpp_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let chain = c_string_chain(&body);
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("/// doc for unit_{i}\n")
+    } else {
+        String::new()
+    };
+    let unit =
+        format!("{head}void unit_{i}()\n{{\n    const char *s =\n{chain}    ;\n    (void)s;\n}}\n");
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn c_100mib_byte_exact() {
+    run_code_case(Language::C, "large.c", "", "", c_unit, |units| units);
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn cpp_100mib_byte_exact() {
+    run_code_case(Language::Cpp, "large.cpp", "", "", cpp_unit, |units| units);
+}
+
+// -----------------------------------------------------------------------------
+// elixir — defs inside one module, bodies in `"""` heredocs; every 10th def
+// carries `@doc "…"` above it (the attached-trivia special case in
+// `sibling_is_attached_trivia` — the probe includes the @doc line).
+// -----------------------------------------------------------------------------
+
+fn elixir_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("  @doc \"doc for unit_{i}\"\n")
+    } else {
+        String::new()
+    };
+    let unit = format!("{head}  def unit_{i} do\n    s = \"\"\"\n{body}\"\"\"\n    s\n  end\n");
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn elixir_100mib_byte_exact() {
+    run_code_case(
+        Language::Elixir,
+        "large.ex",
+        "defmodule Big do\n",
+        "end\n",
+        elixir_unit,
+        |units| units, // the wrapping defmodule is extra
+    );
+}
+
+// -----------------------------------------------------------------------------
+// ocaml — top-level `let unit_N = "…"` over a multi-line string; every 10th
+// carries a `(* … *)` comment above (attached sibling — the probe includes
+// it).
+// -----------------------------------------------------------------------------
+
+fn ocaml_unit(i: usize) -> (String, Probe) {
+    let body = code_body_block();
+    let head = if i % CODE_TRIVIA_EVERY == 0 {
+        format!("(* doc for unit_{i} *)\n")
+    } else {
+        String::new()
+    };
+    let unit = format!("{head}let unit_{i} = \"\n{body}\"\n");
+    (unit.clone(), code_probe(format!("unit_{i}"), &unit))
+}
+
+#[test]
+#[ignore = "100 MiB release e2e — see the module docs for the opt-in command"]
+fn ocaml_100mib_byte_exact() {
+    run_code_case(Language::Ocaml, "large.ml", "", "", ocaml_unit, |units| {
         units
     });
 }
