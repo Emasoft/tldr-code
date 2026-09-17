@@ -11,7 +11,7 @@ TLDR (Token-efficient Language-agnostic Data Representation) is a Rust-based cod
 
 - **Token Efficiency**: 95% token savings vs raw source code
 - **5-Layer Analysis Stack**: AST → Call Graph → CFG → DFG → PDG
-- **Multi-language Support**: 25 languages via tree-sitter
+- **Multi-language Support**: 31 languages — 27 via tree-sitter, 4 via native scanners (Log, Text, CSV, TSV have no usable grammar)
 - **Fast Static Analysis**: No LSP required, syntactic analysis only
 
 ### Design Philosophy
@@ -209,6 +209,29 @@ pub enum RefType {
 
 ---
 
+### Element & Document-Reference Layers (formats and documents)
+
+Formats have no functions/classes, so beyond the 5-layer code stack they flow
+through their own layers:
+
+- **Element extraction** — `tldr-core/src/ast/elements.rs` emits element-level
+  definitions (JSON keys, TOML sections, YAML documents, XML/SVG/HTML elements,
+  CSS selectors, LaTeX sections/environments, Markdown headings/code-blocks/tables)
+  through the normal `DefinitionInfo` channel; `tldr-core/src/ast/csvscan.rs`
+  (CSV/TSV records + header cells) and `tldr-core/src/ast/logs.rs` (log entries)
+  are the native no-grammar counterparts.
+- **Document reference graph** — `tldr-core/src/ast/doclinks.rs` scans link/path/
+  URL/import references out of markdown, HTML, XML, CSS, LaTeX, JSON, YAML, TOML,
+  Bash, and text; `tldr-core/src/analysis/doc_impact.rs` resolves them to project
+  files and computes transitive blast radius for `tldr imports` / `importers` /
+  `impact`.
+- **Plain text & containers** — `tldr-core/src/ast/toc.rs` surfaces plain-text
+  headings/TOC; `tldr-core/src/ast/ooxml.rs` unzips `.docx`/`.xlsx`/`.pptx` and
+  walks the main XML part; `tldr-core/src/fs/sniff.rs` makes extensionless text
+  files first-class targets (binary sniff + shebang→XML→text ladder).
+
+---
+
 ## Data Flow Diagram
 
 ```
@@ -261,7 +284,13 @@ Source Code
 | 2 | TypeScript, Rust, Ruby, Java | Full support |
 | 3 | C#, Kotlin, Swift | Full support |
 | 4 | Scala, PHP, Lua, Luau, Elixir, OCaml | Full support |
-| formats | JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash | Parsed via tree-sitter; basic structural extraction (no functions/classes); excluded from project-language detection |
+| formats | JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash | Parsed via tree-sitter; element-level extraction (keys, sections, documents, elements, selectors) instead of functions/classes; excluded from project-language detection |
+| formats (documents) | LaTeX, Markdown | Parsed via tree-sitter; element extraction (LaTeX sections/environments, Markdown headings/code-blocks/tables) |
+| formats (data) | CSV, TSV | No usable tree-sitter grammar — native streaming RFC 4180 scanner (`ast/csvscan.rs`); records and header cells as elements |
+| native (no grammar) | Log, Text | No tree-sitter grammar exists — native scanners only (`ast/logs.rs` entry scanner, `ast/toc.rs` plain-text heading scanner) |
+| containers | .docx / .xlsx / .pptx | OOXML containers, NOT languages — no `Language` variant; the main XML part is unzipped and walked by the XML element walker (`ast/ooxml.rs`) |
+
+18 code languages + 11 formats + 2 native no-grammar languages = 31.
 
 ---
 

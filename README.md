@@ -6,7 +6,15 @@ Token-efficient code analysis for LLMs. 40+ commands across AST, call graph, dat
 
 LLMs waste context on raw source dumps. tldr extracts the signal: function signatures, call graphs, taint flows, complexity metrics, dead code — as structured JSON that fits in a fraction of the tokens.
 
-**25 languages**: Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, Kotlin, Swift, C#, Scala, PHP, Lua, Luau, Elixir, OCaml, JSON, YAML, TOML, XML, HTML, CSS, Bash.
+**31 languages**: Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, Kotlin, Swift, C#, Scala, PHP, Lua, Luau, Elixir, OCaml — plus JSON, YAML, TOML, XML, HTML, CSS, Bash, LaTeX, Markdown, CSV, TSV as formats, and Log and Text as native no-grammar languages.
+
+Formats and documents are first-class targets too:
+
+- **Element extraction** — headings, code blocks, tables, XML/HTML elements, CSS selectors, LaTeX sections/environments, CSV records, and log entries, each with byte spans
+- **Document reference graph** — `tldr imports` / `importers` / `impact` resolve links and transitive blast radius across markdown, HTML, XML, CSS, LaTeX, JSON, YAML, TOML, Bash, and text
+- **`tldr logs`** — filter log entries by `--from`/`--to` timestamp window, `--level`, and `--grep`
+- **OOXML containers** — `docx`, `xlsx`, `pptx` structure from their main XML part (a container, not a language)
+- **Extensionless text targets** — `Makefile`, `LICENSE`, `.bashrc` join structure, imports, and the reference graph via content sniffing
 
 ## Installation
 

@@ -1,10 +1,10 @@
 ---
 name: tldr-code
 description: >
-  Token-efficient code analysis (READ, via `tldr`) AND AST-scoped editing (WRITE, via `fastedit` — edit/insert/rename/move/delete/refactor a symbol without repeating old code) for 25 languages
+  Token-efficient code analysis (READ, via `tldr`) AND AST-scoped editing (WRITE, via `fastedit` — edit/insert/rename/move/delete/refactor a symbol without repeating old code) for 31 languages
   (Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, Kotlin, Swift,
   C#, Scala, PHP, Lua, Luau, Elixir, OCaml, JSON, YAML, TOML, XML, HTML, CSS,
-  Bash). Reach for it BEFORE reading whole
+  Bash, LaTeX, Markdown, CSV, TSV, Log, Text). Reach for it BEFORE reading whole
   files or editing unfamiliar code: it extracts ONLY the lines that define a
   symbol, that it calls, or that call it — plus call graphs, reverse-impact,
   program slices, taint/security flows, complexity metrics, dead code, design
@@ -248,7 +248,8 @@ closure, the `do` block. Without this, the bodies that hold most of a test suite
 and most async code's real logic are invisible to `structure`, so an agent reads the
 whole file to find them.
 
-Covered in all 17 of the 25 supported languages that have such a form (C has none):
+Covered in all 17 of the 18 code languages that have such a form (C has none;
+the formats and no-grammar languages have no callables):
 arrow functions and function expressions, Python `lambda`, Ruby/Elixir `do` blocks,
 Go `func` literals, Rust closures, Java/Scala/C++/C# lambdas, Kotlin/Swift trailing
 lambdas, PHP anonymous + arrow functions, Lua/Luau function definitions, OCaml `fun`.
