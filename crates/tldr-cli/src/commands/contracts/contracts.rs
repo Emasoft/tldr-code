@@ -3413,6 +3413,168 @@ def divide(a, b):
     }
 
     // =========================================================================
+    // issue #88 pinners: non-throwing `if` bodies must NOT be treated as
+    // guard clauses.
+    //
+    // `body_contains_throw`'s fallback loop used to read
+    // `A || B || C || D && E`; because `&&` binds tighter than `||`, the
+    // condition was true for ANY `block`/`compound_statement`/
+    // `function_body` child without ever looking inside it, so clamp /
+    // sanitize / normalize `if` statements were misread as guard clauses and
+    // emitted HIGH-confidence preconditions. The kind list is now
+    // parenthesized so every listed kind must actually CONTAIN a throw.
+    // =========================================================================
+
+    const PYTHON_NORMALIZE_IFS: &str = r#"
+def clamp_value(x):
+    result = x
+    if result > 100:
+        result = 100
+    if result < 0:
+        result = 0
+    return result
+
+def checked_div(a, b):
+    if b == 0:
+        raise ValueError("division by zero")
+    return a / b
+"#;
+
+    const GO_NORMALIZE_IFS: &str = r#"package main
+
+func clampValue(x int) int {
+	result := x
+	if result > 100 {
+		result = 100
+	}
+	if result < 0 {
+		result = 0
+	}
+	return result
+}
+
+func checkedDiv(a, b int) (int, error) {
+	if b == 0 {
+		panic("division by zero")
+	}
+	return a / b, nil
+}
+"#;
+
+    const RUST_NORMALIZE_IFS: &str = r#"
+fn clamp_value(x: i32) -> i32 {
+    let mut result = x;
+    if result > 100 {
+        result = 100;
+    }
+    if result < 0 {
+        result = 0;
+    }
+    result
+}
+
+fn checked_div(a: i32, b: i32) -> i32 {
+    if b == 0 {
+        panic!("division by zero");
+    }
+    a / b
+}
+"#;
+
+    #[test]
+    fn test_no_preconditions_from_non_throwing_if_bodies_python() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("normalize.py");
+        fs::write(&file_path, PYTHON_NORMALIZE_IFS).unwrap();
+
+        let clamp = run_contracts(&file_path, "clamp_value", Language::Python, 100).unwrap();
+        assert_clamp_has_no_guard_clause_preconditions(&clamp.preconditions, "python");
+
+        // Positive control: the same file's real guard clause is still found
+        // as a HIGH-confidence precondition (`b != 0`, the negation of the
+        // guard condition). Parameter-derived Low-confidence preconditions
+        // may also exist and are not the concern here.
+        let guard = run_contracts(&file_path, "checked_div", Language::Python, 100).unwrap();
+        assert!(
+            guard
+                .preconditions
+                .iter()
+                .any(|p| { p.confidence == Confidence::High && p.constraint.contains("!=") }),
+            "real throw guard clauses must still be detected as high-confidence \
+             preconditions, got: {:?}",
+            guard.preconditions
+        );
+    }
+
+    #[test]
+    fn test_no_preconditions_from_non_throwing_if_bodies_go() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("normalize.go");
+        fs::write(&file_path, GO_NORMALIZE_IFS).unwrap();
+
+        let clamp = run_contracts(&file_path, "clampValue", Language::Go, 100).unwrap();
+        assert_clamp_has_no_guard_clause_preconditions(&clamp.preconditions, "go");
+
+        // Positive control: panic-based Go guard is still found.
+        let guard = run_contracts(&file_path, "checkedDiv", Language::Go, 100).unwrap();
+        assert!(
+            !guard.preconditions.is_empty(),
+            "real panic guard clauses must still be detected, got: {:?}",
+            guard.preconditions
+        );
+    }
+
+    #[test]
+    fn test_no_preconditions_from_non_throwing_if_bodies_rust() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("normalize.rs");
+        fs::write(&file_path, RUST_NORMALIZE_IFS).unwrap();
+
+        let clamp = run_contracts(&file_path, "clamp_value", Language::Rust, 100).unwrap();
+        assert_clamp_has_no_guard_clause_preconditions(&clamp.preconditions, "rust");
+
+        // Positive control: panic!-based Rust guard is still found.
+        let guard = run_contracts(&file_path, "checked_div", Language::Rust, 100).unwrap();
+        assert!(
+            !guard.preconditions.is_empty(),
+            "real panic! guard clauses must still be detected, got: {:?}",
+            guard.preconditions
+        );
+    }
+
+    /// Shared pinner assertion: a normalize-only function may still carry
+    /// LOW-confidence type/parameter preconditions, but nothing may come
+    /// from its clamp `if` bodies — those were the issue's HIGH-confidence
+    /// guard-clause false positives (negations like `result <= 100` /
+    /// `result >= 0`).
+    fn assert_clamp_has_no_guard_clause_preconditions(preconditions: &[Condition], lang: &str) {
+        for precond in preconditions {
+            assert_ne!(
+                precond.confidence,
+                Confidence::High,
+                "BUG (issue #88): {lang} clamp/normalize if-bodies must not be \
+                 detected as guard clauses (no HIGH-confidence preconditions \
+                 may be emitted), got: {:?}",
+                preconditions
+            );
+            assert!(
+                !precond.constraint.contains("100"),
+                "BUG (issue #88): {lang} clamp if-conditions must not surface \
+                 as preconditions, got: {:?}",
+                preconditions
+            );
+        }
+        assert!(
+            !preconditions
+                .iter()
+                .any(|p| p.constraint.replace(' ', "") == "result>=0"),
+            "BUG (issue #88): the negated clamp condition `result >= 0` must not \
+             surface as a guard-clause precondition, got: {:?}",
+            preconditions
+        );
+    }
+
+    // =========================================================================
     // Multi-language tests
     // =========================================================================
 
