@@ -63,6 +63,13 @@ mod scanner;
 mod types;
 mod var_types; // call resolution logic (strategies 0-9)
 
+// doc-target-whatbreaks-v1: crate-level handle on the call-graph's own
+// language support set (`scanner::SUPPORTED_LANGUAGES`). Consumers such as
+// `analysis::whatbreaks` must ask THIS list — not a private copy — whether a
+// resolved target language can be call-graphed, so the two stay in sync by
+// construction.
+pub(crate) use scanner::is_supported_language;
+
 // Phase 14: Builder V2 with parallel processing (canonical)
 pub mod builder_v2;
 

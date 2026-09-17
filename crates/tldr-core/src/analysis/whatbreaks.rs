@@ -32,6 +32,10 @@
 //! - `impact` FunctionNotFound -> SubResult { success: false, error: "..." }
 //! - `importers` empty list -> SubResult { success: true, data: [] }
 //! - `change-impact` no tests -> SubResult { success: true, data: [] }
+//! - `change-impact` doc/non-code language -> SubResult { success: true, skipped: true, skip_reason: "..." }
+//!   (doc-target-whatbreaks-v1: the leg routes through the code call graph,
+//!   which rejects every non-code language; for a doc target that is a
+//!   non-applicable leg, not a failure)
 //!
 //! # Example
 //!
@@ -122,6 +126,18 @@ pub struct SubResult {
     /// Whether the data is incomplete/partial
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// Whether this sub-analysis was deliberately SKIPPED (not applicable
+    /// for the target) rather than failed.
+    ///
+    /// doc-target-whatbreaks-v1: a skipped sub-analysis is an honest,
+    /// successful outcome — `success` stays `true` and the reason lives in
+    /// [`SubResult::skip_reason`]. Additive with `skip_serializing_if` so
+    /// non-skipped results serialize exactly as before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skipped: bool,
+    /// Why the sub-analysis was skipped; present iff `skipped` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_reason: Option<String>,
     /// Time taken for this sub-analysis in milliseconds
     pub elapsed_ms: f64,
 }
@@ -135,6 +151,8 @@ impl SubResult {
             error: None,
             warnings: Vec::new(),
             partial: false,
+            skipped: false,
+            skip_reason: None,
             elapsed_ms,
         }
     }
@@ -147,11 +165,20 @@ impl SubResult {
             error: Some(error),
             warnings: Vec::new(),
             partial: false,
+            skipped: false,
+            skip_reason: None,
             elapsed_ms,
         }
     }
 
-    /// Create a skipped result
+    /// Create a skipped result (a deliberate, non-applicable outcome —
+    /// NOT a failure: `success` is `true`).
+    ///
+    /// doc-target-whatbreaks-v1: the reason is carried in the dedicated
+    /// `skip_reason` field (machine-readable) AND in `warnings` (the legacy
+    /// channel pre-existing readers already consume). The text renderer
+    /// prints skipped results from `skip_reason` only, so the reason is
+    /// never shown twice.
     pub fn skipped(reason: &str) -> Self {
         Self {
             success: true,
@@ -159,6 +186,8 @@ impl SubResult {
             error: None,
             warnings: vec![reason.to_string()],
             partial: false,
+            skipped: true,
+            skip_reason: Some(reason.to_string()),
             elapsed_ms: 0.0,
         }
     }
@@ -171,6 +200,8 @@ impl SubResult {
             error: None,
             warnings,
             partial: true,
+            skipped: false,
+            skip_reason: None,
             elapsed_ms,
         }
     }
@@ -565,6 +596,20 @@ fn run_importers_analysis(target: &str, project_path: &Path, language: Language)
     }
 }
 
+/// Whether the call-graph layer — the engine change-impact's core traversal
+/// runs on — can build a graph for `language`.
+///
+/// doc-target-whatbreaks-v1: delegates to the call-graph's OWN support list
+/// (`scanner::SUPPORTED_LANGUAGES`, re-exported as
+/// `crate::callgraph::is_supported_language`) so this gate can never drift
+/// from the builder that would otherwise reject the language with
+/// `Unsupported language: <lang>`. Doc/config/text languages (markdown,
+/// json, yaml, …) are NOT in that set: change-impact for such targets is a
+/// non-applicable leg, reported as an explicit skip — never a failure.
+fn call_graph_supports(language: Language) -> bool {
+    crate::callgraph::is_supported_language(&language.to_string())
+}
+
 /// Run change-impact analysis for a file target
 fn run_change_impact_analysis(target: &str, project_path: &Path, language: Language) -> SubResult {
     let start = Instant::now();
@@ -843,18 +888,40 @@ pub fn whatbreaks_analysis(
 
             // Run change-impact analysis (unless --quick)
             if !options.quick {
-                let change_impact_result =
-                    run_change_impact_analysis(target, project_path, language);
+                // doc-target-whatbreaks-v1: change-impact's core is the CODE
+                // call graph (`build_project_call_graph` inside
+                // `change_impact`), which rejects every language outside
+                // `SUPPORTED_LANGUAGES` with `Unsupported language: <lang>`.
+                // For a doc/config/text target (resolved per-file since
+                // doc-target-whatbreaks-v1) that leg is MEANINGLESS, not
+                // broken: report it as an explicit skip — `success: true` +
+                // `skipped: true` + reason — instead of the fabricated
+                // failure. NEVER fabricate success: importers above still
+                // reports its real result; the skip states exactly what did
+                // not run and why.
+                if call_graph_supports(language) {
+                    let change_impact_result =
+                        run_change_impact_analysis(target, project_path, language);
 
-                if change_impact_result.success {
-                    if let Some(data) = &change_impact_result.data {
-                        if let Some(tests) = data.get("affected_tests").and_then(|v| v.as_array()) {
-                            summary.affected_test_count = tests.len();
+                    if change_impact_result.success {
+                        if let Some(data) = &change_impact_result.data {
+                            if let Some(tests) =
+                                data.get("affected_tests").and_then(|v| v.as_array())
+                            {
+                                summary.affected_test_count = tests.len();
+                            }
                         }
                     }
-                }
 
-                sub_results.insert("change-impact".to_string(), change_impact_result);
+                    sub_results.insert("change-impact".to_string(), change_impact_result);
+                } else {
+                    sub_results.insert(
+                        "change-impact".to_string(),
+                        SubResult::skipped(&format!(
+                            "change-impact requires a code language; target is {language}"
+                        )),
+                    );
+                }
             } else {
                 sub_results.insert(
                     "change-impact".to_string(),
@@ -1018,6 +1085,83 @@ mod tests {
         assert!(result.data.is_none());
         assert_eq!(result.warnings.len(), 1);
         assert!(result.warnings[0].contains("Not applicable"));
+        // doc-target-whatbreaks-v1: a skip is an HONEST successful outcome
+        // with the explicit skipped state + machine-readable reason.
+        assert!(result.skipped);
+        assert_eq!(result.skip_reason.as_deref(), Some("Not applicable"));
+        assert!(result.error.is_none());
+        // Serializes additively: skipped=true present, skip_reason present.
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["skipped"], true);
+        assert_eq!(json["skip_reason"], "Not applicable");
+        assert_eq!(json["error"], serde_json::Value::Null);
+
+        // Non-skipped results must not gain the fields (skip_serializing_if).
+        let plain = SubResult::success(vec![1], 1.0);
+        let plain_json = serde_json::to_value(&plain).unwrap();
+        assert!(plain_json.get("skipped").is_none());
+        assert!(plain_json.get("skip_reason").is_none());
+    }
+
+    /// doc-target-whatbreaks-v1: the call-graph support gate delegates to the
+    /// call-graph's own SUPPORTED_LANGUAGES — code languages in, doc/config/
+    /// text languages out (the set change-impact would be rejected by).
+    #[test]
+    fn test_call_graph_supports_code_but_not_doc_languages() {
+        assert!(call_graph_supports(Language::Python));
+        assert!(call_graph_supports(Language::Rust));
+        assert!(call_graph_supports(Language::TypeScript));
+        assert!(!call_graph_supports(Language::Markdown));
+        assert!(!call_graph_supports(Language::Json));
+        assert!(!call_graph_supports(Language::Yaml));
+        assert!(!call_graph_supports(Language::Html));
+        assert!(!call_graph_supports(Language::Text));
+    }
+
+    /// doc-target-whatbreaks-v1: a DOC file target reports the change-impact
+    /// leg as an explicit skip (success + skipped + reason), never as
+    /// `Unsupported language` failure. Importers still runs its real query.
+    #[test]
+    fn test_doc_file_target_skips_change_impact_instead_of_failing() {
+        let test_dir = create_test_dir();
+        add_file(&test_dir, "a.md", "# A\n\n[B](b.md)\n");
+        add_file(&test_dir, "b.md", "# B\n\nbody\n");
+
+        // No --lang: the language resolves from the target file (Markdown).
+        let report =
+            whatbreaks_analysis("b.md", test_dir.path(), &WhatbreaksOptions::default()).unwrap();
+
+        assert_eq!(report.target_type, TargetType::File);
+        assert_eq!(report.summary.importer_count, 1, "{:?}", report.summary);
+
+        let change_impact_result = report.sub_results.get("change-impact").unwrap();
+        assert!(
+            change_impact_result.success,
+            "a skip is a successful outcome"
+        );
+        assert!(change_impact_result.skipped);
+        assert!(change_impact_result.error.is_none());
+        let reason = change_impact_result.skip_reason.as_deref().unwrap();
+        assert!(
+            reason.contains("change-impact requires a code language"),
+            "reason: {reason}"
+        );
+        assert!(
+            reason.contains("markdown"),
+            "reason names the language: {reason}"
+        );
+
+        // Serialized JSON must carry the honest state and NO error string.
+        let json = serde_json::to_value(&report).unwrap();
+        let ci = &json["sub_results"]["change-impact"];
+        assert_eq!(ci["success"], true);
+        assert_eq!(ci["skipped"], true);
+        assert_eq!(ci["error"], serde_json::Value::Null);
+        assert!(
+            !json.to_string().contains("Unsupported language"),
+            "no fabricated failure anywhere in the report"
+        );
     }
 
     #[test]

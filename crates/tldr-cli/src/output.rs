@@ -1438,7 +1438,7 @@ pub fn format_whatbreaks_text(
     let has_errors = report
         .sub_results
         .values()
-        .any(|r| r.error.is_some() || !r.warnings.is_empty());
+        .any(|r| r.error.is_some() || (!r.skipped && !r.warnings.is_empty()));
     if has_errors {
         output.push_str("Issues:\n");
 
@@ -1449,10 +1449,32 @@ pub fn format_whatbreaks_text(
             if let Some(error) = &result.error {
                 output.push_str(&format!("  {} error: {}\n", name, error.red()));
             }
-            for warning in &result.warnings {
-                output.push_str(&format!("  {} warning: {}\n", name, warning.yellow()));
+            // doc-target-whatbreaks-v1: a skipped sub-analysis's reason is
+            // NOT a warning — it is rendered as the informational `skipped:`
+            // line below (and never duplicated here).
+            if !result.skipped {
+                for warning in &result.warnings {
+                    output.push_str(&format!("  {} warning: {}\n", name, warning.yellow()));
+                }
             }
         }
+    }
+
+    // doc-target-whatbreaks-v1: skipped sub-analyses are informational, not
+    // issues — a doc target has no code call graph, so change-impact does not
+    // apply. State it plainly and keep the wrapper exit 0.
+    let mut skipped: Vec<_> = report
+        .sub_results
+        .iter()
+        .filter(|(_, r)| r.skipped)
+        .collect();
+    skipped.sort_by_key(|(name, _)| *name);
+    for (name, result) in skipped {
+        let reason = result
+            .skip_reason
+            .as_deref()
+            .unwrap_or("not applicable for this target");
+        output.push_str(&format!("  {} skipped: {}\n", name, reason.dimmed()));
     }
 
     output

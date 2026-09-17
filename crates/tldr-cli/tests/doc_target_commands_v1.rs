@@ -33,6 +33,13 @@
 //!    root (`explain_project_root_marker`, the walk `explain`/`impact` use)
 //!    instead of blindly walking the CWD — a file target run from a big
 //!    repository walked everything (>60 s before first output).
+//! 4. **change-impact skip state** (doc-target-whatbreaks-v1): the
+//!    whatbreaks change-impact leg routes through the CODE call graph, which
+//!    rejects every language outside `SUPPORTED_LANGUAGES`. For a doc target
+//!    that leg is non-applicable, so it must be reported as an explicit
+//!    SKIPPED sub-result (`success: true, skipped: true, skip_reason: …`)
+//!    — never the fabricated `"Unsupported language: markdown"` failure —
+//!    while a code target keeps the real, successful change-impact run.
 //!
 //! No daemon is started; every command takes the direct-compute path.
 
@@ -595,4 +602,127 @@ fn importers_absolute_code_file_resolves_python_language() {
     assert_eq!(code, Some(0));
     assert_eq!(json["module"], absolute.to_str().unwrap(), "{json}");
     assert_eq!(json["total"], 0);
+}
+
+// =============================================================================
+// (5) whatbreaks — change-impact skip state: doc target vs code target
+// =============================================================================
+
+/// `tldr whatbreaks <root>/b.md <root>` with NO `--lang`: the change-impact
+/// leg runs on the CODE call graph, which rejects Markdown. The sub-result
+/// must therefore be an honest SKIP (`success: true, skipped: true` + the
+/// "change-impact requires a code language; target is markdown" reason) —
+/// NOT the pre-fix fabricated failure `"Unsupported language: markdown"`.
+/// The text renderer states the same skip as an informational line, and the
+/// wrapper keeps exit 0.
+#[test]
+fn whatbreaks_doc_target_change_impact_reports_skipped_not_failed() {
+    let dir = build_doc_project();
+    let root = dir.path();
+    let target = root.join("b.md");
+
+    let (code, json) = run_json(
+        &[
+            "whatbreaks",
+            target.to_str().unwrap(),
+            root.to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(json["target_type"], "file");
+    // Importers still reports its real result alongside the skip.
+    assert_eq!(json["summary"]["importer_count"], 1, "{json}");
+
+    let ci = &json["sub_results"]["change-impact"];
+    assert_eq!(
+        ci["success"], true,
+        "a skip is a successful outcome: {json}"
+    );
+    assert_eq!(ci["skipped"], true, "explicit skipped state: {json}");
+    assert!(ci["error"].is_null(), "no error on a skipped leg: {json}");
+    let reason = ci["skip_reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("change-impact requires a code language"),
+        "skip reason present: {json}"
+    );
+    assert!(
+        reason.contains("target is markdown"),
+        "reason names the resolved language: {json}"
+    );
+
+    // No "Unsupported language" failure anywhere in the whole report.
+    let full = json.to_string();
+    assert!(
+        !full.contains("Unsupported language"),
+        "doc target must never fabricate a call-graph failure: {full}"
+    );
+
+    // Text renderer: the skip is an INFORMATIONAL line, not an error.
+    let output = tldr_cmd()
+        .args([
+            "whatbreaks",
+            target.to_str().unwrap(),
+            root.to_str().unwrap(),
+            "-f",
+            "text",
+            "-q",
+        ])
+        .current_dir(root)
+        .output()
+        .expect("run tldr whatbreaks text");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    assert!(
+        stdout.contains("change-impact skipped: change-impact requires a code language"),
+        "informational skip line: {stdout}"
+    );
+    assert!(
+        !stdout.contains("change-impact error:"),
+        "a skip must not render as an error: {stdout}"
+    );
+}
+
+/// Control: a CODE file target (Python) keeps the REAL change-impact run —
+/// `success: true` with data and no skip state. The skip gate must only
+/// trigger for languages outside the call-graph's supported set.
+#[test]
+fn whatbreaks_code_target_change_impact_still_runs() {
+    let dir = build_python_project();
+    let root = dir.path();
+    let target = root.join("service.py");
+
+    let (code, json) = run_json(
+        &[
+            "whatbreaks",
+            target.to_str().unwrap(),
+            root.to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(json["target_type"], "file");
+
+    let ci = &json["sub_results"]["change-impact"];
+    assert_eq!(
+        ci["success"], true,
+        "code target runs change-impact: {json}"
+    );
+    assert!(
+        ci["skipped"].is_null(),
+        "no skip state for a code target: {json}"
+    );
+    assert!(
+        ci["skip_reason"].is_null(),
+        "no skip reason for a code target: {json}"
+    );
+    assert!(ci["error"].is_null(), "{json}");
+    assert!(ci["data"].is_object(), "real change-impact data: {json}");
+    assert_eq!(ci["data"]["changed_files"][0], target.to_str().unwrap());
 }
