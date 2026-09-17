@@ -4,6 +4,54 @@
 
 ### Fixed
 
+- **`tldr importers <doc-file> <root>` without `--lang` no longer silently reports `total: 0` on
+  doc-only projects** (doc-target-importers-v1). Language resolution was `--lang` else
+  `Language::from_directory(path)` else Python — but `from_directory` skips every doc format via
+  `is_project_language_signal`, so a project with only `.md`/`.html`/… files had NO project-language
+  signal, fell through to Python, and `find_importers` walked only `.py` files: `tldr importers
+  b.md <root>` (the module string names the file `b.md`) reported an honest-looking zero even though
+  `a.md` links it, while the SAME query with `--lang markdown` found the linker. The resolution order
+  is now: (1) `--lang` — unchanged override; (2) a module string that LOOKS path-shaped (contains a
+  separator or a dot) AND names an EXISTING file (resolved relative to the path argument, else CWD)
+  resolves through the ONE shared single-file helper `resolve_target_language` — doc language → use
+  it, code language → use it (per-file truth beats directory dominance, so `importers lib.py
+  <ts-project>` still resolves Python); (3) everything else keeps the legacy fallback byte-identical:
+  non-file module strings (`std::collections::HashMap`, `myapp.service`, `utils`), `Ok(None)` targets
+  (missing path, directory, unknown extension, OOXML container) and binary files all keep the
+  directory autodetect with the Python last resort, and the module string is never rewritten. Pinned
+  by `doc_target_commands_v1.rs` (relative + absolute doc file without `--lang` — the banner prints
+  the resolved language — plus the `std::collections::HashMap`/`service` legacy pins and the
+  absolute-code-file control).
+- **`tldr whatbreaks` on a FILE target now resolves the language from the target file, derives the
+  module from the PROJECT-ROOT-RELATIVE path, and scopes the walk to the file's project root**
+  (doc-target-whatbreaks-v1). Three gaps, one symptom (silent `count: 0` or a >60 s walk):
+  1. *Language.* File-mode used `from_directory(project).unwrap_or(Python)` — on a doc-only project
+     that is Python, so `tldr whatbreaks <root>/b.md <root>` without `--lang` reported count 0 while
+     `--lang markdown` reported 1. A File target that exists on disk now resolves through the shared
+     `resolve_target_language`; `Ok(None)`/binary/non-existent targets keep the legacy directory
+     autodetect. The `--lang` override stays first.
+  2. *Module derivation.* `derive_module_name` split the RAW target on `/`, so an ABSOLUTE path like
+     `/tmp/proj/b.md` became the leading-dot garbage `.tmp.proj.b.md` and `find_importers` matched
+     nothing even with the right language (affected code files too: `/abs/src/service.py` →
+     `.abs.src.service`). The target is now made root-relative first (canonicalize both sides,
+     `strip_prefix`, error-tolerant lexical fallbacks — absolute and relative spellings of the same
+     file produce IDENTICAL module strings), then: doc language → the root-relative path WITH its
+     extension (`b.md`, `docs/x.md` — document languages reference each other by path); code
+     language → the legacy dotted-module logic on the relative path (`src/service.py` → `src.service`
+     — unchanged for inputs that were already root-relative). Detection also accepts the doc/config
+     extensions (`.md`, `.json`, `.yaml`, `.toml`, `.sh`, …) for NOT-YET-ON-DISK targets so
+     `whatbreaks newdoc.md` is detected as File instead of a qualified function name — the existing
+     file check stays first.
+  3. *Root scoping.* The CLI walked the `path` argument (default CWD) no matter where the target
+     lived: a file target run from a big repository walked the whole tree before first output
+     (>60 s, killed by timeout). A target that names an existing file now scopes the analysis to the
+     file's marker-based project root (`explain_project_root_marker`, the same walk-up
+     `explain`/`impact` use); with no project marker in any ancestor the legacy `path`-argument walk
+     is kept, so marker-less projects behave exactly as before.
+  Pinned by `doc_target_commands_v1.rs` (doc file without `--lang` count 1 with a.md; relative +
+  absolute target spellings; `--lang` override control; doc-extension detection; absolute code file
+  deriving `service` / nested `src.service`; the marker-root scoping probe run from the repo root)
+  and three tldr-core lib tests for the derivation contract.
 - **`tldr references <symbol> <path> --lang <doc-language>` no longer silently searches ZERO files.**
   The language filter in `analysis/references.rs::is_source_file` enumerated only the 18 code
   languages in its per-language arms, so every doc/native filter — `--lang markdown`, `--lang text`,

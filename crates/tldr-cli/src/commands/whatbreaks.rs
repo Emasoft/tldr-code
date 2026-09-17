@@ -14,7 +14,7 @@
 //! - T15: --type flag for disambiguation
 //! - T18: Text formatting follows spec style guide
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Args, ValueEnum};
@@ -22,6 +22,7 @@ use clap::{Args, ValueEnum};
 use tldr_core::analysis::whatbreaks::{whatbreaks_analysis, TargetType, WhatbreaksOptions};
 use tldr_core::Language;
 
+use crate::commands::remaining::explain::explain_project_root_marker;
 use crate::output::{format_whatbreaks_text, OutputFormat, OutputWriter};
 use crate::path_validation::require_directory;
 
@@ -90,6 +91,17 @@ impl WhatbreaksArgs {
             self.target
         ));
 
+        // doc-target-whatbreaks-v1: when the target names an EXISTING FILE,
+        // scope the analysis walk to that file's PROJECT ROOT (the marker
+        // walk-up `explain`/`impact` use) instead of blindly walking the
+        // `path` argument (default CWD). A file target on a big repo
+        // previously walked the whole CWD tree — >60 s before first output —
+        // even though everything whatbreaks needs (importers of the module,
+        // change impact, the call graph) is bounded by the project the file
+        // belongs to. No marker in any ancestor → legacy behavior: walk the
+        // given `path` argument, so marker-less projects are unchanged.
+        let analysis_root = self.analysis_root();
+
         // Build options
         let options = WhatbreaksOptions {
             depth: self.depth,
@@ -99,7 +111,7 @@ impl WhatbreaksArgs {
         };
 
         // Run analysis
-        let report = whatbreaks_analysis(&self.target, &self.path, &options)?;
+        let report = whatbreaks_analysis(&self.target, &analysis_root, &options)?;
 
         writer.progress(&format!(
             "Target type: {} ({})",
@@ -115,5 +127,28 @@ impl WhatbreaksArgs {
         }
 
         Ok(())
+    }
+
+    /// doc-target-whatbreaks-v1: the directory the analysis walks.
+    ///
+    /// When `target` resolves to an EXISTING FILE (absolute, or relative to
+    /// the `path` argument), the walk is scoped to that file's marker-based
+    /// project root (`explain_project_root_marker`, the same detection
+    /// `explain`/`impact` use). When no project marker exists in any ancestor
+    /// — or the target is not an existing file (function/module names) — the
+    /// legacy `path` argument is kept, so pre-fix behavior is byte-identical
+    /// for those cases.
+    fn analysis_root(&self) -> PathBuf {
+        let target_path = if Path::new(&self.target).is_absolute() {
+            PathBuf::from(&self.target)
+        } else {
+            self.path.join(&self.target)
+        };
+        if target_path.is_file() {
+            if let Some(root) = explain_project_root_marker(&target_path) {
+                return root;
+            }
+        }
+        self.path.clone()
     }
 }

@@ -1551,6 +1551,35 @@ pub(crate) fn explain_project_root(file: &std::path::Path) -> std::path::PathBuf
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
+    walk_up_for_project_marker(&parent).unwrap_or(parent)
+}
+
+/// doc-target-whatbreaks-v1: the `explain_project_root` walk that reports
+/// whether a project marker was actually found. `None` means NO recognized
+/// marker exists in any ancestor of `file` — callers with their own fallback
+/// policy (whatbreaks keeps its legacy `path`-argument walk in that case, so
+/// marker-less projects behave exactly as before) branch on this instead of
+/// re-walking the marker list.
+pub(crate) fn explain_project_root_marker(file: &std::path::Path) -> Option<std::path::PathBuf> {
+    let absolute = file.canonicalize().unwrap_or_else(|_| {
+        if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(file))
+                .unwrap_or_else(|_| file.to_path_buf())
+        }
+    });
+    let parent = absolute
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    walk_up_for_project_marker(&parent)
+}
+
+/// Walk up from `start` through ancestor directories until a recognized
+/// project marker file is found. `None` when the tree has no marker at all.
+fn walk_up_for_project_marker(start: &std::path::Path) -> Option<std::path::PathBuf> {
     let markers = [
         "Cargo.toml",
         "package.json",
@@ -1562,7 +1591,7 @@ pub(crate) fn explain_project_root(file: &std::path::Path) -> std::path::PathBuf
         "build.gradle.kts",
         ".git",
     ];
-    let mut cursor: Option<&std::path::Path> = Some(&parent);
+    let mut cursor: Option<&std::path::Path> = Some(start);
     while let Some(dir) = cursor {
         // Skip empty-path components: an empty PathBuf joins as a relative
         // CWD-rooted path which can falsely "exist" for markers that live
@@ -1573,12 +1602,12 @@ pub(crate) fn explain_project_root(file: &std::path::Path) -> std::path::PathBuf
         }
         for m in &markers {
             if dir.join(m).exists() {
-                return dir.to_path_buf();
+                return Some(dir.to_path_buf());
             }
         }
         cursor = dir.parent();
     }
-    parent
+    None
 }
 
 /// Return true if `edge_path` and `target_file` refer to the same file.

@@ -294,10 +294,69 @@ pub fn detect_target_type(target: &str, project_path: &Path) -> (TargetType, Str
     // (see Language::extensions in types.rs), so a non-existent target like
     // "Foo.java" or "bar.rb" fell through to the qualified-name heuristic
     // below and was misdetected as TargetType::Function instead of File.
+    //
+    // doc-target-whatbreaks-v1: the doc/config/plain-text extensions are
+    // added (the union of `Language::extensions` for the doc languages in
+    // `is_doc_language`) so a NOT-YET-ON-DISK doc target like
+    // `tldr whatbreaks docs/new.md` or `openapi.json` is detected as File
+    // instead of falling through the `.`-check to the qualified-name
+    // heuristic. The is_file check above stays FIRST: an existing doc file
+    // (`b.md` that is on disk) is caught there before this list is consulted.
     let file_extensions = [
-        ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".c", ".h",
-        ".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h++", ".rb", ".kt", ".kts",
-        ".swift", ".cs", ".scala", ".php", ".lua", ".luau", ".ex", ".exs", ".ml", ".mli",
+        ".py",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".go",
+        ".rs",
+        ".java",
+        ".c",
+        ".h",
+        ".cpp",
+        ".cc",
+        ".cxx",
+        ".c++",
+        ".hpp",
+        ".hh",
+        ".hxx",
+        ".h++",
+        ".rb",
+        ".kt",
+        ".kts",
+        ".swift",
+        ".cs",
+        ".scala",
+        ".php",
+        ".lua",
+        ".luau",
+        ".ex",
+        ".exs",
+        ".ml",
+        ".mli",
+        ".md",
+        ".markdown",
+        ".txt",
+        ".text",
+        ".html",
+        ".htm",
+        ".xhtml",
+        ".xml",
+        ".svg",
+        ".xsd",
+        ".xsl",
+        ".css",
+        ".tex",
+        ".sty",
+        ".cls",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".sh",
+        ".bash",
     ];
     for ext in &file_extensions {
         if target.ends_with(ext) {
@@ -453,12 +512,45 @@ fn collect_test_files_from_tree(tree: &crate::types::CallerTree, acc: &mut HashS
     }
 }
 
+/// doc-target-whatbreaks-v1: `--lang`-less language resolution for a
+/// whatbreaks target.
+///
+/// File targets resolve through the ONE shared single-file helper
+/// [`crate::validation::resolve_target_language`] — the same resolution
+/// `structure`/`impact`/`references` use — so an existing file target speaks
+/// its own language (doc language included) regardless of what the enclosing
+/// directory looks like. `Ok(None)` (missing path, directory, unknown
+/// extension, OOXML container) and `Err` (binary content) both fall through
+/// to the legacy directory autodetect: those targets give this analysis no
+/// language it can truthfully claim. Function/Module targets and every
+/// `--lang`-less non-File path keep the pre-fix
+/// `from_directory(project).unwrap_or(Python)` behavior unchanged.
+fn resolve_file_target_language(
+    target: &str,
+    target_type: TargetType,
+    project_path: &Path,
+) -> Language {
+    if target_type == TargetType::File {
+        let target_path = if Path::new(target).is_absolute() {
+            PathBuf::from(target)
+        } else {
+            project_path.join(target)
+        };
+        if target_path.is_file() {
+            if let Ok(Some(lang)) = crate::validation::resolve_target_language(&target_path) {
+                return lang;
+            }
+        }
+    }
+    Language::from_directory(project_path).unwrap_or(Language::Python)
+}
+
 /// Run importers analysis for a file or module target
 fn run_importers_analysis(target: &str, project_path: &Path, language: Language) -> SubResult {
     let start = Instant::now();
 
-    // Derive module name from target
-    let module_name = derive_module_name(target);
+    // Derive module name from target (root-relative — see `derive_module_name`)
+    let module_name = derive_module_name(target, project_path, language);
 
     match find_importers(project_path, &module_name, language) {
         Ok(report) => SubResult::success(
@@ -503,31 +595,123 @@ fn run_change_impact_analysis(target: &str, project_path: &Path, language: Langu
     }
 }
 
-/// Derive module name from a target string
-fn derive_module_name(target: &str) -> String {
-    // Remove file extension if present
-    let without_ext = if let Some(idx) = target.rfind('.') {
-        let ext = &target[idx..];
-        // why: kept in sync with the file_extensions list in detect_target_type
-        // above (same under-coverage bug) so module-name derivation strips the
-        // extension for every language the tool supports, not just 5 of them.
-        if [
-            ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".c", ".h",
-            ".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h++", ".rb", ".kt", ".kts",
-            ".swift", ".cs", ".scala", ".php", ".lua", ".luau", ".ex", ".exs", ".ml", ".mli",
-        ]
-        .contains(&ext)
-        {
-            &target[..idx]
-        } else {
-            target
-        }
+/// Derive the importers module string from a whatbreaks File/Module target.
+///
+/// doc-target-whatbreaks-v1 contract:
+///
+/// 1. The target is first made PROJECT-ROOT-RELATIVE: absolute targets are
+///    taken as-is, relative ones join onto `project_path`; both sides are
+///    canonicalized (error-tolerantly — a not-yet-existing target or an
+///    uncanonicalizable root falls back to lexical stripping) and the root
+///    prefix stripped. An ABSOLUTE target and its root-relative spelling
+///    therefore produce IDENTICAL module strings. Previously the raw target
+///    was split on `/`, so an absolute path like `/tmp/proj/b.md` became the
+///    leading-dot garbage `.tmp.proj.b.md` and `find_importers` matched
+///    nothing even when the language was right.
+/// 2. Doc language → the module string is the root-relative path WITH its
+///    extension, `/`-joined (`b.md`, `docs/x.md`): document languages
+///    reference each other by PATH (the doc arm of `module_matches`) and
+///    link extraction keeps targets raw.
+/// 3. Code language → the legacy dotted-module logic applied to the now
+///    root-relative path: known code extension stripped, separators → dots
+///    (`src/utils.py` → `src.utils`). Inputs that were already
+///    root-relative produce byte-identical output to the pre-fix version.
+/// 4. Non-path targets (a Module name like `myapp.service`) pass through
+///    step 1 untouched and keep the legacy dotted-module output.
+fn derive_module_name(target: &str, project_path: &Path, language: Language) -> String {
+    let relative = root_relative_path(target, project_path);
+    let relative_str = relative.to_string_lossy().replace('\\', "/");
+
+    if crate::analysis::doc_impact::is_doc_language(language) {
+        return relative_str;
+    }
+
+    // Code languages: strip the known extension, then path separators ->
+    // dots (legacy module notation) — now applied to the ROOT-RELATIVE
+    // path so absolute and relative spellings agree.
+    let without_ext = strip_known_code_extension(&relative_str);
+    without_ext.replace('/', ".")
+}
+
+/// Make `target` relative to `project_path` (doc-target-whatbreaks-v1).
+///
+/// Canonicalize both sides first (symlinked roots like macOS
+/// `/var` → `/private/var` and `.`-style roots then compare equal); on any
+/// failure degrade through lexical fallbacks and finally to the file name so
+/// the function never panics and never returns an empty module.
+fn root_relative_path(target: &str, project_path: &Path) -> PathBuf {
+    let absolute = if Path::new(target).is_absolute() {
+        PathBuf::from(target)
     } else {
-        target
+        project_path.join(target)
     };
 
-    // Replace path separators with dots for module notation
-    without_ext.replace(['/', '\\'], ".")
+    let target_canon = absolute.canonicalize().ok();
+    let root_canon = project_path.canonicalize().ok();
+
+    // 1. Best: canonicalized target under canonicalized root.
+    if let (Some(t), Some(r)) = (&target_canon, &root_canon) {
+        if let Ok(rel) = t.strip_prefix(r) {
+            if !rel.as_os_str().is_empty() {
+                return rel.to_path_buf();
+            }
+        }
+    }
+    // 2. Lexical: raw absolute target under the canonicalized root (target
+    //    may not exist on disk while the root does).
+    if let Some(r) = &root_canon {
+        if let Ok(rel) = absolute.strip_prefix(r) {
+            if !rel.as_os_str().is_empty() {
+                return rel.to_path_buf();
+            }
+        }
+    }
+    // 3. Lexical: raw absolute target under the raw root.
+    if let Ok(rel) = absolute.strip_prefix(project_path) {
+        if !rel.as_os_str().is_empty() {
+            return rel.to_path_buf();
+        }
+    }
+    // 4. Relative input: already root-relative by construction — drop the
+    //    leading `./` noise.
+    if !Path::new(target).is_absolute() {
+        let cleaned: PathBuf = Path::new(target)
+            .components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .collect();
+        if !cleaned.as_os_str().is_empty() {
+            return cleaned;
+        }
+    }
+    // 5. Last resort: an unstrippable absolute target (outside the project
+    //    root) degrades to its file name — the widest query that can still
+    //    match an import inside the project.
+    absolute
+        .file_name()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(target))
+}
+
+/// Strip a known code-language extension from a path-shaped string.
+///
+/// why: kept in sync with the file_extensions list in `detect_target_type`
+/// so module-name derivation strips the extension for every CODE language
+/// the tool supports. Doc extensions are deliberately absent here — doc
+/// module strings ARE paths and keep their extension (see
+/// `derive_module_name`).
+fn strip_known_code_extension(path_str: &str) -> &str {
+    const KNOWN_CODE_EXTENSIONS: &[&str] = &[
+        ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".c", ".h",
+        ".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hh", ".hxx", ".h++", ".rb", ".kt", ".kts",
+        ".swift", ".cs", ".scala", ".php", ".lua", ".luau", ".ex", ".exs", ".ml", ".mli",
+    ];
+    if let Some(idx) = path_str.rfind('.') {
+        let ext = &path_str[idx..];
+        if KNOWN_CODE_EXTENSIONS.contains(&ext) {
+            return &path_str[..idx];
+        }
+    }
+    path_str
 }
 
 // =============================================================================
@@ -572,10 +756,20 @@ pub fn whatbreaks_analysis(
         detect_target_type(target, project_path)
     };
 
-    // Detect language (auto-detect from directory, default to Python)
+    // Detect language.
+    //
+    // doc-target-whatbreaks-v1: for File targets the language comes from the
+    // TARGET FILE itself (the shared single-file helper
+    // `validation::resolve_target_language`), not from directory dominance.
+    // A doc-only project has no project-language signal at all
+    // (`Language::from_directory` skips every doc format via
+    // `is_project_language_signal`), so the old
+    // `from_directory(project).unwrap_or(Python)` silently analyzed a
+    // `b.md` target with Python's call-graph/importers layers and reported
+    // an honest-looking but wrong `count: 0`.
     let language = options
         .language
-        .unwrap_or_else(|| Language::from_directory(project_path).unwrap_or(Language::Python));
+        .unwrap_or_else(|| resolve_file_target_language(target, target_type, project_path));
 
     // Build call graph (needed for function targets, optional for others)
     let call_graph = match target_type {
@@ -837,17 +1031,88 @@ mod tests {
 
     #[test]
     fn test_derive_module_name_simple() {
-        assert_eq!(derive_module_name("service"), "service");
+        let dir = create_test_dir();
+        assert_eq!(
+            derive_module_name("service", dir.path(), Language::Python),
+            "service"
+        );
     }
 
     #[test]
     fn test_derive_module_name_with_extension() {
-        assert_eq!(derive_module_name("service.py"), "service");
+        let dir = create_test_dir();
+        assert_eq!(
+            derive_module_name("service.py", dir.path(), Language::Python),
+            "service"
+        );
     }
 
     #[test]
     fn test_derive_module_name_with_path() {
-        assert_eq!(derive_module_name("src/service.py"), "src.service");
+        let dir = create_test_dir();
+        assert_eq!(
+            derive_module_name("src/service.py", dir.path(), Language::Python),
+            "src.service"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // doc-target-whatbreaks-v1: root-relative module derivation contract
+    // -------------------------------------------------------------------------
+
+    /// An ABSOLUTE code-file target derives the SAME dotted module as its
+    /// root-relative spelling — the pre-fix version split the raw absolute
+    /// path on `/` into the leading-dot garbage `.tmp.…service`.
+    #[test]
+    fn test_derive_module_name_absolute_matches_relative_code() {
+        let dir = create_test_dir();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+
+        let absolute = dir.path().join("src/service.py");
+        let rel_from_abs =
+            derive_module_name(absolute.to_str().unwrap(), dir.path(), Language::Python);
+        let rel = derive_module_name("src/service.py", dir.path(), Language::Python);
+        assert_eq!(rel_from_abs, rel, "absolute and relative must agree");
+        assert_eq!(rel, "src.service");
+    }
+
+    /// Doc-language targets keep the root-relative PATH (extension included),
+    /// absolute or relative — doc links reference each other by path.
+    #[test]
+    fn test_derive_module_name_doc_keeps_relative_path() {
+        let dir = create_test_dir();
+
+        let abs = dir.path().join("b.md");
+        assert_eq!(
+            derive_module_name(abs.to_str().unwrap(), dir.path(), Language::Markdown),
+            "b.md"
+        );
+        assert_eq!(
+            derive_module_name("b.md", dir.path(), Language::Markdown),
+            "b.md"
+        );
+        assert_eq!(
+            derive_module_name("docs/x.md", dir.path(), Language::Markdown),
+            "docs/x.md"
+        );
+        let nested = dir.path().join("docs").join("x.md");
+        assert_eq!(
+            derive_module_name(nested.to_str().unwrap(), dir.path(), Language::Markdown),
+            "docs/x.md"
+        );
+    }
+
+    /// Error tolerance: an absolute target OUTSIDE the project root degrades
+    /// to its file name instead of emitting a leading-dot dotted path.
+    #[test]
+    fn test_derive_module_name_outside_root_falls_back_to_file_name() {
+        let project = create_test_dir();
+        let other = create_test_dir();
+        let outside = other.path().join("lonely.py");
+
+        let derived =
+            derive_module_name(outside.to_str().unwrap(), project.path(), Language::Python);
+        assert_eq!(derived, "lonely");
     }
 
     // -------------------------------------------------------------------------
