@@ -50,7 +50,12 @@ impl StructureArgs {
         //   `from_path` (formats-extension-v1, byte-identical), extensionless
         //   existing file → content sniff (shebang → `<?xml` → Text; a
         //   binary file is a structured error, NOT a Python mislabel),
-        //   missing/directory/unrecognized-extension → `Ok(None)`.
+        //   missing/directory/unrecognized-extension → `Ok(None)`. OOXML
+        //   containers (`.docx`/`.xlsx`/`.pptx`, ooxml-structure-v1) also
+        //   resolve to `Ok(None)` — the sniff must never see their ZIP
+        //   bytes — so we fall through to the directory/Python fallback and
+        //   `get_code_structure`'s `is_ooxml_path` early-return owns the
+        //   container (its output reports `language: null`).
         //   `from_directory` deliberately filters the 7 formats languages
         //   (Json/Yaml/Toml/Xml/Html/Css/Bash) via
         //   `is_project_language_signal`, so a lone `config.json` /

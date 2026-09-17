@@ -20,14 +20,25 @@ use crate::{Language, TldrError, TldrResult};
 ///    behavior is byte-identical to the pre-sniff contract.
 /// 2. **Missing path / directory** → `Ok(None)` — the caller keeps its
 ///    existing handling for those (error text, directory autodetect, …).
-/// 3. **Binary content** (extensionless file OR unrecognized extension) →
+/// 3. **OOXML container** (`.docx`/`.xlsx`/`.pptx`, case-insensitive) →
+///    `Ok(None)`. Containers are ZIP packages, not text documents: before
+///    this step existed, the sniff read the archive bytes and rejected
+///    `tldr structure report.docx` with "Binary file: …" BEFORE
+///    `get_code_structure`'s `is_ooxml_path` early-return (ooxml-structure-
+///    v1) could route the container to the OOXML extractor. `Ok(None)` is
+///    the pinned contract: the structure command falls through to its
+///    language fallback and the extractor keys the container on the PATH
+///    predicate with `language: null` (a container is a package, NOT an XML
+///    document — do NOT return `Some(Xml)`). `.docx`/`.xlsx`/`.pptx` are
+///    absent from [`Language::from_path`] and must stay that way.
+/// 4. **Binary content** (extensionless file OR unrecognized extension) →
 ///    `Err(TldrError::UnsupportedLanguage)` with "binary file" wording and
 ///    the standard exit code — a clean structured rejection, never a
 ///    mislabeled parse.
-/// 4. **Extensionless text** → the content ladder (shebang → `<?xml` → Text,
+/// 5. **Extensionless text** → the content ladder (shebang → `<?xml` → Text,
 ///    see `fs::sniff`); an unsupported shebang yields the plain
 ///    "Could not detect language" error instead of the binary one.
-/// 5. **Unrecognized extension with text content** (`.xyz`) → `Ok(None)` —
+/// 6. **Unrecognized extension with text content** (`.xyz`) → `Ok(None)` —
 ///    the unknown-extension negative contract is unchanged.
 ///
 /// The sniff reads at most 64 KiB regardless of file size.
@@ -42,11 +53,20 @@ pub fn resolve_target_language(path: &Path) -> TldrResult<Option<Language>> {
         return Ok(None);
     }
 
-    // 3. One bounded content read, shared by the binary check and the ladder.
+    // 3. OOXML containers must never reach the sniff (see the doc comment for
+    //    the ooxml-structure-v1 regression): the file exists here, so a
+    //    `.docx`/`.xlsx`/`.pptx` path resolves to `Ok(None)` — the
+    //    `get_code_structure` early-return owns the container and
+    //    `language: null` is the pinned contract.
+    if crate::ast::ooxml::is_ooxml_path(path) {
+        return Ok(None);
+    }
+
+    // 4. One bounded content read, shared by the binary check and the ladder.
     //    An unreadable file (permissions) surfaces as the standard IoError.
     let sample = read_sample(path).map_err(TldrError::IoError)?;
 
-    // 3. Binary content (covers `data.bin` as well as extensionless blobs).
+    // 5. Binary content (covers `data.bin` as well as extensionless blobs).
     if is_probably_binary(&sample) {
         return Err(TldrError::UnsupportedLanguage(format!(
             "Binary file: {} — content sniffing found no text to analyze",
@@ -54,7 +74,7 @@ pub fn resolve_target_language(path: &Path) -> TldrResult<Option<Language>> {
         )));
     }
 
-    // 4. Extensionless text: the language ladder.
+    // 6. Extensionless text: the language ladder.
     if path.extension().is_none() {
         return match sniff_language_from_sample(&sample) {
             Some(lang) => Ok(Some(lang)),
@@ -65,7 +85,7 @@ pub fn resolve_target_language(path: &Path) -> TldrResult<Option<Language>> {
         };
     }
 
-    // 5. Unrecognized extension with text content: unchanged negative.
+    // 7. Unrecognized extension with text content: unchanged negative.
     Ok(None)
 }
 
@@ -164,6 +184,14 @@ pub fn validate_file_path(file: &str, project: Option<&Path>) -> TldrResult<Path
 /// sniff for extensionless text files (shebang → `<?xml` → Text) and the
 /// binary rejection. Known-extension and unknown-extension (`.xyz`) behavior
 /// is unchanged.
+///
+/// ooxml-structure-v1: OOXML containers (`.docx`/`.xlsx`/`.pptx`) also
+/// resolve to `Ok(None)` through the helper, so sibling consumers (imports,
+/// metrics, daemon handlers) keep the plain "Could not detect language"
+/// error on a container — the pre-sniff unknown-extension behavior, NOT the
+/// "Binary file" rejection. That is the documented per-call-site decision:
+/// containers have no import/metric layer, and the structure path reaches
+/// `get_code_structure`'s OOXML early-return instead.
 ///
 /// # Examples
 ///
@@ -482,6 +510,54 @@ mod tests {
         match &err {
             TldrError::UnsupportedLanguage(msg) => {
                 assert!(msg.contains("Could not detect language"), "msg = {msg}");
+            }
+            other => panic!("expected UnsupportedLanguage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_ooxml_container_is_none_never_sniffed() {
+        // ooxml-structure-v1 regression: a `.docx` is a ZIP package, so the
+        // binary sniff used to reject `tldr structure report.docx` with
+        // "Binary file: …" BEFORE `get_code_structure`'s OOXML early-return
+        // could run. The container resolves to `Ok(None)` (language: null is
+        // the pinned contract) — and `data.bin` proves the binary rejection
+        // still fires for genuinely binary non-OOXML files.
+        let temp = TempDir::new().unwrap();
+        let docx = temp.path().join("report.docx");
+        std::fs::write(
+            &docx,
+            b"PK\x03\x04\x14\x00\x00\x00\x08\x00zip-shaped bytes\x00\x01",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_target_language(&docx).unwrap(),
+            None,
+            "OOXML container must not be content-sniffed as binary"
+        );
+        // Case-insensitive, same predicate as the extractor's early-return.
+        let pptx = temp.path().join("deck.PPTX");
+        std::fs::write(&pptx, b"\x00\x01\x02\x03binary").unwrap();
+        assert_eq!(resolve_target_language(&pptx).unwrap(), None);
+        // `.bin` is NOT an OOXML extension: the binary rejection stays.
+        let bin = temp.path().join("data.bin");
+        std::fs::write(&bin, b"\x00\x01\x02\x03binary").unwrap();
+        assert!(resolve_target_language(&bin).is_err());
+    }
+
+    #[test]
+    fn test_detect_or_parse_ooxml_container_is_unknown_extension_not_binary() {
+        // Sibling-consumer contract (imports/metrics/daemon): auto-detect on
+        // a container keeps the plain "Could not detect language" error —
+        // the pre-sniff unknown-extension behavior — not the binary one.
+        let temp = TempDir::new().unwrap();
+        let xlsx = temp.path().join("book.xlsx");
+        std::fs::write(&xlsx, b"PK\x03\x04\x14\x00\x00\x00\x08\x00zip bytes").unwrap();
+        let err = detect_or_parse_language(None, &xlsx).unwrap_err();
+        match &err {
+            TldrError::UnsupportedLanguage(msg) => {
+                assert!(msg.contains("Could not detect language"), "msg = {msg}");
+                assert!(!msg.to_lowercase().contains("binary"), "msg = {msg}");
             }
             other => panic!("expected UnsupportedLanguage, got {other:?}"),
         }
