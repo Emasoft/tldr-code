@@ -21,6 +21,14 @@
 //!    exit code 11), not a Python mislabel.
 //! 6. `tldr structure <root>/sitemap` — `<?xml`-prefixed extensionless
 //!    content resolves to Xml and reports element definitions.
+//! 7. `tldr structure` / `tldr imports` on `notes.xyz` — unknown-ext-text-v1:
+//!    a text file under an unknown extension resolves to Text (TOC scan),
+//!    superseding the old unsupported verdict.
+//! 8. `tldr structure` on `schema.sql` — the same unknown-ext rule applied to
+//!    the motivating case: `.sql` is in no extension bucket, so the file
+//!    resolves to Text in an isolated dir AND beside a `lib.rs` (the parent's
+//!    dominant Rust must not mislabel it). Directory scans stay
+//!    extension-list-driven and never pick the file up.
 //!
 //! Fixture (one tempdir): `package.json` (project marker for the impact
 //! doc-root + a Json doc-language file with no references), `LICENSE`
@@ -28,8 +36,9 @@
 //! `Makefile` (ATX comment heading + `include config/other.mk`),
 //! `.bashrc` (shebang + `source ./lib/env.sh`), `lib/env.sh` (prose, no
 //! shebang), `sitemap` (`<?xml` + elements), `data.bin` (NUL bytes) and a
-//! `.xyz` text file pinning the unknown-extension negative. No daemon is
-//! started; every command takes the direct-compute path.
+//! `.xyz` text file pinning the unknown-extension Text resolution. The
+//! `.sql` probes build their own tempdirs (isolated / beside-`lib.rs`). No
+//! daemon is started; every command takes the direct-compute path.
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -106,8 +115,8 @@ fn build_extensionless_project() -> TempDir {
         "\u{0}\u{1}\u{2}\u{3}raw binary payload",
     );
 
-    // The unknown-extension negative: text content, unknown extension —
-    // stays unsupported (extension semantics are unchanged by the sniff).
+    // The unknown-extension probe: text content under an extension the
+    // extension map does not know — resolves to Text (unknown-ext-text-v1).
     write(root.join("notes.xyz"), "plain prose\n");
 
     dir
@@ -342,29 +351,102 @@ fn structure_on_xml_content_extensionless_file_reports_xml_elements() {
 }
 
 // =============================================================================
-// the negative: an unknown extension keeps its unsupported verdict
+// the unknown-extension flip: an existing text file under an unknown
+// extension resolves to Text (unknown-ext-text-v1)
 // =============================================================================
 
 #[test]
-fn unknown_extension_stays_unsupported() {
+fn unknown_extension_text_resolves_to_text() {
     let dir = build_extensionless_project();
     let root = dir.path();
 
     let output = tldr_cmd()
+        .arg("structure")
+        .arg(root.join("notes.xyz"))
+        .assert()
+        .success();
+    let json = parse(&output.get_output().stdout);
+
+    assert_eq!(
+        json["language"], "text",
+        "an existing unknown-extension TEXT file is a text target: {json}"
+    );
+    // "plain prose" is not heading-shaped, so the TOC scan yields nothing —
+    // the point is the RESOLUTION (previously a hard unsupported error).
+    let defs = json["files"][0]["definitions"].as_array().unwrap();
+    assert!(defs.is_empty(), "no heading-shaped lines: {defs:?}");
+
+    // imports takes the same Text resolution and the Text path scanner.
+    let output = tldr_cmd()
         .arg("imports")
         .arg(root.join("notes.xyz"))
         .assert()
-        .failure();
-    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
-    let code = output.get_output().status.code().expect("exit code");
+        .success();
+    let json = parse(&output.get_output().stdout);
+    assert_eq!(json["language"], "text", "got {json}");
+}
 
-    assert!(
-        stderr.contains("Could not detect language"),
-        "unknown extension keeps the plain verdict: {stderr}"
+// =============================================================================
+// unknown-ext-text-v1: `.sql` — the motivating case. `.sql` is in no
+// extension bucket, so the OLD behavior resolved it Ok(None) and the
+// structure command fell through to the PARENT DIRECTORY's dominant language
+// (`schema.sql` beside a `lib.rs` reported "rust"). The new Text resolution
+// must hold both in an isolated directory (nothing to mislabel from) and
+// next to a code file (the parent must NOT win). Directory SCANS are
+// unchanged: they key on the extension lists, which do not contain `.sql`.
+// =============================================================================
+
+const SQL_FIXTURE: &str = concat!(
+    "-- users table\n",
+    "CREATE TABLE users (\n",
+    "    id INTEGER PRIMARY KEY,\n",
+    "    name TEXT NOT NULL\n",
+    ");\n",
+);
+
+#[test]
+fn unknown_extension_sql_isolated_dir_is_text() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root.join("schema.sql"), SQL_FIXTURE);
+
+    let output = tldr_cmd()
+        .arg("structure")
+        .arg(root.join("schema.sql"))
+        .assert()
+        .success();
+    let json = parse(&output.get_output().stdout);
+
+    assert_eq!(
+        json["language"], "text",
+        "an isolated .sql file is a text target, not a fallback: {json}"
     );
-    assert!(
-        !stderr.to_lowercase().contains("binary"),
-        "text content must not be called binary: {stderr}"
+    // imports takes the same resolution.
+    let output = tldr_cmd()
+        .arg("imports")
+        .arg(root.join("schema.sql"))
+        .assert()
+        .success();
+    let json = parse(&output.get_output().stdout);
+    assert_eq!(json["language"], "text", "got {json}");
+}
+
+#[test]
+fn unknown_extension_sql_beside_lib_rs_is_text_not_parent_language() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    write(root.join("lib.rs"), "pub fn run() {}\n");
+    write(root.join("schema.sql"), SQL_FIXTURE);
+
+    let output = tldr_cmd()
+        .arg("structure")
+        .arg(root.join("schema.sql"))
+        .assert()
+        .success();
+    let json = parse(&output.get_output().stdout);
+
+    assert_eq!(
+        json["language"], "text",
+        "the parent directory's dominant Rust must NOT mislabel schema.sql: {json}"
     );
-    assert_eq!(code, 11, "got {code}: {stderr}");
 }

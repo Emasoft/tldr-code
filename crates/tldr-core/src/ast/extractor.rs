@@ -127,9 +127,26 @@ pub fn get_code_structure(
     // tree walks to nothing). `.log`/jsonl keep their path-only predicates:
     // the sniffer can never produce Log (its ladder is shebang/xml/Text) and
     // `.jsonl` targets always arrive with their extension.
+    //
+    // dotfiles-v1: `.env`-family and ignore files are extensionless or
+    // unknown-extension text, so they arrive HERE (sniffed/resolved Text) —
+    // and their lines are `KEY=value` assignments and glob patterns, not
+    // heading-shaped prose, so the TOC scanner's rules are meaningless for
+    // them. The dedicated line scanners in `ast::dotfiles` run BEFORE the
+    // TOC scan; any other text file keeps the TOC heuristic.
     if root.is_file() && (crate::ast::toc::is_text_path(root) || language == Language::Text) {
         let source = crate::ast::toc::parse_text_file(root)?;
-        let definitions = crate::ast::toc::scan_toc(&source);
+        let file_name = root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let definitions = if crate::ast::dotfiles::is_env_path(&file_name) {
+            crate::ast::dotfiles::parse_env_file(&source)
+        } else if crate::ast::dotfiles::is_ignore_path(&file_name) {
+            crate::ast::dotfiles::parse_ignore_file(&source)
+        } else {
+            crate::ast::toc::scan_toc(&source)
+        };
         let file_structure = crate::types::FileStructure {
             path: root.to_path_buf(),
             functions: Vec::new(),

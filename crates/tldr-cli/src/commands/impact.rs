@@ -124,9 +124,11 @@ impl ImpactArgs {
         // (`LICENSE` referencing `./docs/x.md`, a sniffed `.bashrc` sourcing
         // a script) must reach this closure too, and a binary file in either
         // slot is a clean structured error rather than a silent fall-through
-        // to the Python call-graph. Known-extension behavior is unchanged
-        // (`Ok(None)` for unknown-extension text keeps the pre-feature
-        // not-a-doc fall-through).
+        // to the Python call-graph. unknown-ext-text-v1: an existing text
+        // file under an unknown extension ALSO resolves now (to Text, which
+        // IS a doc language via `is_doc_language`), so `tldr impact
+        // notes.xyz` takes the document-link path instead of the pre-feature
+        // not-a-doc fall-through.
         let doc_target: Option<(PathBuf, PathBuf, Language)> = if self.path.is_file() {
             resolve_target_language(&self.path)?
                 .filter(|l| is_doc_language(*l))

@@ -639,7 +639,12 @@ fn derive_module_name(target: &str, project_path: &Path, language: Language) -> 
 /// `/var` → `/private/var` and `.`-style roots then compare equal); on any
 /// failure degrade through lexical fallbacks and finally to the file name so
 /// the function never panics and never returns an empty module.
-fn root_relative_path(target: &str, project_path: &Path) -> PathBuf {
+///
+/// `pub`: shared with the importers command (doc-target-importers-v1), which
+/// rewrites an ABSOLUTE doc-file module string to its project-root-relative
+/// spelling before `find_importers` runs — the same derivation, so the two
+/// commands agree byte-for-byte on the module string for the same target.
+pub fn root_relative_path(target: &str, project_path: &Path) -> PathBuf {
     let absolute = if Path::new(target).is_absolute() {
         PathBuf::from(target)
     } else {

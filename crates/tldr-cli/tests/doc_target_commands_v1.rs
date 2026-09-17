@@ -12,7 +12,12 @@
 //!    back to the legacy directory autodetect (Python last resort) for module
 //!    strings that are not files. Before, `Language::from_directory` skipped
 //!    every doc format, a doc-only project fell through to Python, and the
-//!    command silently reported `total: 0`.
+//!    command silently reported `total: 0`. When the module string names an
+//!    EXISTING DOC file it is additionally REWRITTEN to the file's
+//!    project-root-relative spelling WITH its extension (the shared
+//!    `root_relative_path` derivation whatbreaks uses), so an absolute input
+//!    (`/repo/docs/b.md`) matches the root-relative links documents write;
+//!    code-language module strings are never rewritten.
 //! 2. **whatbreaks File targets** (doc-target-whatbreaks-v1,
 //!    analysis/whatbreaks.rs): language resolves from the TARGET file;
 //!    `derive_module_name` works on the PROJECT-ROOT-RELATIVE path (absolute
@@ -148,14 +153,15 @@ fn importers_doc_file_without_lang_finds_linker() {
 }
 
 /// The ABSOLUTE spelling of the same doc file resolves the language from the
-/// FILE (the progress banner prints the resolved language): the language is
-/// Markdown, not the legacy Python fall-through. The module string itself
-/// stays the user's verbatim query — the importers command is a module-string
-/// query, and an absolute path is not a relative doc-link spelling, so the
-/// report is an honest zero (the RELATIVE form above is the matchable
-/// spelling; whatbreaks owns file-target derivation).
+/// FILE (the progress banner prints the resolved language) AND is rewritten to
+/// the file's project-root-relative spelling before the query runs
+/// (absolute-path ergonomics): an absolute input can never match a
+/// root-relative link verbatim, so the rewrite is what makes
+/// `tldr importers /abs/repo/b.md <root>` find a.md — the same module string
+/// the relative spelling produces. Code-language module strings are never
+/// rewritten (the sibling control below).
 #[test]
-fn importers_absolute_doc_file_resolves_markdown_language() {
+fn importers_absolute_doc_file_rewrites_to_root_relative_and_finds_linker() {
     let dir = build_doc_project();
     let root = dir.path();
     let absolute = root.join("b.md");
@@ -177,6 +183,10 @@ fn importers_absolute_doc_file_resolves_markdown_language() {
         stderr.contains("(Markdown)"),
         "language must resolve from the file, banner: {stderr}"
     );
+    assert!(
+        !stderr.contains(absolute.to_str().unwrap()),
+        "the banner must query the ROOT-RELATIVE rewrite, not the absolute input: {stderr}"
+    );
 
     let (code, json) = run_json(
         &[
@@ -191,14 +201,56 @@ fn importers_absolute_doc_file_resolves_markdown_language() {
     );
     assert_eq!(code, Some(0));
     assert_eq!(
-        json["module"],
-        absolute.to_str().unwrap(),
-        "module string verbatim"
+        json["module"], "b.md",
+        "the absolute input is rewritten to the root-relative spelling: {json}"
     );
     assert_eq!(
-        json["total"], 0,
-        "absolute spelling is not a relative doc link: {json}"
+        json["total"], 1,
+        "the rewritten query matches a.md's [B](b.md) link: {json}"
     );
+    assert!(json["importers"][0]["file"]
+        .as_str()
+        .unwrap()
+        .ends_with("a.md"));
+}
+
+/// The NESTED absolute spelling rewrites the same way (`/abs/repo/docs/x.md`
+/// → `docs/x.md` — the `root_relative_path` derivation strips the canonical
+/// root prefix), and the rewritten query exact-matches the root-relative link
+/// a README writes for the nested file.
+#[test]
+fn importers_absolute_nested_doc_file_rewrites_to_docs_path() {
+    let dir = build_doc_project();
+    let root = dir.path();
+
+    write(root.join("README.md"), "# Home\n\n[Guide](docs/guide.md)\n");
+    write(root.join("docs/guide.md"), "# Guide\n\nbody\n");
+
+    let absolute = root.join("docs/guide.md");
+    let (code, json) = run_json(
+        &[
+            "importers",
+            absolute.to_str().unwrap(),
+            root.to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        json["module"], "docs/guide.md",
+        "nested absolute input rewrites to the root-relative docs path: {json}"
+    );
+    assert_eq!(
+        json["total"], 1,
+        "the rewritten query exact-matches README's docs/guide.md link: {json}"
+    );
+    assert!(json["importers"][0]["file"]
+        .as_str()
+        .unwrap()
+        .ends_with("README.md"));
 }
 
 // =============================================================================

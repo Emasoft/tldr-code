@@ -18,7 +18,9 @@
 //! | YAML     | `key`       | top-level mapping keys of each document                                | the key, unquoted              | the `block_mapping_pair` (key + whole value subtree) |
 //! | Bash     | `function`  | `function_definition` (`name() {}` and `function name {}`)             | the function name              | the whole `function_definition` node |
 //! | XML/SVG  | `element`   | every `element` node — paired (`STag … ETag`) and self-closing (`EmptyElemTag`) alike, at ANY depth | the tag name; `tag#id` when an `id` attribute exists, else `tag.<first-class>` when a `class` attribute does | the whole `element` node incl. children |
+//! | XML/SVG  | `selector` / `at-rule` | the CSS body of a `<style>` element (style-inner-css-v1, below) — same rows a standalone stylesheet would emit | as CSS | the inner rule/at-rule node, re-based onto full-file coordinates |
 //! | HTML     | `element`   | every `element` (paired or wrapping a `self_closing_tag`), `script_element`, and `style_element` | the tag name; `tag#id` when an `id` attribute exists | the whole element node incl. children |
+//! | HTML     | `selector` / `at-rule` | the CSS body of a `style_element` (style-inner-css-v1, below) | as CSS | the inner rule/at-rule node, re-based onto full-file coordinates |
 //! | CSS      | `selector`  | every `rule_set` — top level OR nested inside an at-rule block          | the full selector text, whitespace-collapsed (`h1,\n  .card` → `h1, .card`) | the whole `rule_set` |
 //! | CSS      | `at-rule`   | every BLOCK-bearing at-rule (`at_rule`, `media_statement`, `supports_statement`, `keyframes_statement`) | the at-keyword (`@media`, `@keyframes`, `@font-face`, …) | the whole statement incl. its block |
 //! | LaTeX    | `section`   | every sectioning command (`part`, `chapter`, `section`, `subsection`, `subsubsection`, `paragraph`, `subparagraph` — starred variants and KOMA `\addsec`/`\addchap`/`\addpart` fold into the same node kinds) | the heading text: the braced group after the command, whitespace-collapsed; when the heading embeds commands the raw braced text is kept; with no braced heading, the command token | the whole sectioning node — the grammar nests the section's content inside it, so it spans to the next sectioning command of equal-or-higher level (or `\end{document}`/EOF) |
@@ -27,13 +29,30 @@
 //! | Markdown | `code-block` | every fenced code block (backtick/tilde fences); indented code blocks (4-space) emit too — the block grammar gives them their own node kind | the info string's first `language` token (a ```rust fence → `rust`); `"code-block"` when there is no language token (plain fences, indented blocks) | the whole code-block node incl. both fence lines |
 //! | Markdown | `table`     | every pipe table | the header-row cell texts joined with `" \| "` (whitespace-collapsed; the delimiter row is never part of the name) | the whole `pipe_table` node |
 //!
+//! ## Style-inner CSS (style-inner-css-v1)
+//!
+//! The CSS grammar ALSO runs on the `<style>` bodies embedded in HTML and
+//! SVG documents: the body of an HTML `style_element` (its `raw_text` child)
+//! and of an XML/SVG `style` element (the `CharData` — or CDATA-wrapped
+//! `CData` — children of its `content` node) is parsed with the CSS grammar
+//! and emits the same `selector` / `at-rule` rows a standalone `.css` file
+//! would, AFTER the owning element's `element` row. Spans are re-based onto
+//! FULL-file coordinates (bytes += the body's file offset; lines += the
+//! `\n` count before the body), so `full_source[byte_start..byte_end]` is
+//! the exact selector/at-rule source text and the line numbers are the
+//! file's. A whitespace-only body emits nothing; a failed inner parse keeps
+//! just the element row. `<script>` inner JS is documented FUTURE — no
+//! code-language walker runs inside embedded scripts.
+//!
 //! # SVG (and other XML dialects)
 //!
-//! SVG needs no special casing beyond the XML walker: `.svg` maps to
-//! `Language::Xml`, so `g`, `path`, `defs`, `style`, `linearGradient`, … all
-//! surface as ordinary nested `element` definitions in source order — that IS
-//! the requested groups/paths/elements/definitions/styles coverage — and each
-//! carries a `#id` name wherever an `id` attribute exists.
+//! SVG is ordinary XML to this module: `.svg` maps to `Language::Xml`, so
+//! `g`, `path`, `defs`, `style`, `linearGradient`, … all surface as nested
+//! `element` definitions in source order — that IS the requested
+//! groups/paths/elements/definitions/styles coverage — and each carries a
+//! `#id` name wherever an `id` attribute exists. The ONE special case is
+//! `<style>` (style-inner-css-v1, above): its CSS body emits as
+//! `selector`/`at-rule` rows parsed with the CSS grammar.
 //!
 //! Non-elements never emit: XML prolog/doctypedecl/PIs/comments and HTML
 //! doctype/comments are skipped by kind, CSS `;`-terminated statements
@@ -416,10 +435,51 @@ fn walk_bash(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
 /// against `tree-sitter-xml-0.7.0/xml/src/node-types.json`). Prolog, XML
 /// declaration, doctypedecl, PIs and comments are not `element` nodes and
 /// never emit; nested elements recurse in source order.
+///
+/// style-inner-css-v1 (SVG): an `element` whose tag name is exactly `style`
+/// (XML is case-sensitive; SVG's lowercase spelling is the one recognized)
+/// carries its CSS body inside its `content` child — verified empirically
+/// against the wired grammar (probe dump): a plain body surfaces as a named
+/// `CharData` child of `content` (the whole body INCLUDING the leading and
+/// trailing newlines is one chunk), and a CDATA-wrapped body as
+/// `content` → `CDSect` → `CData` (the `CData` text node is one level below
+/// `content`, inside the `CDSect` wrapper — the `CDStart`/`]]>` tokens are
+/// anonymous siblings). Every such chunk is parsed with the CSS grammar and
+/// emits its selectors/at-rules with spans re-based onto FULL-file
+/// coordinates (see [`emit_style_inner_css`]) — `<defs><style>` nesting needs
+/// no special casing because the recursion reaches the style element at any
+/// depth.
 fn walk_xml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
     if node.kind() == "element" {
         if let Some(name) = xml_element_name(&node, source) {
             out.push(element_def("element", name, node, source));
+        }
+        if xml_tag_name(&node, source).as_deref() == Some("style") {
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() != "content" {
+                    continue;
+                }
+                let mut inner = child.walk();
+                for text in child.children(&mut inner) {
+                    match text.kind() {
+                        // Plain body: one CharData chunk holding the whole CSS
+                        // text (leading/trailing newlines included).
+                        "CharData" => emit_style_inner_css(&text, source, out),
+                        // CDATA body: descend the CDSect wrapper for the
+                        // CData text node (verified shape above).
+                        "CDSect" => {
+                            let mut sect = text.walk();
+                            for part in text.children(&mut sect) {
+                                if part.kind() == "CData" {
+                                    emit_style_inner_css(&part, source, out);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
     }
 
@@ -427,6 +487,27 @@ fn walk_xml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
     for child in node.children(&mut cursor) {
         walk_xml(child, source, out);
     }
+}
+
+/// Raw tag name of an XML `element`: the `Name` child of its `STag`
+/// (self-closing `EmptyElemTag` elements have no CSS body, so the STag-only
+/// lookup is sufficient for the style-inner check; `None` for self-closing
+/// and grammar-error shapes). Distinct from [`xml_element_name`], which
+/// refines the name with `#id`/`.class` suffixes.
+fn xml_tag_name(element: &Node, source: &str) -> Option<String> {
+    let mut cursor = element.walk();
+    for child in element.children(&mut cursor) {
+        if child.kind() != "STag" {
+            continue;
+        }
+        let mut tag_cursor = child.walk();
+        for part in child.children(&mut tag_cursor) {
+            if part.kind() == "Name" {
+                return Some(source[part.byte_range()].to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Name of an XML `element`: the tag name from the `Name` child of its start
@@ -500,11 +581,30 @@ fn xml_attribute(attribute: &Node, source: &str) -> (String, Option<String>) {
 /// and `style_element` (each `start_tag raw_text? end_tag`) — verified against
 /// `tree-sitter-html-0.23.2/src/node-types.json`. `doctype` and `comment` are
 /// skipped by kind; nested elements recurse in source order.
+///
+/// style-inner-css-v1: a `style_element`'s CSS body is the named `raw_text`
+/// child (verified: `style_element = start_tag raw_text? end_tag`). When that
+/// body is non-empty it is parsed with the CSS grammar and its
+/// selectors/at-rules emit too, with spans re-based onto FULL-file
+/// coordinates (see [`emit_style_inner_css`]). `<script>` inner JS is a
+/// documented FUTURE — no code-language walker equivalent exists here.
 fn walk_html(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
     match node.kind() {
-        "element" | "script_element" | "style_element" => {
+        "element" | "script_element" => {
             if let Some(name) = html_element_name(&node, source) {
                 out.push(element_def("element", name, node, source));
+            }
+        }
+        "style_element" => {
+            if let Some(name) = html_element_name(&node, source) {
+                out.push(element_def("element", name, node, source));
+            }
+            // The CSS body: the `raw_text` child of the style_element itself.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "raw_text" {
+                    emit_style_inner_css(&child, source, out);
+                }
             }
         }
         _ => {}
@@ -576,6 +676,66 @@ fn html_attribute(attribute: &Node, source: &str) -> (String, Option<String>) {
         }
     }
     (name.unwrap_or_default(), value)
+}
+
+// =============================================================================
+// style-inner CSS — the body of html <style> / xml (svg) <style> elements
+// (style-inner-css-v1), parsed with the CSS grammar and re-based onto the
+// FULL file's coordinates
+// =============================================================================
+
+/// Parse one `<style>` body chunk (the `raw_text` child of an HTML
+/// `style_element`, a `CharData` child of an XML `style` element's `content`,
+/// or the `CData` node inside that content's `CDSect` wrapper) with the CSS
+/// grammar and emit its selectors/at-rules.
+///
+/// Spans are re-based onto FULL-file coordinates so the module's slice-back
+/// invariant holds for inner definitions too:
+///
+/// - `byte_start`/`byte_end` += the body's byte offset in the full file. The
+///   inner defs are byte offsets into `source[body.byte_range()]` — the SAME
+///   bytes at `body.start_byte() + offset` in the full file, so the shifted
+///   span slices back to the identical selector/at-rule text.
+/// - `line_start`/`line_end`/`definition_line` += the number of `\n` bytes in
+///   the full file BEFORE the body (`line_base`). The inner tree's line 1 is
+///   the physical line the body starts on (the `<style>` tag's line), so
+///   inner line N is full line `N + line_base`.
+///
+/// Guards: an empty/whitespace-only body emits nothing (no wasted parse) and
+/// a failed inner parse keeps just the element definition — the element row
+/// is already pushed by the caller, so this function can only ADD rows, never
+/// crash the walk.
+fn emit_style_inner_css(body: &Node, source: &str, out: &mut Vec<DefinitionInfo>) {
+    let text = &source[body.byte_range()];
+    if text.trim().is_empty() {
+        return;
+    }
+    let Ok(tree) = crate::ast::parser::PARSER_POOL.parse(text, Language::Css) else {
+        return;
+    };
+
+    let content_offset = body.start_byte();
+    let line_base = source.as_bytes()[..content_offset]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count() as u32;
+
+    let mut inner = Vec::new();
+    walk_css(tree.root_node(), text, &mut inner);
+    for mut def in inner {
+        if let Some(start) = def.byte_start.as_mut() {
+            *start += content_offset as u64;
+        }
+        if let Some(end) = def.byte_end.as_mut() {
+            *end += content_offset as u64;
+        }
+        def.line_start += line_base;
+        def.line_end += line_base;
+        if let Some(line) = def.definition_line.as_mut() {
+            *line += line_base;
+        }
+        out.push(def);
+    }
 }
 
 // =============================================================================
@@ -963,19 +1123,34 @@ mod tests {
     #[test]
     fn markup_formats_emit_elements_with_id_and_class_naming() {
         // HTML: paired elements, a script_element, a style_element, an id
-        // name, and a void (self-closing) element.
+        // name, and a void (self-closing) element. The style element's CSS
+        // body ALSO emits (style-inner-css-v1): `a{}` parses as a rule_set
+        // whose selector row lands right after the owning `style` element.
         let src = "<html><head><title>Page</title><style>a{}</style></head>\
                    <body><script src=\"app.js\"></script><br/></body></html>";
         let tree = parse(src, Language::Html).unwrap();
         let elements = extract_elements(Language::Html, &tree, src);
-        let names: Vec<&str> = elements.iter().map(|e| e.name.as_str()).collect();
+        let named: Vec<(String, String)> = elements
+            .iter()
+            .map(|e| (e.kind.clone(), e.name.clone()))
+            .collect();
         assert_eq!(
-            names,
-            vec!["html", "head", "title", "style", "body", "script", "br"]
+            named,
+            vec![
+                ("element".to_string(), "html".to_string()),
+                ("element".to_string(), "head".to_string()),
+                ("element".to_string(), "title".to_string()),
+                ("element".to_string(), "style".to_string()),
+                ("selector".to_string(), "a".to_string()),
+                ("element".to_string(), "body".to_string()),
+                ("element".to_string(), "script".to_string()),
+                ("element".to_string(), "br".to_string()),
+            ]
         );
-        for e in &elements {
-            assert_eq!(e.kind, "element");
-        }
+        // The script_element still emits as a plain element and its inner JS
+        // never emits (documented FUTURE — no code-language walker inside
+        // embedded scripts): the only non-`element` kind is the inner-CSS
+        // selector row.
 
         // XML: id-naming and class-naming on nested elements.
         let src = "<?xml version=\"1.0\"?><root id=\"r\"><child/></root>";

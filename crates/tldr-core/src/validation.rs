@@ -38,8 +38,14 @@ use crate::{Language, TldrError, TldrResult};
 /// 5. **Extensionless text** → the content ladder (shebang → `<?xml` → Text,
 ///    see `fs::sniff`); an unsupported shebang yields the plain
 ///    "Could not detect language" error instead of the binary one.
-/// 6. **Unrecognized extension with text content** (`.xyz`) → `Ok(None)` —
-///    the unknown-extension negative contract is unchanged.
+/// 6. **Unrecognized extension with text content** (`.xyz`) → `Some(Text)` —
+///    unknown-ext-text-v1: a text file with an extension the tool does
+///    not know is a text TARGET (the extensionless rule extended to unknown
+///    extensions), not an error. Single-file structure/imports report
+///    `language: "text"` with the TOC/paths scans instead of being
+///    mislabeled by the parent directory's dominant language. This is TARGET
+///    resolution only: directory SCANS still key on the extension lists
+///    (`from_path` stays `None` for `.xyz`), so scan behavior is unchanged.
 ///
 /// The sniff reads at most 64 KiB regardless of file size.
 pub fn resolve_target_language(path: &Path) -> TldrResult<Option<Language>> {
@@ -85,8 +91,14 @@ pub fn resolve_target_language(path: &Path) -> TldrResult<Option<Language>> {
         };
     }
 
-    // 7. Unrecognized extension with text content: unchanged negative.
-    Ok(None)
+    // 7. Unrecognized extension with text content: a text target
+    //    (unknown-ext-text-v1). The step-2 `is_file` gate already
+    //    handled missing paths and directories, and step 5 rejected binary
+    //    content, so reaching here means TEXT bytes under an extension the
+    //    extension map does not know — Text, not `Ok(None)` (which would let
+    //    the structure command fall through to the parent directory's
+    //    dominant language and mislabel `schema.sql` as "python"/"rust").
+    Ok(Some(Language::Text))
 }
 
 /// Read up to [`BINARY_SAMPLE_MAX`] bytes of `path` for the sniff.
@@ -182,8 +194,11 @@ pub fn validate_file_path(file: &str, project: Option<&Path>) -> TldrResult<Path
 /// extensionless-targets-v1: with no explicit language, detection first tries
 /// the extension, then — through [`resolve_target_language`] — the content
 /// sniff for extensionless text files (shebang → `<?xml` → Text) and the
-/// binary rejection. Known-extension and unknown-extension (`.xyz`) behavior
-/// is unchanged.
+/// binary rejection. unknown-ext-text-v1: an EXISTING text file with an
+/// unknown extension also resolves (to Text) through the helper now, so
+/// imports/daemon callers stop erroring on `notes.xyz` too; a MISSING or
+/// nonexistent unknown-extension path still keeps the historical
+/// "Could not detect language" error verbatim.
 ///
 /// ooxml-structure-v1: OOXML containers (`.docx`/`.xlsx`/`.pptx`) also
 /// resolve to `Ok(None)` through the helper, so sibling consumers (imports,
@@ -208,7 +223,8 @@ pub fn validate_file_path(file: &str, project: Option<&Path>) -> TldrResult<Path
 /// let lang = detect_or_parse_language(None, Path::new("script.py")).unwrap();
 /// assert_eq!(lang, Language::Python);
 ///
-/// // Error on unknown
+/// // Error on a nonexistent unknown-extension path (an EXISTING unknown-ext
+/// // text file resolves to Text through the shared helper)
 /// let result = detect_or_parse_language(None, Path::new("file.xyz"));
 /// assert!(result.is_err()); // UnsupportedLanguage error
 /// ```
@@ -219,11 +235,12 @@ pub fn detect_or_parse_language(lang: Option<&str>, path: &Path) -> TldrResult<L
             .parse()
             .map_err(|_| TldrError::UnsupportedLanguage(lang_str.to_string()))
     } else {
-        // extensionless-targets-v1: extension first, then the shared
-        // single-file resolution helper (content sniff for extensionless
-        // text, binary rejection). `Ok(None)` from the helper — missing
-        // path, directory, or unknown-extension text — keeps the historical
-        // "Could not detect language" error verbatim.
+        // extensionless-targets-v1 + unknown-ext-text-v1: extension first,
+        // then the shared single-file resolution helper (content sniff for
+        // extensionless text, binary rejection, Text for unknown-extension
+        // text). `Ok(None)` from the helper — missing path, directory, or
+        // OOXML container — keeps the historical "Could not detect language"
+        // error verbatim.
         if let Some(lang) = Language::from_path(path) {
             return Ok(lang);
         }
@@ -386,15 +403,39 @@ mod tests {
     // extensionless-targets-v1: resolve_target_language + sniffed detection
     // =========================================================================
 
-    /// The `.xyz` negative is a PIN: an unknown extension with text content
-    /// stays undetected even though the content is text.
     #[test]
-    fn test_resolve_unknown_extension_text_is_none() {
+    fn test_resolve_unknown_extension_text_is_text() {
+        // unknown-ext-text-v1 (supersedes the old `.xyz` → Ok(None) pin): an
+        // existing text file under an unknown extension resolves to Text —
+        // the extensionless rule extended to unknown extensions.
         let temp = TempDir::new().unwrap();
         let file = temp.path().join("notes.xyz");
         std::fs::write(&file, "plain prose\n").unwrap();
         let resolved = resolve_target_language(&file).unwrap();
-        assert_eq!(resolved, None, "unknown extension keeps the negative");
+        assert_eq!(resolved, Some(Language::Text), "unknown-ext text is Text");
+    }
+
+    #[test]
+    fn test_resolve_unknown_extension_binary_still_rejects() {
+        // The binary rejection outranks the new Text resolution: `.xyz`
+        // bytes that are binary keep the structured "binary file" error.
+        let temp = TempDir::new().unwrap();
+        let file = temp.path().join("blob.xyz");
+        std::fs::write(&file, b"\x00\x01\x02\x03binary").unwrap();
+        let err = resolve_target_language(&file).unwrap_err();
+        assert!(
+            matches!(&err, TldrError::UnsupportedLanguage(m) if m.to_lowercase().contains("binary")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_detect_or_parse_unknown_extension_missing_path_still_errors() {
+        // Only an EXISTING file resolves to Text; a nonexistent
+        // unknown-extension path keeps the plain "Could not detect language"
+        // error (the step-2 not-a-file gate fires before any content read).
+        let result = detect_or_parse_language(None, Path::new("file.xyz"));
+        assert!(matches!(result, Err(TldrError::UnsupportedLanguage(_))));
     }
 
     #[test]

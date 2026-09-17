@@ -26,6 +26,7 @@
 pub mod count;
 pub mod csvscan;
 pub mod doclinks;
+pub mod dotfiles;
 pub mod elements;
 pub mod extract;
 pub mod extractor;
@@ -44,6 +45,7 @@ pub use csvscan::{
     CsvRecord,
 };
 pub use doclinks::extract_doc_links;
+pub use dotfiles::{is_env_path, is_ignore_path, parse_env_file, parse_ignore_file};
 pub use elements::extract_elements;
 pub use extract::{extract_file, extract_file_with_lang, extract_from_tree};
 pub use extractor::get_code_structure;

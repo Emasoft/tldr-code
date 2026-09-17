@@ -14,6 +14,7 @@ use tldr_core::{find_importers, resolve_target_language, Language};
 
 use crate::commands::daemon_router::{params_with_module, try_daemon_route};
 use crate::output::{format_importers_text, OutputFormat, OutputWriter};
+use tldr_core::analysis::doc_impact::is_doc_language;
 
 /// Find all files that import a given module
 #[derive(Debug, Args)]
@@ -45,7 +46,12 @@ impl ImportersArgs {
             anyhow::bail!("Path not found: {}", self.path.display());
         }
 
-        // Try daemon first for cached result
+        // Try daemon first for cached result. NB the module string reaches
+        // the daemon VERBATIM — the daemon handler owns its own language
+        // resolution and has no doc-target arm, so the doc rewrite below
+        // (and the A2 per-file language resolution) applies to the
+        // direct-compute path, which is what the doc_target_commands_v1
+        // pins exercise.
         if let Some(mut result) = try_daemon_route::<ImportersReport>(
             &self.path,
             "importers",
@@ -56,48 +62,36 @@ impl ImportersArgs {
             return Ok(());
         }
 
-        // Determine language.
-        //
-        // doc-target-importers-v1: the module string can itself name an
-        // EXISTING FILE — documents do (`tldr importers b.md <root>` queries
-        // the file `b.md` by its root-relative path; the doc arm of
-        // `module_matches`, tldr-core/src/analysis/importers.rs, path-matches
-        // link targets only when the language is a doc language). The old
-        // resolution (`--lang` else `Language::from_directory(path)` else
-        // Python) could never produce a doc language on such a query:
-        // `from_directory` skips every doc format via
-        // `is_project_language_signal` (types.rs), so a doc-only project fell
-        // through to Python, `find_importers` walked only `.py` files, and
-        // the command silently reported `total: 0`.
-        //
-        // Resolution order (documented decision):
-        // 1. `--lang` — the unchanged override, first.
-        // 2. The module string LOOKS like a path (contains a path separator
-        //    or a dot) AND names an existing file (resolved relative to the
-        //    path arg, else as given, i.e. CWD-relative) → the shared
-        //    `resolve_target_language` decides: doc language → use it, code
-        //    language → use it. Per-file truth beats directory dominance, so
-        //    `tldr importers lib.py <ts-project>` still resolves Python.
-        // 3. Everything else — module strings that are not files
-        //    (`std::collections::HashMap`, `myapp.service`, `utils`), targets
-        //    that resolve to `Ok(None)` (missing path, directory, unknown
-        //    extension, OOXML container) or `Err` (binary content) — keeps
-        //    the LEGACY fallback byte-identical to the pre-fix behavior:
-        //    directory autodetect from the path arg, Python as last resort.
-        let language = self
-            .lang
-            .unwrap_or_else(|| self.language_from_module_file_or_directory());
+        // doc-target-importers-v1 + the follow-up (absolute-path ergonomics):
+        // when the module string names an EXISTING FILE and resolves to a DOC
+        // language, the module string is rewritten to the file's
+        // PROJECT-ROOT-RELATIVE spelling WITH its extension (the same
+        // `root_relative_path` derivation whatbreaks uses, so the two
+        // commands agree byte-for-byte) before `find_importers` runs. Links
+        // inside the project are written relative to their file
+        // (`b.md`, `docs/b.md` — the suffix semantics of `doc_module_matches`
+        // match the root-relative form), while a user-supplied ABSOLUTE path
+        // (`/repo/docs/b.md`) can never match one verbatim. Code-language
+        // module strings are NEVER rewritten (dotted-module queries like
+        // `lib.py` → `lib` stay queries for the dotted name).
+        let (module, language) = match self.lang {
+            Some(lang) => (self.module.clone(), lang),
+            None => match self.resolve_module_file_language() {
+                Some(resolved) => resolved,
+                None => (self.module.clone(), self.legacy_language_fallback()),
+            },
+        };
 
         // Fallback to direct compute
         writer.progress(&format!(
             "Finding files that import '{}' in {} ({:?})...",
-            self.module,
+            module,
             self.path.display(),
             language
         ));
 
         // Find importers
-        let mut result = find_importers(&self.path, &self.module, language)?;
+        let mut result = find_importers(&self.path, &module, language)?;
         self.apply_limit(&mut result);
         self.output_result(&writer, &result)?;
 
@@ -111,31 +105,56 @@ impl ImportersArgs {
     }
 
     /// doc-target-importers-v1: `--lang`-less language resolution — see the
-    /// documented order at the call site. The module string names an existing
-    /// file (path-shaped AND present relative to the path arg, else as given)
-    /// → per-file `resolve_target_language`; anything else keeps the legacy
-    /// directory autodetect with the Python last resort.
-    fn language_from_module_file_or_directory(&self) -> Language {
+    /// documented order at the call site.
+    ///
+    /// Returns `Some((module, language))` when the module string names an
+    /// existing file: `language` is the per-file `resolve_target_language`
+    /// verdict and `module` is the module string to query with — for a DOC
+    /// language the PROJECT-ROOT-RELATIVE path WITH extension (absolute
+    /// inputs are rewritten so they can match root-relative links;
+    /// `root_relative_path` keeps `b.md` → `b.md` and
+    /// `/repo/docs/b.md` → `docs/b.md` when the query path arg is the
+    /// project root), for a CODE language the module string VERBATIM
+    /// (dotted-module queries must not be rewritten). `None` keeps the
+    /// legacy directory autodetect with the Python last resort: module
+    /// strings that are not files (`std::collections::HashMap`,
+    /// `myapp.service`, `utils`), targets resolving to `Ok(None)`
+    /// (directory, OOXML container) and binary content (`Err`).
+    fn resolve_module_file_language(&self) -> Option<(String, Language)> {
         let looks_like_path =
             self.module.contains('.') || self.module.contains('/') || self.module.contains('\\');
-        if looks_like_path {
-            let via_root = self.path.join(&self.module);
-            let candidate = if via_root.exists() {
-                Some(via_root)
-            } else {
-                let direct = PathBuf::from(&self.module);
-                direct.exists().then_some(direct)
-            };
-            if let Some(file) = candidate {
-                // `Ok(None)` (missing path, directory, unknown extension,
-                // OOXML container) and `Err` (binary content) both fall
-                // through: no language this command can truthfully claim
-                // from such a target.
-                if let Ok(Some(lang)) = resolve_target_language(&file) {
-                    return lang;
-                }
-            }
+        if !looks_like_path {
+            return None;
         }
+        let via_root = self.path.join(&self.module);
+        let candidate = if via_root.exists() {
+            Some(via_root)
+        } else {
+            let direct = PathBuf::from(&self.module);
+            direct.exists().then_some(direct)
+        };
+        let file = candidate?;
+        // `Ok(None)` (directory, OOXML container) and `Err` (binary content)
+        // both fall through: no language this command can truthfully claim
+        // from such a target.
+        let language = resolve_target_language(&file).ok()??;
+        let module = if is_doc_language(language) {
+            // Doc languages reference each other by PATH: rewrite the module
+            // string to the file's project-root-relative spelling (with
+            // extension). A root-relative input round-trips unchanged; an
+            // absolute one is stripped against the query path arg.
+            tldr_core::analysis::whatbreaks::root_relative_path(&self.module, &self.path)
+                .to_string_lossy()
+                .replace('\\', "/")
+        } else {
+            self.module.clone()
+        };
+        Some((module, language))
+    }
+
+    /// The pre-fix legacy fallback, byte-identical: directory autodetect from
+    /// the path arg, Python as last resort.
+    fn legacy_language_fallback(&self) -> Language {
         Language::from_directory(&self.path).unwrap_or(Language::Python)
     }
 

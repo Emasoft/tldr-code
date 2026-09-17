@@ -46,22 +46,25 @@ impl StructureArgs {
         //
         // Resolution order:
         // - Single FILE input: `resolve_target_language` (extensionless-
-        //   targets-v1) — the ONE single-file helper: known extension →
-        //   `from_path` (formats-extension-v1, byte-identical), extensionless
-        //   existing file → content sniff (shebang → `<?xml` → Text; a
-        //   binary file is a structured error, NOT a Python mislabel),
-        //   missing/directory/unrecognized-extension → `Ok(None)`. OOXML
-        //   containers (`.docx`/`.xlsx`/`.pptx`, ooxml-structure-v1) also
-        //   resolve to `Ok(None)` — the sniff must never see their ZIP
-        //   bytes — so we fall through to the directory/Python fallback and
-        //   `get_code_structure`'s `is_ooxml_path` early-return owns the
-        //   container (its output reports `language: null`).
+        //   targets-v1 + unknown-ext-text-v1) — the ONE single-file helper:
+        //   known extension → `from_path` (formats-extension-v1,
+        //   byte-identical), extensionless existing file → content sniff
+        //   (shebang → `<?xml` → Text; a binary file is a structured error,
+        //   NOT a Python mislabel), unknown-extension existing file →
+        //   `Some(Text)`. `Ok(None)` — and therefore the parent-directory
+        //   fallback below — is reached by DIRECTORIES, MISSING paths and
+        //   OOXML containers only. OOXML containers (`.docx`/`.xlsx`/
+        //   `.pptx`, ooxml-structure-v1) resolve to `Ok(None)` — the sniff
+        //   must never see their ZIP bytes — so we fall through to the
+        //   directory/Python fallback and `get_code_structure`'s
+        //   `is_ooxml_path` early-return owns the container (its output
+        //   reports `language: null`).
         //   `from_directory` deliberately filters the 7 formats languages
         //   (Json/Yaml/Toml/Xml/Html/Css/Bash) via
         //   `is_project_language_signal`, so a lone `config.json` /
         //   `config.toml` would otherwise fall through to the Python
-        //   default instead of reporting its own format. For an
-        //   unrecognized single file, fall back to the parent directory's
+        //   default instead of reporting its own format. For a
+        //   non-resolving single file, fall back to the parent directory's
         //   dominant language (mirroring `get_code_structure`, which
         //   anchors single-file runs on the parent), then to the
         //   historical Python default.

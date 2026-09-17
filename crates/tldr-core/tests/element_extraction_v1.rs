@@ -474,7 +474,9 @@ fn svg_groups_paths_defs_and_style_are_nested_elements() {
     assert_element_invariants(&defs, "icon.svg");
 
     // No SVG special-casing: every nested element is an ordinary `element`
-    // definition in source order, `#id`-named wherever an id exists.
+    // definition in source order, `#id`-named wherever an id exists. The ONE
+    // exception is the `<style>` body (style-inner-css-v1): `.a { … }` also
+    // emits as a `selector` row, right after the owning `style` element.
     let sequence: Vec<(String, String)> = defs
         .iter()
         .map(|d| (d.kind.clone(), d.name.clone()))
@@ -487,6 +489,7 @@ fn svg_groups_paths_defs_and_style_are_nested_elements() {
         ("element", "path"),
         ("element", "circle"),
         ("element", "style"),
+        ("selector", ".a"),
     ]
     .iter()
     .map(|(k, n)| (k.to_string(), n.to_string()))
@@ -528,7 +531,11 @@ fn html_element_tree_with_script_style_and_id_naming() {
     assert_element_invariants(&defs, "pinned.html");
 
     // Doctype is skipped; script_element/style_element are `element` kinds;
-    // the void `<br/>` is an element; `body` carries its `#id` name.
+    // the void `<br/>` is an element; `body` carries its `#id` name. The
+    // style_element's CSS body ALSO emits (style-inner-css-v1): `body { … }`
+    // is a `selector` row right after the owning `style` element — the same
+    // name as the HTML `<body>` element but a different kind, so the
+    // (kind, name) sequence stays unambiguous.
     let sequence: Vec<(String, String)> = defs
         .iter()
         .map(|d| (d.kind.clone(), d.name.clone()))
@@ -538,6 +545,7 @@ fn html_element_tree_with_script_style_and_id_naming() {
         ("element", "head"),
         ("element", "title"),
         ("element", "style"),
+        ("selector", "body"),
         ("element", "body#main"),
         ("element", "script"),
         ("element", "p"),
@@ -562,6 +570,189 @@ fn html_element_tree_with_script_style_and_id_naming() {
     let br = find_element(&defs, "pinned.html", "element", "br");
     assert_span(br, "pinned.html", "element:br", 10, 10);
     assert_byte_slice(br, HTML_FIXTURE, "pinned.html", "<br/>");
+}
+
+// =============================================================================
+// style-inner CSS (style-inner-css-v1): <style> bodies emit selector/at-rule
+// rows re-based onto FULL-file coordinates — html style_element, svg <style>
+// (plain + CDATA), whitespace guard, script-inner JS guard
+// =============================================================================
+
+/// Mid-file HTML <style>: the element sits at line 4 and the CSS body spans
+/// three physical lines, so every inner row's line numbers are FILE lines
+/// (line_base = the newlines before the raw_text body) and every byte span
+/// slices back against the FULL source — the module's slice-back invariant
+/// must hold for inner definitions too. A `<script>` body in the same
+/// document emits its element row but NEVER inner-JS rows (documented
+/// FUTURE — no code-language walker runs inside embedded scripts).
+const HTML_STYLE_INNER_FIXTURE: &str = "<!DOCTYPE html>\n\
+                                        <html>\n\
+                                        <head>\n\
+                                        <style>\n\
+                                        body { color: red; }\n\
+                                        @media print {\n\
+                                        \x20 .p { color: black; }\n\
+                                        }\n\
+                                        </style>\n\
+                                        </head>\n\
+                                        <body id=\"main\">\n\
+                                        <script>var x = 1;</script>\n\
+                                        </body>\n\
+                                        </html>\n";
+
+#[test]
+fn html_style_inner_css_emits_rebased_selectors_at_rules_and_slices_back() {
+    let defs = extract_elements("styled.html", HTML_STYLE_INNER_FIXTURE, Language::Html);
+    assert_element_invariants(&defs, "styled.html");
+
+    // Exact sequence: the style element's CSS body emits AFTER the owning
+    // element row (selector → at-rule → its nested selector), and the
+    // `<script>` body contributes NOTHING beyond its element row.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("element", "html"),
+        ("element", "head"),
+        ("element", "style"),
+        ("selector", "body"),
+        ("at-rule", "@media"),
+        ("selector", ".p"),
+        ("element", "body#main"),
+        ("element", "script"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [styled.html]: expected exact style-inner sequence"
+    );
+
+    // Mid-file line offsets: `<style>` opens on line 4, so the inner rows are
+    // FILE lines 5/6-7/7 — not the inner tree's 2/3-4/4.
+    let body_sel = find_element(&defs, "styled.html", "selector", "body");
+    assert_span(body_sel, "styled.html", "selector:body", 5, 5);
+    // Byte slice-back against the FULL source: the rebased span is the exact
+    // rule text.
+    let (bs, be) = (
+        body_sel.byte_start.unwrap() as usize,
+        body_sel.byte_end.unwrap() as usize,
+    );
+    assert_eq!(
+        &HTML_STYLE_INNER_FIXTURE[bs..be],
+        "body { color: red; }",
+        "selector:body must slice back to the exact rule text"
+    );
+
+    let media = find_element(&defs, "styled.html", "at-rule", "@media");
+    assert_span(media, "styled.html", "at-rule:@media", 6, 8);
+    let (ms, me) = (
+        media.byte_start.unwrap() as usize,
+        media.byte_end.unwrap() as usize,
+    );
+    assert!(
+        HTML_STYLE_INNER_FIXTURE[ms..me].starts_with("@media print {"),
+        "at-rule:@media must slice back to the at-rule source, got {:?}",
+        &HTML_STYLE_INNER_FIXTURE[ms..me]
+    );
+
+    let p = find_element(&defs, "styled.html", "selector", ".p");
+    assert_span(p, "styled.html", "selector:.p", 7, 7);
+    let (ps, pe) = (p.byte_start.unwrap() as usize, p.byte_end.unwrap() as usize);
+    assert_eq!(
+        &HTML_STYLE_INNER_FIXTURE[ps..pe],
+        ".p { color: black; }",
+        "selector:.p must slice back to the exact nested rule text"
+    );
+}
+
+/// SVG `<style>` in both spellings the XML grammar produces (verified
+/// empirically against tree-sitter-xml 0.7.0): a plain body is a `CharData`
+/// child of the style element's `content`, and a CDATA-wrapped body is
+/// `content` → `CDSect` → `CData`. Both must emit, with full-file spans.
+const SVG_STYLE_INNER_FIXTURE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\">\n\
+                                       <defs>\n\
+                                       <style>\n\
+                                       .a { fill: red; }\n\
+                                       </style>\n\
+                                       </defs>\n\
+                                       <style><![CDATA[\n\
+                                       #b circle { stroke: blue; }\n\
+                                       ]]></style>\n\
+                                       </svg>\n";
+
+#[test]
+fn svg_style_inner_css_emits_from_chardata_and_cdata_bodies() {
+    let defs = extract_elements("icon2.svg", SVG_STYLE_INNER_FIXTURE, Language::Xml);
+    assert_element_invariants(&defs, "icon2.svg");
+
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("element", "svg"),
+        ("element", "defs"),
+        ("element", "style"),
+        ("selector", ".a"),
+        ("element", "style"),
+        ("selector", "#b circle"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [icon2.svg]: expected both style bodies to emit"
+    );
+
+    // Plain CharData body (line 4, mid-file): full-file line + byte slice-back.
+    let a = find_element(&defs, "icon2.svg", "selector", ".a");
+    assert_span(a, "icon2.svg", "selector:.a", 4, 4);
+    let (as_, ae) = (a.byte_start.unwrap() as usize, a.byte_end.unwrap() as usize);
+    assert_eq!(
+        &SVG_STYLE_INNER_FIXTURE[as_..ae],
+        ".a { fill: red; }",
+        "selector:.a must slice back to the exact rule text"
+    );
+
+    // CDATA body (lines 8): the CDSect-wrapped CData chunk also rebases.
+    let b = find_element(&defs, "icon2.svg", "selector", "#b circle");
+    assert_span(b, "icon2.svg", "selector:#b circle", 8, 8);
+    let (bs, be) = (b.byte_start.unwrap() as usize, b.byte_end.unwrap() as usize);
+    assert_eq!(
+        &SVG_STYLE_INNER_FIXTURE[bs..be],
+        "#b circle { stroke: blue; }",
+        "selector:#b circle must slice back to the exact rule text"
+    );
+}
+
+#[test]
+fn whitespace_only_style_body_and_script_body_emit_no_inner_rows() {
+    // Whitespace-only <style> body: the element rows still emit, no CSS rows
+    // (and no wasted parse). A script body never emits inner JS.
+    let src = "<html>\n<style>\n   \n</style>\n<script>\nvar x = 1;\n</script>\n</html>\n";
+    let defs = extract_elements("guarded.html", src, Language::Html);
+    assert_element_invariants(&defs, "guarded.html");
+
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("element", "html"),
+        ("element", "style"),
+        ("element", "script"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [guarded.html]: whitespace style + script inner stay inert"
+    );
 }
 
 // =============================================================================

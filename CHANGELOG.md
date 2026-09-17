@@ -4,6 +4,69 @@
 
 ### Fixed
 
+- **`tldr importers` rewrites an ABSOLUTE doc-file module string to its project-root-relative
+  spelling** (doc-target-importers-v1 absolute-path ergonomics). When the module string names an
+  EXISTING file that resolves to a DOC language, it is now rewritten to the file's
+  project-root-relative path WITH its extension — the same `root_relative_path` derivation
+  (`analysis/whatbreaks.rs`, now `pub`) whatbreaks uses, so the two commands agree byte-for-byte on
+  the module string for the same target. The point: documents reference each other by
+  ROOT-RELATIVE path (`[B](b.md)`, `[Guide](docs/guide.md)`), and an absolute user input
+  (`tldr importers /repo/docs/b.md <root>`) can never match one verbatim — it silently reported
+  `total: 0` with the language resolved correctly. Root-relative inputs round-trip unchanged;
+  nested absolute inputs strip to `docs/guide.md`; code-language module strings are NEVER
+  rewritten (dotted-module queries like `lib.py` stay queries for the dotted name, and
+  `std::collections::HashMap` keeps its legacy non-file path). Pinned by `doc_target_commands_v1.rs`
+  (absolute `b.md` finds a.md; nested absolute `docs/guide.md` finds the README; the
+  code-language control stays verbatim).
+- **HTML/SVG `<style>` bodies now emit their CSS** (style-inner-css-v1, `ast::elements`). The CSS
+  walker also runs on the body of an HTML `style_element` (its `raw_text` child) and of an
+  XML/SVG `<style>` element (the `CharData` child of its `content` — and the `CData` node inside
+  the `CDSect` wrapper for CDATA-wrapped bodies; node shapes verified empirically against the
+  wired tree-sitter-html 0.23.2 / tree-sitter-xml 0.7.0 grammars). The inner CSS parse (via
+  `PARSER_POOL`) emits the same `selector`/`at-rule` rows a standalone `.css` file would —
+  nested at-rule rules included — with spans RE-BASED onto FULL-file coordinates: bytes shift by
+  the body's file offset and lines by the newline count before it, so
+  `full_source[byte_start..byte_end]` is the exact selector/at-rule text and the line numbers are
+  the file's (mid-file `<style>` tags included). Guards: a whitespace-only body emits nothing; a
+  failed inner parse keeps the element definition (the walk can only add rows, never crash);
+  `<script>` inner JS is a documented FUTURE — no code-language walker runs inside embedded
+  scripts. Pinned by `element_extraction_v1.rs` (html multi-line style with at-rule + nested
+  selector, svg CharData and CDATA bodies, byte slice-back against the full source, the
+  whitespace/script guards) and updated exact-sequence pins.
+- **`.env` and ignore files report their own structure** (dotfiles-v1, `ast::dotfiles`). These
+  files are plain text with no tree-sitter grammar worth running — their structure IS the line —
+  but they are extensionless (sniffed Text), so the TOC scanner's heading rules either found
+  nothing or fabricated headings from them. `is_env_path` (matched on FILE NAME) accepts `.env`
+  exactly, the `.env.` prefix family (`.env.local`, `.env.production`, …) and the `*.env` suffix
+  family (`dev.env`); `parse_env_file` emits `kind: "env"` per non-comment, non-empty `KEY=` line —
+  an optional `export ` prefix is stripped, the name is the KEY (non-empty, no whitespace — a
+  prose line with an `=` is not an assignment), the value is NOT stored as data but surfaces as
+  the one-line signature truncated to 80 chars. `is_ignore_path` accepts the closed set
+  `.gitignore`/`.dockerignore`/`.npmignore`/`.eslintignore`/`.prettierignore`/`.ignore`;
+  `parse_ignore_file` emits `kind: "pattern"` per non-comment non-empty line, name = the pattern
+  text (trimmed, 80-char bound), signature empty. Line spans follow the `ast::toc` convention
+  (1-indexed inclusive lines, byte spans exclude the `\n`/`\r\n` terminator, `definition_line` =
+  the line). Both run in the extractor's Text early-return BEFORE the TOC scan; every other text
+  file keeps the TOC heuristic, and a shebang `.bashrc` still resolves to Bash (the sniff ladder
+  outranks the file-name checks). The Text reference scanner (path-shaped env VALUES, ignore
+  patterns) is deliberately left to `ast::doclinks`. Pinned by unit tests in `ast::dotfiles` and
+  the new `crates/tldr-cli/tests/dotfiles_v1.rs` (structure kinds for `.env`/`.env.local`/
+  `dev.env`/`.gitignore`/`.dockerignore`, path-value import edges, non-member `rates.txt` keeping
+  the TOC heuristic, the `.bashrc` Bash regression).
+- **A text file under an UNKNOWN extension now resolves as a Text target** (unknown-ext-text-v1,
+  `validation.rs`). `resolve_target_language` returned `Ok(None)` for an existing text file whose
+  extension is in no bucket (`.sql`, `.xyz`, …), which let the structure command fall through to
+  the PARENT DIRECTORY's dominant language — `tldr structure schema.sql` beside a `lib.rs`
+  reported "rust"; in an isolated directory it errored "Could not detect language". The
+  unknown-extension branch now returns `Some(Text)` for text bytes (the extensionless rule
+  extended to unknown extensions), so single-file structure/imports report `language: "text"` with
+  the TOC/paths scans (and `.env`/ignore files route into the dotfiles scanners above). Binary
+  bytes still produce the structured "binary file" error and a MISSING unknown-extension path
+  still keeps the historical "Could not detect language" error verbatim. This is TARGET resolution
+  only: directory scans remain extension-list-driven (`from_path` stays `None` for `.sql`/`.xyz`),
+  so scan behavior is unchanged. Pinned by `validation.rs` unit tests and
+  `extensionless_targets_v1.rs` (`.sql` in an isolated dir AND beside a `lib.rs`, `.xyz`
+  structure/imports).
 - **`tldr importers <doc-file> <root>` without `--lang` no longer silently reports `total: 0` on
   doc-only projects** (doc-target-importers-v1). Language resolution was `--lang` else
   `Language::from_directory(path)` else Python — but `from_directory` skips every doc format via
@@ -17,11 +80,12 @@
   it, code language → use it (per-file truth beats directory dominance, so `importers lib.py
   <ts-project>` still resolves Python); (3) everything else keeps the legacy fallback byte-identical:
   non-file module strings (`std::collections::HashMap`, `myapp.service`, `utils`), `Ok(None)` targets
-  (missing path, directory, unknown extension, OOXML container) and binary files all keep the
-  directory autodetect with the Python last resort, and the module string is never rewritten. Pinned
-  by `doc_target_commands_v1.rs` (relative + absolute doc file without `--lang` — the banner prints
-  the resolved language — plus the `std::collections::HashMap`/`service` legacy pins and the
-  absolute-code-file control).
+  (missing path, directory, OOXML container) and binary files all keep the directory autodetect with
+  the Python last resort. (Superseded by the follow-up bullet above: an existing DOC file's module
+  string is now root-relative-rewritten; unknown-extension text targets now resolve to Text instead
+  of `Ok(None)`.) Pinned by `doc_target_commands_v1.rs` (relative doc file without `--lang` — the
+  banner prints the resolved language — plus the `std::collections::HashMap`/`service` legacy pins
+  and the absolute-code-file control).
 - **`tldr whatbreaks` on a FILE target now resolves the language from the target file, derives the
   module from the PROJECT-ROOT-RELATIVE path, and scopes the walk to the file's project root**
   (doc-target-whatbreaks-v1). Three gaps, one symptom (silent `count: 0` or a >60 s walk):
@@ -183,8 +247,9 @@
   feature): known extension → unchanged byte-identical behavior; extensionless text → the sniffed
   language; binary content (extensionless OR unrecognized extension, `data.bin` included) → a
   clean structured `UnsupportedLanguage` error with "binary file" wording and the standard exit
-  code 11 instead of a Python mislabel; unknown-extension text (`.xyz`) keeps its unsupported
-  verdict. The doc-graph walks join in: `analysis::doc_impact::document_impact` and the
+  code 11 instead of a Python mislabel; unknown-extension text (`.xyz`) kept its unsupported
+  verdict (superseded by unknown-ext-text-v1 above: it now resolves to Text). The doc-graph walks
+  join in: `analysis::doc_impact::document_impact` and the
   doc-language arms of `analysis::importers::find_importers` now probe the tree's extensionless
   files after their extension walk (`fs::sniff::sniff_extensionless_files`, hidden files INCLUDED
   because dotfiles are the flagship extensionless population and are otherwise unreachable;
@@ -195,10 +260,12 @@
   untouched. `get_code_structure`'s Text early-return also fires when the language (not just the
   path) is Text, so `tldr structure LICENSE` reports the TOC headings instead of zero definitions.
   Unit tests: 13 in `fs::sniff` (every rule + negatives), 11 new in `validation` (the resolution
-  contract incl. the `.xyz` negative and missing-path preservation), 1 each in `doc_impact` and
+  contract incl. the `.xyz` negative — since superseded by unknown-ext-text-v1 — and missing-path
+  preservation), 1 each in `doc_impact` and
   `importers` (sniffed files join the graph); new CLI integration suite `extensionless_targets_v1`
   (9 cases: LICENSE/Makefile/`.bashrc`/`lib/env.sh`/`sitemap` end-to-end, the `data.bin` binary
-  rejections with exit-code pins, and the unknown-extension negative).
+  rejections with exit-code pins, and the unknown-extension negative — since flipped by
+  unknown-ext-text-v1).
 
 - **Plain-text support: `Language::Text` — heuristic TOC + URL/path references from prose.** `.txt`/`.text`
   files join the supported formats as language 29 (`Language::Text`, signal=false like every other
