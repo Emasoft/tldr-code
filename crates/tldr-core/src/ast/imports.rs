@@ -14,6 +14,7 @@ use crate::types::{ImportInfo, Language};
 use crate::TldrResult;
 
 use super::parser::parse_file_with_lang;
+use super::parser::parse_file_with_lang_threadlocal;
 
 /// Parse imports from a source file.
 ///
@@ -31,6 +32,20 @@ use super::parser::parse_file_with_lang;
 /// * `Err(TldrError::PathNotFound)` - File doesn't exist
 pub fn get_imports(file_path: &Path, language: Language) -> TldrResult<Vec<ImportInfo>> {
     let (tree, source, _) = parse_file_with_lang(file_path, Some(language))?;
+    extract_imports_from_tree(&tree, &source, language)
+}
+
+/// [`get_imports`], parsing through the per-thread parser cache (PERF-2).
+///
+/// Identical output; only the parser storage differs. Used by the
+/// parallel hot paths (`deps` / `arch_rules` file fan-out) where the
+/// global pool's mutex — held across the whole `parse` — would serialize
+/// every rayon worker.
+pub fn get_imports_threadlocal(
+    file_path: &Path,
+    language: Language,
+) -> TldrResult<Vec<ImportInfo>> {
+    let (tree, source, _) = parse_file_with_lang_threadlocal(file_path, Some(language))?;
     extract_imports_from_tree(&tree, &source, language)
 }
 

@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use rayon::prelude::*;
 use tree_sitter::{Node, Tree};
 
 use crate::fs::tree::{collect_files, get_file_tree};
@@ -15,6 +16,16 @@ use crate::TldrResult;
 
 use super::extract::is_upper_case_name;
 use super::imports::extract_imports_from_tree;
+
+/// PERF-2: at or below this file count the fan-out overhead beats the
+/// per-file parse savings — stay sequential (same threshold as
+/// `search::enriched::enrich_and_deduplicate`).
+const PARALLEL_MIN_FILES: usize = 4;
+
+/// PERF-2: at or below this total corpus size (bytes) parsing is cheap
+/// enough to stay sequential even above `PARALLEL_MIN_FILES` (a cheap
+/// metadata sum taken before the fan-out).
+const PARALLEL_MIN_TOTAL_BYTES: u64 = 1024 * 1024;
 
 /// Extract code structure from all files in a directory.
 ///
@@ -301,7 +312,9 @@ pub fn get_code_structure(
     // Handle single file case: extract structure directly
     if root.is_file() {
         let parent = root.parent().unwrap_or(root);
-        match extract_file_structure(root, parent, language) {
+        // Single-file callers keep the global parser pool (PERF-2: the
+        // thread-local cache only pays off under a multi-thread fan-out).
+        match extract_file_structure(root, parent, language, false) {
             Ok((structure, file_warnings)) => {
                 // yaml-chunk-v1: per-file warnings ride the report's
                 // `warnings` (a chunked large yaml that only partially
@@ -396,16 +409,65 @@ pub fn get_code_structure(
     let tree = get_file_tree(root, Some(&extensions), true, ignore_spec)?;
     let files = collect_files(&tree, root);
 
+    // PERF-2: parallel fan-out across all cores.
+    //
+    // The per-file work (read + tree-sitter parse + AST walks) dominates
+    // this loop and is embarrassingly parallel. Rayon's `collect` on an
+    // indexed parallel iterator preserves input order, so merging the
+    // per-file results in `files` order reproduces the sequential output
+    // byte-for-byte: `files[]`, `warnings[]` and `files_skipped` keep
+    // their exact values and ordering. (`files` itself is already
+    // deterministic — `fs::tree` sorts directory children before
+    // `collect_files` walks it.)
+    //
+    // Parser access: the global pool holds its mutex across `set_language`
+    // AND the whole `parse()` and `tree_sitter::Parser` is `!Send`, so
+    // pool-based parsing would serialize every worker on one lock. The
+    // parallel arm therefore parses through the per-thread parser cache
+    // (`ast::parser::parse_file_with_lang_threadlocal`); the sequential
+    // arm keeps the global pool (small directories, single-file callers).
+    //
+    // Threshold: sequential when the corpus is small — <= 4 files or
+    // <= 1 MB total — where fan-out overhead exceeds the parse savings.
+    let total_bytes: u64 = files
+        .iter()
+        .map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0))
+        .sum();
+    // `max_results` bounds the work on the candidate files, mirroring the
+    // pre-parallel loop's leading `take` behaviour; the merge below still
+    // counts only SUCCESSFUL extractions toward the limit.
+    let take = if max_results > 0 {
+        max_results.min(files.len())
+    } else {
+        files.len()
+    };
+    let results: Vec<TldrResult<(FileStructure, Vec<String>)>> =
+        if files.len() > PARALLEL_MIN_FILES && total_bytes > PARALLEL_MIN_TOTAL_BYTES {
+            files
+                .par_iter()
+                .take(take)
+                .map(|file_path| extract_file_structure(file_path, root, language, true))
+                .collect()
+        } else {
+            files
+                .iter()
+                .take(take)
+                .map(|file_path| extract_file_structure(file_path, root, language, false))
+                .collect()
+        };
+
     let mut file_structures = Vec::new();
 
-    for file_path in files {
+    // Merge in input order — identical bookkeeping to the sequential loop
+    // this replaced (max_results counts successful extractions only).
+    for (file_path, result) in files.iter().take(take).zip(results) {
         // Apply max_results limit
         if max_results > 0 && file_structures.len() >= max_results {
             break;
         }
 
         // Try to extract structure, skip on error (per spec edge case handling)
-        match extract_file_structure(&file_path, root, language) {
+        match result {
             Ok((structure, file_warnings)) => {
                 file_structures.push(structure);
                 // yaml-chunk-v1: per-file warnings (partially-parsed yaml
@@ -487,6 +549,7 @@ fn extract_file_structure(
     path: &Path,
     root: &Path,
     language: Language,
+    use_thread_local_parser: bool,
 ) -> TldrResult<(FileStructure, Vec<String>)> {
     // p19-secondary-fixes-v1 (BUG-P19-05 + BUG-P19-08): honor the caller-
     // supplied `language` over path-extension detection. Otherwise
@@ -495,7 +558,15 @@ fn extract_file_structure(
     // extractor walks a tree built by the C grammar, which has different
     // node kinds — `class_specifier` is cpp-only, so the cpp extractor
     // returned ~0 classes).
-    let (tree, source, _) = crate::ast::parser::parse_file_with_lang(path, Some(language))?;
+    // PERF-2: `use_thread_local_parser` is set by the parallel fan-out —
+    // the global pool's mutex is held across the whole `parse`, so under
+    // rayon it would serialize every worker. Same pipeline, same output;
+    // only the parser storage differs.
+    let (tree, source, _) = if use_thread_local_parser {
+        crate::ast::parser::parse_file_with_lang_threadlocal(path, Some(language))?
+    } else {
+        crate::ast::parser::parse_file_with_lang(path, Some(language))?
+    };
 
     let relative_path = path.strip_prefix(root).unwrap_or(path).to_path_buf();
 
@@ -532,7 +603,13 @@ fn extract_file_structure(
         .collect();
 
     let classes = extract_classes(&tree, &source, language);
-    let imports = extract_imports_from_tree(&tree, &source, language)?;
+    // PERF-2: imports were extracted TWICE per file — once inside
+    // `extract_from_tree` (ast/extract.rs runs the same
+    // `extract_imports_from_tree(tree, source, language)` on the same
+    // tree/source/language) and again here. The two calls returned the
+    // identical `Vec<ImportInfo>`, so reuse the first result; the output
+    // is unchanged, one full import walk per file is gone.
+    let imports = module_info.imports;
     let mut definitions = extract_definitions(&tree, &source, language);
 
     // element-extraction-v1 (Phase E): formats carry no function/class

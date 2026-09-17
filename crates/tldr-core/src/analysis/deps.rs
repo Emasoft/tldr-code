@@ -33,11 +33,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use crate::ast::imports::get_imports;
+use crate::ast::imports::get_imports_threadlocal;
 use crate::fs::tree::{collect_files, get_file_tree};
 use crate::types::{IgnoreSpec, ImportInfo, Language};
 use crate::TldrResult;
+use rayon::prelude::*;
 use std::str::FromStr as _;
+
+/// PERF-2: at or below this file count the fan-out overhead beats the
+/// per-file parse cost — stay sequential (same threshold as
+/// `search::enriched::enrich_and_deduplicate`).
+const PARALLEL_MIN_FILES: usize = 4;
 
 // =============================================================================
 // Core Types
@@ -473,82 +479,65 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
     // Build module index for O(1) lookup (S7-R8)
     let module_index = build_module_index(&root, &files, language);
 
-    // Build dependency graph
+    // Build dependency graph.
+    //
+    // PERF-2: the per-file work (tree-sitter parse for import extraction
+    // plus per-import classification/resolution against the immutable
+    // module index) dominates this loop. Fan it out across rayon workers
+    // and merge the per-file results back in input order: the
+    // `BTreeMap`s are order-insensitive on insertion, `total_internal_deps`
+    // is a plain sum, and `warnings` keep their exact file order — the
+    // merged report is identical to the sequential one.
+    //
+    // Parser access goes through the per-thread parser cache
+    // (`get_imports_threadlocal`): the global pool's mutex is held across
+    // the whole `parse`, so pool-based parsing would serialize every
+    // worker on one lock.
+    let include_external = options.include_external;
+    let per_file: Vec<Result<DepsFileOutcome, DepsFileError>> = if files.len() > PARALLEL_MIN_FILES
+    {
+        files
+            .par_iter()
+            .map(|file_path| {
+                extract_file_deps(file_path, &root, language, &module_index, include_external)
+            })
+            .collect()
+    } else {
+        files
+            .iter()
+            .map(|file_path| {
+                extract_file_deps(file_path, &root, language, &module_index, include_external)
+            })
+            .collect()
+    };
+
     let mut internal_dependencies: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
     let mut external_dependencies: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
     let mut total_internal_deps = 0;
 
-    for file_path in &files {
-        let relative_path = make_relative_path(file_path, &root);
-
-        // Parse imports from file
-        let imports = match get_imports(file_path, language) {
-            Ok(imports) => imports,
-            Err(e) => {
-                // Skip files with parse errors (recoverable)
-                if is_recoverable_error(&e) {
-                    internal_dependencies.insert(relative_path, Vec::new());
-                    continue;
-                }
-                // M-Z11: defensively soft-skip oversize files that slip
-                // past the up-front `partition_files_by_size` gate (for
-                // example, a file that grew between the stat call and
-                // the read). Treat as a recoverable skip with a
-                // structured warning rather than aborting the scan.
-                if let crate::error::TldrError::FileTooLarge { .. } = &e {
-                    warnings.push(format!("Skipped {}: {}", file_path.display(), e));
-                    internal_dependencies.insert(relative_path, Vec::new());
-                    continue;
-                }
-                return Err(e);
-            }
-        };
-
-        let mut file_internal_deps: Vec<PathBuf> = Vec::new();
-        let mut file_external_deps: Vec<String> = Vec::new();
-
-        for import in imports {
-            // Classify the import (Phase 4)
-            let dep_kind = classify_import(&import, &root, file_path, &module_index, language);
-
-            match dep_kind {
-                DepKind::Internal => {
-                    // Try to resolve to get the actual file path
-                    if let Some(target_path) =
-                        resolve_import(&import, &root, file_path, &module_index, language)
-                    {
-                        let target_relative = make_relative_path(&target_path, &root);
-
-                        // Skip self-imports
-                        if target_relative != relative_path {
-                            // Deduplicate within file
-                            if !file_internal_deps.contains(&target_relative) {
-                                file_internal_deps.push(target_relative);
-                                total_internal_deps += 1;
-                            }
-                        }
-                    }
-                }
-                DepKind::External | DepKind::Stdlib => {
-                    // Only track external deps if include_external is true
-                    if options.include_external {
-                        // Use base module name (first component)
-                        let module_name = import.module.split('.').next().unwrap_or(&import.module);
-                        // For TS, strip leading ./ or ../
-                        let clean_name = module_name
-                            .trim_start_matches("./")
-                            .trim_start_matches("../");
-                        if !file_external_deps.contains(&clean_name.to_string()) {
-                            file_external_deps.push(clean_name.to_string());
-                        }
-                    }
+    for (file_path, result) in files.iter().zip(per_file) {
+        match result {
+            Ok(outcome) => {
+                total_internal_deps += outcome.internal_count;
+                internal_dependencies.insert(outcome.relative.clone(), outcome.internal);
+                if include_external && !outcome.external.is_empty() {
+                    external_dependencies.insert(outcome.relative, outcome.external);
                 }
             }
-        }
-
-        internal_dependencies.insert(relative_path.clone(), file_internal_deps);
-        if options.include_external && !file_external_deps.is_empty() {
-            external_dependencies.insert(relative_path, file_external_deps);
+            // Skip files with parse errors (recoverable)
+            Err(DepsFileError::Recoverable) => {
+                internal_dependencies.insert(make_relative_path(file_path, &root), Vec::new());
+            }
+            // M-Z11: defensively soft-skip oversize files that slip past
+            // the up-front `partition_files_by_size` gate (for example, a
+            // file that grew between the stat call and the read). Treat as
+            // a recoverable skip with a structured warning rather than
+            // aborting the scan.
+            Err(DepsFileError::Oversize(warning)) => {
+                warnings.push(warning);
+                internal_dependencies.insert(make_relative_path(file_path, &root), Vec::new());
+            }
+            Err(DepsFileError::Fatal(e)) => return Err(e),
         }
     }
 
@@ -652,6 +641,109 @@ pub fn analyze_dependencies(path: &Path, options: &DepsOptions) -> TldrResult<De
         stats,
         files_skipped: files_skipped as usize,
         warnings,
+    })
+}
+
+/// PERF-2: per-file dependency extraction outcome for the parallel
+/// fan-out (the per-file body of the old sequential loop in
+/// [`analyze_dependencies`]).
+struct DepsFileOutcome {
+    relative: PathBuf,
+    internal: Vec<PathBuf>,
+    external: Vec<String>,
+    internal_count: usize,
+}
+
+/// Per-file failure classification for the fan-out merge — mirrors the
+/// error arms the old inline loop handled.
+enum DepsFileError {
+    /// Recoverable parse error — the file is kept with an empty dep list.
+    Recoverable,
+    /// Oversize file that slipped past the up-front size gate —
+    /// soft-skipped with a structured warning (M-Z11).
+    Oversize(String),
+    /// Fatal — aborts the whole scan (first one in input order wins).
+    Fatal(crate::error::TldrError),
+}
+
+/// Extract and classify one file's imports (parse via the per-thread
+/// parser cache — PERF-2 — and resolve internal targets against the
+/// shared, immutable module index).
+fn extract_file_deps(
+    file_path: &Path,
+    root: &Path,
+    language: Language,
+    module_index: &HashMap<String, PathBuf>,
+    include_external: bool,
+) -> Result<DepsFileOutcome, DepsFileError> {
+    let relative_path = make_relative_path(file_path, root);
+
+    // Parse imports from file
+    let imports = match get_imports_threadlocal(file_path, language) {
+        Ok(imports) => imports,
+        Err(e) => {
+            if is_recoverable_error(&e) {
+                return Err(DepsFileError::Recoverable);
+            }
+            if let crate::error::TldrError::FileTooLarge { .. } = &e {
+                return Err(DepsFileError::Oversize(format!(
+                    "Skipped {}: {}",
+                    file_path.display(),
+                    e
+                )));
+            }
+            return Err(DepsFileError::Fatal(e));
+        }
+    };
+
+    let mut file_internal_deps: Vec<PathBuf> = Vec::new();
+    let mut file_external_deps: Vec<String> = Vec::new();
+    let mut internal_count = 0usize;
+
+    for import in imports {
+        // Classify the import (Phase 4)
+        let dep_kind = classify_import(&import, root, file_path, module_index, language);
+
+        match dep_kind {
+            DepKind::Internal => {
+                // Try to resolve to get the actual file path
+                if let Some(target_path) =
+                    resolve_import(&import, root, file_path, module_index, language)
+                {
+                    let target_relative = make_relative_path(&target_path, root);
+
+                    // Skip self-imports
+                    if target_relative != relative_path {
+                        // Deduplicate within file
+                        if !file_internal_deps.contains(&target_relative) {
+                            file_internal_deps.push(target_relative);
+                            internal_count += 1;
+                        }
+                    }
+                }
+            }
+            DepKind::External | DepKind::Stdlib => {
+                // Only track external deps if include_external is true
+                if include_external {
+                    // Use base module name (first component)
+                    let module_name = import.module.split('.').next().unwrap_or(&import.module);
+                    // For TS, strip leading ./ or ../
+                    let clean_name = module_name
+                        .trim_start_matches("./")
+                        .trim_start_matches("../");
+                    if !file_external_deps.contains(&clean_name.to_string()) {
+                        file_external_deps.push(clean_name.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(DepsFileOutcome {
+        relative: relative_path,
+        internal: file_internal_deps,
+        external: file_external_deps,
+        internal_count,
     })
 }
 

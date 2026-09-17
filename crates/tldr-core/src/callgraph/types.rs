@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use thiserror::Error;
-use tree_sitter::{Parser, Tree};
+use tree_sitter::Tree;
 
 use super::cross_file_types::CallGraphIR;
 
@@ -621,68 +621,61 @@ pub(crate) fn capitalize_first(s: &str) -> String {
 }
 
 // =============================================================================
-// Thread-Local Parsers (Mitigation M1.4)
+// Thread-Local Parsers (Mitigation M1.4, wired to the shared cache in PERF-2)
 // =============================================================================
 
-// NOTE: Tree-sitter Parser is !Send, so we cannot share it across threads.
-// The get_thread_local_parser function creates a new parser per call,
-// which is safe for parallel execution via rayon. Each thread gets its own
-// parser instance on the stack.
+// NOTE: Tree-sitter Parser is !Send, so we cannot share parsers across
+// threads. Historically this module built a FRESH parser for every
+// `parse_source` call — correct under rayon, but it repeated the grammar
+// setup per call. PERF-2 added a shared per-thread parser cache in
+// `ast::parser`; `parse_source` now goes through it, so each rayon worker
+// thread keeps one parser per language instead of allocating a new one per
+// call.
 //
-// For future optimization, we could use thread_local! to cache parsers
-// per language per thread, but the current approach is correct and simpler.
-
-/// Gets or creates a thread-local parser for the specified language.
-///
-/// Per Mitigation M1.4: Tree-sitter Parser is !Send, so we use thread_local!
-/// to ensure each thread has its own parser instance.
-pub(crate) fn get_thread_local_parser(language: &str) -> Result<Parser, BuildError> {
-    let mut parser = Parser::new();
-
-    let ts_language = match language.to_lowercase().as_str() {
-        "python" => tree_sitter_python::LANGUAGE.into(),
-        "typescript" | "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
-        "javascript" | "js" => tree_sitter_typescript::LANGUAGE_TSX.into(), // JS/JSX via TSX grammar
-        "go" => tree_sitter_go::LANGUAGE.into(),
-        "rust" => tree_sitter_rust::LANGUAGE.into(),
-        "java" => tree_sitter_java::LANGUAGE.into(),
-        "c" => tree_sitter_c::LANGUAGE.into(),
-        "cpp" => tree_sitter_cpp::LANGUAGE.into(),
-        "csharp" => tree_sitter_c_sharp::LANGUAGE.into(),
-        "kotlin" => tree_sitter_kotlin_ng::LANGUAGE.into(),
-        "scala" => tree_sitter_scala::LANGUAGE.into(),
-        "swift" => tree_sitter_swift::LANGUAGE.into(),
-        "php" => tree_sitter_php::LANGUAGE_PHP.into(),
-        "ruby" => tree_sitter_ruby::LANGUAGE.into(),
-        "lua" => tree_sitter_lua::LANGUAGE.into(),
-        "luau" => tree_sitter_luau::LANGUAGE.into(),
-        "elixir" => tree_sitter_elixir::LANGUAGE.into(),
-        "ocaml" => tree_sitter_ocaml::LANGUAGE_OCAML.into(),
-        _ => return Err(BuildError::UnsupportedLanguage(language.to_string())),
-    };
-
-    parser
-        .set_language(&ts_language)
-        .map_err(|e| BuildError::ParseError {
-            file: PathBuf::new(),
-            message: format!("Failed to set language {}: {}", language, e),
-        })?;
-
-    Ok(parser)
-}
+// Grammar routing is preserved exactly: "typescript"/"tsx" and
+// "javascript"/"js" keep using the TSX grammar here (callgraph's
+// historical choice, deliberately different from the pool's extension-
+// based routing). That routing is expressed as `TsDialect::Tsx`, which is
+// part of the cache key — so this slot can never collide with the
+// path-based `(TypeScript, Ts)` plain-TS slot used elsewhere.
 
 /// Parse source code and return the tree.
 ///
-/// Uses thread-local parser storage per M1.4 mitigation.
+/// Uses the shared per-thread parser cache (M1.4 mitigation: Parser is
+/// !Send, so every thread owns its parsers; PERF-2: they are now cached
+/// per thread instead of being rebuilt per call).
 pub(crate) fn parse_source(source: &str, language: &str) -> Result<Tree, BuildError> {
-    let mut parser = get_thread_local_parser(language)?;
+    use crate::ast::parser::TsDialect;
+    use crate::types::Language as TldrLanguage;
 
-    parser
-        .parse(source, None)
-        .ok_or_else(|| BuildError::ParseError {
+    let (lang, dialect) = match language.to_lowercase().as_str() {
+        "python" => (TldrLanguage::Python, TsDialect::None),
+        "typescript" | "tsx" => (TldrLanguage::TypeScript, TsDialect::Tsx),
+        "javascript" | "js" => (TldrLanguage::JavaScript, TsDialect::Tsx), // JS/JSX via TSX grammar
+        "go" => (TldrLanguage::Go, TsDialect::None),
+        "rust" => (TldrLanguage::Rust, TsDialect::None),
+        "java" => (TldrLanguage::Java, TsDialect::None),
+        "c" => (TldrLanguage::C, TsDialect::None),
+        "cpp" => (TldrLanguage::Cpp, TsDialect::None),
+        "csharp" => (TldrLanguage::CSharp, TsDialect::None),
+        "kotlin" => (TldrLanguage::Kotlin, TsDialect::None),
+        "scala" => (TldrLanguage::Scala, TsDialect::None),
+        "swift" => (TldrLanguage::Swift, TsDialect::None),
+        "php" => (TldrLanguage::Php, TsDialect::None),
+        "ruby" => (TldrLanguage::Ruby, TsDialect::None),
+        "lua" => (TldrLanguage::Lua, TsDialect::None),
+        "luau" => (TldrLanguage::Luau, TsDialect::None),
+        "elixir" => (TldrLanguage::Elixir, TsDialect::None),
+        "ocaml" => (TldrLanguage::Ocaml, TsDialect::None),
+        _ => return Err(BuildError::UnsupportedLanguage(language.to_string())),
+    };
+
+    crate::ast::parser::parse_with_dialect_threadlocal(source, lang, dialect).map_err(|e| {
+        BuildError::ParseError {
             file: PathBuf::new(),
-            message: "Parser returned None".to_string(),
-        })
+            message: format!("Failed to parse source for language {}: {}", language, e),
+        }
+    })
 }
 
 // =============================================================================

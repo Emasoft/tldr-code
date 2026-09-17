@@ -27,7 +27,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::ast::imports::get_imports;
+use crate::ast::imports::get_imports_threadlocal;
 use crate::fs::tree::{collect_files, get_file_tree};
 use crate::types::{
     ArchRule, ArchRuleType, ArchRulesFile, ArchitectureReport, IgnoreSpec, ImportInfo, Language,
@@ -35,6 +35,13 @@ use crate::types::{
     ViolationReport,
 };
 use crate::TldrResult;
+
+use rayon::prelude::*;
+
+/// PERF-2: at or below this file count the fan-out overhead beats the
+/// per-file parse cost — stay sequential (same threshold as
+/// `search::enriched::enrich_and_deduplicate`).
+const PARALLEL_MIN_FILES: usize = 4;
 
 // =============================================================================
 // Import Graph Types (A22)
@@ -126,24 +133,36 @@ pub fn build_import_graph(root: &Path, language: Language) -> TldrResult<ImportG
         all_files.insert(file_path.clone());
     }
 
-    // Then, extract imports from each file
-    for file_path in &files {
+    // Then, extract imports from each file.
+    //
+    // PERF-2: the per-file work (tree-sitter parse + import resolution
+    // against the immutable `all_files` set) is fanned out across rayon
+    // workers and merged back in input order. `add_edge` is order-
+    // sensitive (`edges` is a Vec), so the merge replays the exact
+    // sequential order — file order × per-file import order — making the
+    // graph byte-identical to the sequential build. `graph.files` is a
+    // HashSet (order-insensitive). Parsing goes through the per-thread
+    // parser cache: the global pool's mutex is held across the whole
+    // `parse`, so pool-based parsing would serialize every worker.
+    let per_file: Vec<TldrResult<Vec<ImportEdge>>> = if files.len() > PARALLEL_MIN_FILES {
+        files
+            .par_iter()
+            .map(|file_path| extract_import_edges(file_path, root, language, &all_files))
+            .collect()
+    } else {
+        files
+            .iter()
+            .map(|file_path| extract_import_edges(file_path, root, language, &all_files))
+            .collect()
+    };
+
+    for (file_path, result) in files.iter().zip(per_file) {
         graph.files.insert(file_path.clone());
 
-        match get_imports(file_path, language) {
-            Ok(imports) => {
-                for import in imports {
-                    // Try to resolve the import to a project file
-                    if let Some(resolved) =
-                        resolve_import(&import, file_path, root, &all_files, language)
-                    {
-                        graph.add_edge(ImportEdge {
-                            from_file: file_path.clone(),
-                            to_file: resolved,
-                            module: import.module.clone(),
-                            line: 1, // We don't have precise line info from get_imports
-                        });
-                    }
+        match result {
+            Ok(edges) => {
+                for edge in edges {
+                    graph.add_edge(edge);
                 }
             }
             Err(e) => {
@@ -161,6 +180,33 @@ pub fn build_import_graph(root: &Path, language: Language) -> TldrResult<ImportG
     }
 
     Ok(graph)
+}
+
+/// PERF-2: per-file import extraction + resolution for the parallel
+/// fan-out (the per-file body of the old sequential loop in
+/// [`build_import_graph`]). Returns the file's resolved edges in import
+/// order; the caller merges them in file order.
+fn extract_import_edges(
+    file_path: &Path,
+    root: &Path,
+    language: Language,
+    all_files: &HashSet<PathBuf>,
+) -> TldrResult<Vec<ImportEdge>> {
+    let imports = get_imports_threadlocal(file_path, language)?;
+
+    let mut edges = Vec::new();
+    for import in imports {
+        // Try to resolve the import to a project file
+        if let Some(resolved) = resolve_import(&import, file_path, root, all_files, language) {
+            edges.push(ImportEdge {
+                from_file: file_path.to_path_buf(),
+                to_file: resolved,
+                module: import.module.clone(),
+                line: 1, // We don't have precise line info from get_imports
+            });
+        }
+    }
+    Ok(edges)
 }
 
 /// Resolve an import to a project file path.

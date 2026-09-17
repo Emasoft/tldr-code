@@ -33,16 +33,22 @@
 //! - Phased plan: session7-phased-plan.yaml Phase 8, 9, 10
 
 use crate::walker::walk_project;
+use rayon::prelude::*;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tree_sitter::Node;
 
-use crate::ast::parser::parse_file;
+use crate::ast::parser::{parse_file, parse_file_threadlocal};
 use crate::security::ast_utils;
 use crate::types::Language;
 use crate::TldrResult;
+
+/// PERF-2: at or below this file count the fan-out overhead beats the
+/// per-file work — stay sequential (same threshold as
+/// `search::enriched::enrich_and_deduplicate`).
+const PARALLEL_MIN_FILES: usize = 4;
 
 // =============================================================================
 // Core Types
@@ -644,45 +650,77 @@ pub fn find_text_candidates(
     root: &Path,
     language: Option<&str>,
 ) -> TldrResult<Vec<TextCandidate>> {
-    let mut candidates = Vec::new();
+    // PERF-2: the walked file list is the parallel work set AND (in
+    // `find_references`) the `files_searched` stat — one walk instead of
+    // the separate counting pass the old flow ran after verification.
+    let files: Vec<PathBuf> = walk_project(root)
+        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+        .filter(|e| is_source_file(e.path(), language))
+        .map(|e| e.path().to_path_buf())
+        .collect();
+    find_text_candidates_in_files(symbol, &files, language)
+}
 
+/// [`find_text_candidates`] over a caller-supplied file list (PERF-2).
+///
+/// Identical candidates in identical order (file order × line order, the
+/// order the sequential loop produced) — the scan is fanned out across
+/// rayon workers and merged in input order.
+pub fn find_text_candidates_in_files(
+    symbol: &str,
+    files: &[PathBuf],
+    language: Option<&str>,
+) -> TldrResult<Vec<TextCandidate>> {
     // Build regex with word boundaries to avoid partial matches
     // e.g., searching for "get" shouldn't match "forget"
     // S7-R10: Compile regex once, reuse for all files
     let pattern = format!(r"\b{}\b", regex::escape(symbol));
     let re = Regex::new(&pattern)?;
 
-    // Walk directory, filter by language extension
-    // S7-R9: Files are read one at a time to bound memory usage
-    // Skips node_modules, target, dist, hidden dirs via the shared walker
-    for entry in walk_project(root)
-        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-        .filter(|e| is_source_file(e.path(), language))
-    {
-        let content = match std::fs::read_to_string(entry.path()) {
-            Ok(c) => c,
-            Err(_) => continue, // Skip files we can't read
-        };
+    // S7-R9: files are still read one at a time per worker, bounding
+    // memory usage; the shared walker already skips node_modules, target,
+    // dist and hidden dirs upstream.
+    let per_file: Vec<Vec<TextCandidate>> = if files.len() > PARALLEL_MIN_FILES {
+        files
+            .par_iter()
+            .map(|path| scan_file_candidates(path, &re, language))
+            .collect()
+    } else {
+        files
+            .iter()
+            .map(|path| scan_file_candidates(path, &re, language))
+            .collect()
+    };
 
-        for (line_num, line) in content.lines().enumerate() {
-            // Skip comment lines (basic heuristic for common cases)
-            if is_comment_line(line, language) {
-                continue;
-            }
+    Ok(per_file.into_iter().flatten().collect())
+}
 
-            for mat in re.find_iter(line) {
-                candidates.push(TextCandidate {
-                    file: entry.path().to_path_buf(),
-                    line: line_num + 1,        // 1-indexed (S7-R38)
-                    column: mat.start() + 1,   // 1-indexed (S7-R38)
-                    end_column: mat.end() + 1, // 1-indexed
-                    line_text: line.to_string(),
-                });
-            }
+/// Scan one file for regex candidates (the per-file body of the old
+/// sequential loop in [`find_text_candidates`]).
+fn scan_file_candidates(path: &Path, re: &Regex, language: Option<&str>) -> Vec<TextCandidate> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(), // Skip files we can't read
+    };
+
+    let mut candidates = Vec::new();
+    for (line_num, line) in content.lines().enumerate() {
+        // Skip comment lines (basic heuristic for common cases)
+        if is_comment_line(line, language) {
+            continue;
+        }
+
+        for mat in re.find_iter(line) {
+            candidates.push(TextCandidate {
+                file: path.to_path_buf(),
+                line: line_num + 1,        // 1-indexed (S7-R38)
+                column: mat.start() + 1,   // 1-indexed (S7-R38)
+                end_column: mat.end() + 1, // 1-indexed
+                line_text: line.to_string(),
+            });
         }
     }
-
-    Ok(candidates)
+    candidates
 }
 
 /// Check if file is a source file for the given language.
@@ -805,13 +843,9 @@ fn is_comment_line(line: &str, language: Option<&str>) -> bool {
     }
 }
 
-/// Count source files in a directory for statistics
-fn count_source_files(root: &Path, language: Option<&str>) -> usize {
-    walk_project(root)
-        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-        .filter(|e| is_source_file(e.path(), language))
-        .count()
-}
+// PERF-2: the old `count_source_files` helper (a full re-walk of the tree
+// used only for the `files_searched` stat) is gone — `find_references`
+// reuses pass-1's collected file list instead.
 
 // =============================================================================
 // Phase 10: AST Verification and Reference Kind Classification
@@ -846,51 +880,92 @@ pub fn verify_candidates_with_ast(
     symbol: &str,
     _language_str: Option<&str>,
 ) -> Vec<(TextCandidate, VerifiedReference)> {
-    let mut verified = Vec::new();
-
-    // S7-R12: Group candidates by file to parse each file only once
-    let mut by_file: HashMap<PathBuf, Vec<&TextCandidate>> = HashMap::new();
+    // S7-R12: Group candidates by file to parse each file only once.
+    //
+    // PERF-2: the grouping used to be a `HashMap`, whose iteration order
+    // is nondeterministic — the `verified` vec (and therefore the final
+    // `references[]`) changed order run-to-run on the same input (the
+    // issue-#74 symptom). Group into a Vec in FIRST-APPEARANCE order
+    // instead; the fan-out below merges results in that same order.
+    let mut by_file: Vec<(PathBuf, Vec<&TextCandidate>)> = Vec::new();
+    let mut file_index: HashMap<&Path, usize> = HashMap::new();
     for candidate in candidates {
-        by_file
-            .entry(candidate.file.clone())
-            .or_default()
-            .push(candidate);
+        match file_index.get(candidate.file.as_path()) {
+            Some(&i) => by_file[i].1.push(candidate),
+            None => {
+                file_index.insert(candidate.file.as_path(), by_file.len());
+                by_file.push((candidate.file.clone(), vec![candidate]));
+            }
+        }
     }
 
-    // Process each file
-    for (file_path, file_candidates) in by_file {
-        // Try to parse the file
-        let parsed = match parse_file(&file_path) {
-            Ok(p) => p,
-            Err(_) => {
-                // Parse failed, include candidates as unverified
-                for candidate in file_candidates {
-                    verified.push((
-                        candidate.clone(),
+    // Process each file — parallel when the work set is large enough.
+    // The parser goes through the per-thread cache (PERF-2): the global
+    // pool's mutex is held across the whole `parse`, so pool access would
+    // serialize every rayon worker. Identical output either way; the
+    // input-order collect preserves the sequential candidate order.
+    let verified: Vec<Vec<(TextCandidate, VerifiedReference)>> =
+        if by_file.len() > PARALLEL_MIN_FILES {
+            by_file
+                .par_iter()
+                .map(|(file_path, file_candidates)| {
+                    verify_file_candidates(file_path, file_candidates, symbol)
+                })
+                .collect()
+        } else {
+            by_file
+                .iter()
+                .map(|(file_path, file_candidates)| {
+                    verify_file_candidates(file_path, file_candidates, symbol)
+                })
+                .collect()
+        };
+
+    verified.into_iter().flatten().collect()
+}
+
+/// Verify one file's candidates against its AST (the per-file body of the
+/// old sequential loop in [`verify_candidates_with_ast`]).
+fn verify_file_candidates(
+    file_path: &Path,
+    file_candidates: &[&TextCandidate],
+    symbol: &str,
+) -> Vec<(TextCandidate, VerifiedReference)> {
+    // Try to parse the file
+    let parsed = match parse_file_threadlocal(file_path) {
+        Ok(p) => p,
+        Err(_) => {
+            // Parse failed, include candidates as unverified
+            return file_candidates
+                .iter()
+                .map(|candidate| {
+                    (
+                        (*candidate).clone(),
                         VerifiedReference {
                             kind: ReferenceKind::Other,
                             confidence: 0.5, // Text match only
                             is_valid: true,  // Assume valid if we can't verify
                         },
-                    ));
-                }
-                continue;
-            }
-        };
+                    )
+                })
+                .collect();
+        }
+    };
 
-        let (tree, source, lang) = parsed;
-        let source_bytes = source.as_bytes();
+    let (tree, source, lang) = parsed;
+    let source_bytes = source.as_bytes();
 
-        // Verify each candidate in this file
-        for candidate in file_candidates {
-            if let Some(verified_ref) =
-                verify_single_candidate(candidate, symbol, &tree, source_bytes, lang)
-            {
-                if verified_ref.is_valid {
-                    verified.push((candidate.clone(), verified_ref));
-                }
-                // If not valid (e.g., in string), skip this candidate
+    let mut verified = Vec::new();
+
+    // Verify each candidate in this file
+    for candidate in file_candidates {
+        if let Some(verified_ref) =
+            verify_single_candidate(candidate, symbol, &tree, source_bytes, lang)
+        {
+            if verified_ref.is_valid {
+                verified.push(((*candidate).clone(), verified_ref));
             }
+            // If not valid (e.g., in string), skip this candidate
         }
     }
 
@@ -3314,7 +3389,16 @@ pub fn find_references(
     };
 
     // Step 1: Text search for candidates (Phase 9)
-    let candidates = find_text_candidates(symbol, root, language)?;
+    // PERF-2: pass-1 collects the searched-file list once — it feeds the
+    // parallel candidate scan AND the `files_searched` stat, eliminating
+    // the separate `count_source_files` walk (the old flow's third full
+    // walk of the tree).
+    let searched_files: Vec<PathBuf> = walk_project(root)
+        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+        .filter(|e| is_source_file(e.path(), language))
+        .map(|e| e.path().to_path_buf())
+        .collect();
+    let candidates = find_text_candidates_in_files(symbol, &searched_files, language)?;
     let candidates_found = candidates.len();
 
     // Phase 13: Apply scope filter before AST verification (for performance)
@@ -3340,6 +3424,14 @@ pub fn find_references(
             end_column: Some(candidate.end_column),
         })
         .collect();
+
+    // PERF-2 / issue #74 (partial fix): `references[]` order used to
+    // follow the AST verifier's by-file HashMap iteration order, which is
+    // nondeterministic — the same query could emit the same references in
+    // a different order from run to run (verified). Sort canonically by
+    // (file, line, column) so the report is byte-stable; with distinct
+    // (file, line, column) candidates this is a total order.
+    references.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
 
     // Step 4: Find definitions (Phase 11)
     // M3 detection-accuracy-v1 BUG-20: collect ALL definitions, not just the
@@ -3402,7 +3494,8 @@ pub fn find_references(
     }
     let shown_references = references.len();
 
-    let files_searched = count_source_files(root, language);
+    // PERF-2: reuse pass-1's file list (one walk, not two).
+    let files_searched = searched_files.len();
 
     let stats = ReferenceStats {
         files_searched,

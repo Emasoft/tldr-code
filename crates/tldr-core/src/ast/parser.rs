@@ -10,6 +10,7 @@
 //!   encodings are rejected up front)
 //! - M13: Reuse parsers to reduce memory (parser pool)
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -383,198 +384,236 @@ impl ParserPool {
         path: &std::path::Path,
         lang_hint: Option<TldrLanguage>,
     ) -> TldrResult<(Tree, String, TldrLanguage)> {
-        // Resolve language: hint wins over extension detection so that
-        // extensionless files (e.g. `myscript --lang python`) parse
-        // correctly. Falls back to extension detection when no hint.
-        let lang = match lang_hint {
-            Some(l) => l,
-            None => TldrLanguage::from_path(path).ok_or_else(|| {
-                let ext = path
-                    .extension()
-                    .map(|e| e.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
-                TldrError::UnsupportedLanguage(ext)
-            })?,
-        };
-
-        // typescript-large-file-perf-v1: enforce the file-size policy
-        // BEFORE reading the file into memory. `parse_file_with_lang`
-        // is the single chokepoint every parse-based command goes
-        // through (structure, calls, smells, dead, secure, …), so
-        // applying the cap here gives uniform skip behaviour across
-        // commands. Auto-generated / minified files (`.d.ts`,
-        // `.min.js`, `.bundle.css`, …) get a stricter 512 MiB cap;
-        // normal source files keep the u32::MAX (4 GiB − 1) cap — the
-        // tree-sitter node-offset ceiling (limits-stretch-v2).
-        // See `crate::fs::oversize` for the full policy.
-        // WithinLimit / Unknown: fall through to the existing read path.
-        // `Unknown` (stat failed) lets the existing I/O error handling
-        // produce the right error variant.
-        if let crate::fs::oversize::SizeCheck::Oversize {
-            size_bytes,
-            max_bytes,
-            ..
-        } = crate::fs::oversize::check_size(path)
-        {
-            return Err(TldrError::FileTooLarge {
-                path: path.to_path_buf(),
-                size_mb: (size_bytes as usize).div_ceil(1024 * 1024),
-                max_mb: (max_bytes as usize).div_ceil(1024 * 1024),
-            });
-        }
-
-        // formats-extension-v1 (2025-09): `.jsonl`/`.ndjson` files are one
-        // JSON document per row and are NEVER read whole — parse the first
-        // non-blank row's tree instead (bounded memory, see `ast::jsonl`).
-        // Structure output for a JSON document is empty, which is exactly
-        // the "one JSON file per row" equivalence; `tldr structure` attaches
-        // full row-health stats via `jsonl_stream` (see `get_code_structure`).
-        if lang == TldrLanguage::Json && crate::ast::jsonl::is_jsonl_path(path) {
-            return match crate::ast::jsonl::first_row_tree(path)? {
-                Some((tree, row_text)) => Ok((tree, row_text, lang)),
-                // Empty (all-blank) JSONL: a valid empty parse, no content.
-                None => Ok((self.parse("", lang)?, String::new(), lang)),
-            };
-        }
-
-        // Log batch: `.log` files NEVER go through tree-sitter — no
-        // maintained log grammar exists on crates.io (404 audit), and the
-        // native, streaming scanner in `ast::logs` is the ONLY consumer of
-        // log content. `parse_file_with_lang` still has to honor its
-        // `(Tree, String, Language)` contract, so — mirroring the
-        // all-blank-JSONL arm above — it returns an EMPTY tree with empty
-        // source without reading the file (a GiB log costs nothing here).
-        // The tree is a structural placeholder that Log consumers never
-        // inspect: the `get_code_structure` hook early-returns to
-        // `ast::logs` before any tree walk happens.
-        //
-        // The placeholder tree is produced by parsing `""` under the Bash
-        // grammar (an empty shell `program` — the least-surprising clean
-        // empty parse); asserting `!has_error()` is pinned by the unit test
-        // below. Direct `parse(source, Log)` calls (no file) still fail
-        // with UnsupportedLanguage, which is the honest answer.
-        if lang == TldrLanguage::Log {
-            let tree = self.parse("", TldrLanguage::Bash)?;
-            return Ok((tree, String::new(), lang));
-        }
-
-        // Plain-text batch: `.txt`/`.text` files NEVER go through
-        // tree-sitter — plain text has no syntax, so no grammar can exist
-        // (the Log no-grammar precedent, d1992302). The TREE is the same
-        // structural placeholder as Log's (an empty shell `program`) that
-        // Text consumers never inspect: the `get_code_structure` hook
-        // early-returns to the heuristic TOC scanner in `ast::toc` before
-        // any tree walk happens, and the reference extraction in
-        // `ast::doclinks` is regex-only.
-        //
-        // UNLIKE Log — whose entries are re-derived from the file by the
-        // streaming scanner and whose placeholder source is empty — Text
-        // consumers NEED THE CONTENT: both the TOC scan and the URL/path
-        // reference scan work on the text itself. So this arm READS the
-        // file and returns the real source beside the placeholder tree.
-        // Wide encodings (UTF-16/32) are rejected with the shared
-        // `EncodingError` (the same policy as every tree-sitter read —
-        // see `ast::toc::parse_text_file`); everything else lossy-decodes.
-        if lang == TldrLanguage::Text {
-            let source = crate::ast::toc::parse_text_file(path)?;
-            let tree = self.parse("", TldrLanguage::Bash)?;
-            return Ok((tree, source, lang));
-        }
-
-        // CSV/TSV batch: `.csv`/`.tsv` files NEVER go through tree-sitter —
-        // the only CSV grammar crate on crates.io is unbuildable (`cc
-        // ~1.0.82` build-dep semver-conflicts with ts 0.25's `cc ^1.2.10`;
-        // ts-0.20-era exports with no bridge LanguageFns — audit note in the
-        // root Cargo.toml). The native RFC 4180 record scanner in
-        // `ast::csvscan` owns CSV/TSV content. Mirroring the Log arm above,
-        // this returns the EMPTY structural placeholder tree (an empty shell
-        // `program`) WITHOUT reading the file (a GiB export costs nothing
-        // here — the scanner streams it): the `get_code_structure` hook
-        // early-returns to `ast::csvscan` before any tree walk happens, and
-        // the scanner re-derives everything from the file, so the placeholder
-        // source stays empty. Direct `parse(source, Csv)` calls (no file)
-        // still fail with UnsupportedLanguage, which is the honest answer.
-        if lang == TldrLanguage::Csv || lang == TldrLanguage::Tsv {
-            let tree = self.parse("", TldrLanguage::Bash)?;
-            return Ok((tree, String::new(), lang));
-        }
-
-        // Read file content with UTF-8 lossy fallback - M2 mitigation
-        let bytes = std::fs::read(path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                TldrError::PathNotFound(path.to_path_buf())
-            } else if e.kind() == std::io::ErrorKind::PermissionDenied {
-                TldrError::PermissionDenied(path.to_path_buf())
-            } else {
-                TldrError::IoError(e)
-            }
-        })?;
-
-        // Reject wide encodings (BOM'd or BOM-less UTF-16/UTF-32) before the
-        // lossy UTF-8 conversion below. `from_utf8_lossy` never fails - on
-        // wide-encoded bytes it silently produces replacement-character
-        // garbage that parses to zero symbols, so the file is reported as
-        // successfully analysed with no functions/classes instead of being
-        // skipped. BOM-less UTF-16 is the COMMON form (a BOM is often absent
-        // on Unix-authored files, and pipes/editors strip it) and is caught
-        // by NEITHER a plain BOM check NOR `str::from_utf8`: a UTF-16
-        // encoding of ASCII text is every ASCII byte interleaved with NUL,
-        // and NUL is a *valid* 1-byte UTF-8 sequence. Measured — validating
-        // UTF-8 ACCEPTS BOM-less UTF-16LE and UTF-16BE outright, while
-        // REJECTING latin-1/cp1252, so it fails in both directions at once.
-        // See `crate::fs::wide_encoding_marker` for the full detection
-        // rationale (shared with `read_to_string_tolerant` so the two file
-        // read paths cannot drift).
-        //
-        // ASSUMPTION, stated because it is not proven: NUL-in-the-first-KiB
-        // of a real source file is rare enough that a WARNED skip beats a
-        // silent mis-parse. Evidence is 0 of 919 files in THIS repo, which
-        // is a homogeneous sample of the tool's own codebase, not of the
-        // arbitrary user code tldr runs on. The failure mode is at least
-        // visible now: the file is named in `warnings`, not dropped in
-        // silence.
-        if let Some(detail) = crate::fs::wide_encoding_marker(&bytes) {
-            return Err(TldrError::EncodingError {
-                path: path.to_path_buf(),
-                detail: detail.to_string(),
-            });
-        }
-
-        // Convert to string, avoiding a copy for valid UTF-8. The old
-        // `String::from_utf8_lossy(&bytes).to_string()` always copied —
-        // even when the bytes were already valid UTF-8 (the common case),
-        // doubling peak memory on every file: the raw `Vec<u8>` AND its
-        // `String` clone were both live. `String::from_utf8` instead MOVES
-        // the buffer when the bytes are valid UTF-8 (zero-copy; the
-        // `Vec<u8>` is consumed), and only the invalid-UTF-8 fallback pays
-        // for one lossy copy (`FromUtf8Error::as_bytes` hands back the
-        // original bytes, so the lossy result is byte-identical to what
-        // `from_utf8_lossy(&bytes)` produced before). Wide encodings
-        // (UTF-16/32) were already rejected above, so this is purely a
-        // memory win with no behaviour change.
-        let source = match String::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-        };
-
-        // Parse the source, passing the path so the TSX dialect is picked
-        // up for `.tsx` / `.jsx` files.
-        let tree = self
-            .parse_with_path(&source, lang, Some(path))
-            .map_err(|e| {
-                if let TldrError::ParseError { line, message, .. } = e {
-                    TldrError::ParseError {
-                        file: path.to_path_buf(),
-                        line,
-                        message,
-                    }
-                } else {
-                    e
-                }
-            })?;
-
-        Ok((tree, source, lang))
+        parse_file_pipeline(path, lang_hint, &ParseStrategy::Pool(self))
     }
+}
+
+/// Where the file-parse pipeline acquires its `tree_sitter::Parser`
+/// (PERF-2): the global [`PARSER_POOL`] for single-file/small-corpus
+/// callers, or the per-thread parser cache for the parallel hot paths.
+///
+/// The global pool is one mutex-guarded map whose guard is held across
+/// the whole `parse`, so under rayon it serializes every worker;
+/// `tree_sitter::Parser` is also `!Send`, which is why the parallel arm
+/// keeps one parser per thread instead.
+enum ParseStrategy<'a> {
+    Pool(&'a ParserPool),
+    ThreadLocal,
+}
+
+impl ParseStrategy<'_> {
+    fn parse(&self, source: &str, lang: TldrLanguage, path: Option<&Path>) -> TldrResult<Tree> {
+        match self {
+            ParseStrategy::Pool(pool) => pool.parse_with_path(source, lang, path),
+            ParseStrategy::ThreadLocal => parse_with_path_threadlocal(source, lang, path),
+        }
+    }
+}
+
+/// Shared file-parse pipeline behind [`ParserPool::parse_file_with_lang`]
+/// and its PERF-2 thread-local twin [`parse_file_with_lang_threadlocal`]:
+/// resolve the language (hint over extension), enforce the size policy,
+/// handle the native-scanner arms (JSONL/Log/Text/CSV), read + decode the
+/// source, then parse it with the caller's parse strategy.
+///
+/// The strategy indirection is the whole point: parallel hot paths parse
+/// through the per-thread parser cache (pool access would serialize every
+/// rayon worker on one mutex), while single-file callers keep the global
+/// pool — every arm below stays shared, not duplicated.
+fn parse_file_pipeline(
+    path: &std::path::Path,
+    lang_hint: Option<TldrLanguage>,
+    strategy: &ParseStrategy<'_>,
+) -> TldrResult<(Tree, String, TldrLanguage)> {
+    // Resolve language: hint wins over extension detection so that
+    // extensionless files (e.g. `myscript --lang python`) parse
+    // correctly. Falls back to extension detection when no hint.
+    let lang = match lang_hint {
+        Some(l) => l,
+        None => TldrLanguage::from_path(path).ok_or_else(|| {
+            let ext = path
+                .extension()
+                .map(|e| e.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            TldrError::UnsupportedLanguage(ext)
+        })?,
+    };
+
+    // typescript-large-file-perf-v1: enforce the file-size policy
+    // BEFORE reading the file into memory. `parse_file_with_lang`
+    // is the single chokepoint every parse-based command goes
+    // through (structure, calls, smells, dead, secure, …), so
+    // applying the cap here gives uniform skip behaviour across
+    // commands. Auto-generated / minified files (`.d.ts`,
+    // `.min.js`, `.bundle.css`, …) get a stricter 512 MiB cap;
+    // normal source files keep the u32::MAX (4 GiB − 1) cap — the
+    // tree-sitter node-offset ceiling (limits-stretch-v2).
+    // See `crate::fs::oversize` for the full policy.
+    // WithinLimit / Unknown: fall through to the existing read path.
+    // `Unknown` (stat failed) lets the existing I/O error handling
+    // produce the right error variant.
+    if let crate::fs::oversize::SizeCheck::Oversize {
+        size_bytes,
+        max_bytes,
+        ..
+    } = crate::fs::oversize::check_size(path)
+    {
+        return Err(TldrError::FileTooLarge {
+            path: path.to_path_buf(),
+            size_mb: (size_bytes as usize).div_ceil(1024 * 1024),
+            max_mb: (max_bytes as usize).div_ceil(1024 * 1024),
+        });
+    }
+
+    // formats-extension-v1 (2025-09): `.jsonl`/`.ndjson` files are one
+    // JSON document per row and are NEVER read whole — parse the first
+    // non-blank row's tree instead (bounded memory, see `ast::jsonl`).
+    // Structure output for a JSON document is empty, which is exactly
+    // the "one JSON file per row" equivalence; `tldr structure` attaches
+    // full row-health stats via `jsonl_stream` (see `get_code_structure`).
+    if lang == TldrLanguage::Json && crate::ast::jsonl::is_jsonl_path(path) {
+        return match crate::ast::jsonl::first_row_tree(path)? {
+            Some((tree, row_text)) => Ok((tree, row_text, lang)),
+            // Empty (all-blank) JSONL: a valid empty parse, no content.
+            None => Ok((strategy.parse("", lang, None)?, String::new(), lang)),
+        };
+    }
+
+    // Log batch: `.log` files NEVER go through tree-sitter — no
+    // maintained log grammar exists on crates.io (404 audit), and the
+    // native, streaming scanner in `ast::logs` is the ONLY consumer of
+    // log content. `parse_file_with_lang` still has to honor its
+    // `(Tree, String, Language)` contract, so — mirroring the
+    // all-blank-JSONL arm above — it returns an EMPTY tree with empty
+    // source without reading the file (a GiB log costs nothing here).
+    // The tree is a structural placeholder that Log consumers never
+    // inspect: the `get_code_structure` hook early-returns to
+    // `ast::logs` before any tree walk happens.
+    //
+    // The placeholder tree is produced by parsing `""` under the Bash
+    // grammar (an empty shell `program` — the least-surprising clean
+    // empty parse); asserting `!has_error()` is pinned by the unit test
+    // below. Direct `parse(source, Log)` calls (no file) still fail
+    // with UnsupportedLanguage, which is the honest answer.
+    if lang == TldrLanguage::Log {
+        let tree = strategy.parse("", TldrLanguage::Bash, None)?;
+        return Ok((tree, String::new(), lang));
+    }
+
+    // Plain-text batch: `.txt`/`.text` files NEVER go through
+    // tree-sitter — plain text has no syntax, so no grammar can exist
+    // (the Log no-grammar precedent, d1992302). The TREE is the same
+    // structural placeholder as Log's (an empty shell `program`) that
+    // Text consumers never inspect: the `get_code_structure` hook
+    // early-returns to the heuristic TOC scanner in `ast::toc` before
+    // any tree walk happens, and the reference extraction in
+    // `ast::doclinks` is regex-only.
+    //
+    // UNLIKE Log — whose entries are re-derived from the file by the
+    // streaming scanner and whose placeholder source is empty — Text
+    // consumers NEED THE CONTENT: both the TOC scan and the URL/path
+    // reference scan work on the text itself. So this arm READS the
+    // file and returns the real source beside the placeholder tree.
+    // Wide encodings (UTF-16/32) are rejected with the shared
+    // `EncodingError` (the same policy as every tree-sitter read —
+    // see `ast::toc::parse_text_file`); everything else lossy-decodes.
+    if lang == TldrLanguage::Text {
+        let source = crate::ast::toc::parse_text_file(path)?;
+        let tree = strategy.parse("", TldrLanguage::Bash, None)?;
+        return Ok((tree, source, lang));
+    }
+
+    // CSV/TSV batch: `.csv`/`.tsv` files NEVER go through tree-sitter —
+    // the only CSV grammar crate on crates.io is unbuildable (`cc
+    // ~1.0.82` build-dep semver-conflicts with ts 0.25's `cc ^1.2.10`;
+    // ts-0.20-era exports with no bridge LanguageFns — audit note in the
+    // root Cargo.toml). The native RFC 4180 record scanner in
+    // `ast::csvscan` owns CSV/TSV content. Mirroring the Log arm above,
+    // this returns the EMPTY structural placeholder tree (an empty shell
+    // `program`) WITHOUT reading the file (a GiB export costs nothing
+    // here — the scanner streams it): the `get_code_structure` hook
+    // early-returns to `ast::csvscan` before any tree walk happens, and
+    // the scanner re-derives everything from the file, so the placeholder
+    // source stays empty. Direct `parse(source, Csv)` calls (no file)
+    // still fail with UnsupportedLanguage, which is the honest answer.
+    if lang == TldrLanguage::Csv || lang == TldrLanguage::Tsv {
+        let tree = strategy.parse("", TldrLanguage::Bash, None)?;
+        return Ok((tree, String::new(), lang));
+    }
+
+    // Read file content with UTF-8 lossy fallback - M2 mitigation
+    let bytes = std::fs::read(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            TldrError::PathNotFound(path.to_path_buf())
+        } else if e.kind() == std::io::ErrorKind::PermissionDenied {
+            TldrError::PermissionDenied(path.to_path_buf())
+        } else {
+            TldrError::IoError(e)
+        }
+    })?;
+
+    // Reject wide encodings (BOM'd or BOM-less UTF-16/UTF-32) before the
+    // lossy UTF-8 conversion below. `from_utf8_lossy` never fails - on
+    // wide-encoded bytes it silently produces replacement-character
+    // garbage that parses to zero symbols, so the file is reported as
+    // successfully analysed with no functions/classes instead of being
+    // skipped. BOM-less UTF-16 is the COMMON form (a BOM is often absent
+    // on Unix-authored files, and pipes/editors strip it) and is caught
+    // by NEITHER a plain BOM check NOR `str::from_utf8`: a UTF-16
+    // encoding of ASCII text is every ASCII byte interleaved with NUL,
+    // and NUL is a *valid* 1-byte UTF-8 sequence. Measured — validating
+    // UTF-8 ACCEPTS BOM-less UTF-16LE and UTF-16BE outright, while
+    // REJECTING latin-1/cp1252, so it fails in both directions at once.
+    // See `crate::fs::wide_encoding_marker` for the full detection
+    // rationale (shared with `read_to_string_tolerant` so the two file
+    // read paths cannot drift).
+    //
+    // ASSUMPTION, stated because it is not proven: NUL-in-the-first-KiB
+    // of a real source file is rare enough that a WARNED skip beats a
+    // silent mis-parse. Evidence is 0 of 919 files in THIS repo, which
+    // is a homogeneous sample of the tool's own codebase, not of the
+    // arbitrary user code tldr runs on. The failure mode is at least
+    // visible now: the file is named in `warnings`, not dropped in
+    // silence.
+    if let Some(detail) = crate::fs::wide_encoding_marker(&bytes) {
+        return Err(TldrError::EncodingError {
+            path: path.to_path_buf(),
+            detail: detail.to_string(),
+        });
+    }
+
+    // Convert to string, avoiding a copy for valid UTF-8. The old
+    // `String::from_utf8_lossy(&bytes).to_string()` always copied —
+    // even when the bytes were already valid UTF-8 (the common case),
+    // doubling peak memory on every file: the raw `Vec<u8>` AND its
+    // `String` clone were both live. `String::from_utf8` instead MOVES
+    // the buffer when the bytes are valid UTF-8 (zero-copy; the
+    // `Vec<u8>` is consumed), and only the invalid-UTF-8 fallback pays
+    // for one lossy copy (`FromUtf8Error::as_bytes` hands back the
+    // original bytes, so the lossy result is byte-identical to what
+    // `from_utf8_lossy(&bytes)` produced before). Wide encodings
+    // (UTF-16/32) were already rejected above, so this is purely a
+    // memory win with no behaviour change.
+    let source = match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    };
+
+    // Parse the source, passing the path so the TSX dialect is picked
+    // up for `.tsx` / `.jsx` files.
+    let tree = strategy.parse(&source, lang, Some(path)).map_err(|e| {
+        if let TldrError::ParseError { line, message, .. } = e {
+            TldrError::ParseError {
+                file: path.to_path_buf(),
+                line,
+                message,
+            }
+        } else {
+            e
+        }
+    })?;
+
+    Ok((tree, source, lang))
 }
 
 impl Default for ParserPool {
@@ -616,6 +655,163 @@ pub fn parse_file_with_lang(
     lang_hint: Option<TldrLanguage>,
 ) -> TldrResult<(Tree, String, TldrLanguage)> {
     PARSER_POOL.parse_file_with_lang(path, lang_hint)
+}
+
+// =============================================================================
+// PERF-2: per-thread parser cache for the parallel hot paths
+// =============================================================================
+
+thread_local! {
+    /// Per-thread parser cache, keyed by `(language, dialect)`.
+    ///
+    /// Rationale: the global [`PARSER_POOL`] is one `Mutex<HashMap<..>>`
+    /// whose guard is held across `set_language` AND the entire `parse()`
+    /// call, so a naive `par_iter` over files stays mutex-bound — every
+    /// worker queues on the same lock and the fan-out degenerates to the
+    /// sequential speed. Sharing parsers across threads is not an option
+    /// either: `tree_sitter::Parser` is `!Send`. A thread-local map gives
+    /// every rayon worker its own parser per `(language, dialect)` slot:
+    /// zero contention, and one grammar setup per thread instead of one
+    /// per file.
+    ///
+    /// Used ONLY by the parallel hot paths (structure fan-out, references
+    /// AST verification, deps/import-graph import extraction, callgraph
+    /// `parse_source`). Single-file callers keep using the global pool.
+    static THREAD_LOCAL_PARSERS: RefCell<HashMap<ParserKey, Parser>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Run `f` with this thread's cached parser for `key`, creating the parser
+/// on first use. Mirrors the pool's slot semantics, including the defensive
+/// `set_language` re-set before every parse (cheap insurance that a cached
+/// parser is always on the grammar the caller just resolved).
+fn with_thread_local_parser<R>(
+    key: ParserKey,
+    ts_lang: Language,
+    path: Option<&Path>,
+    f: impl FnOnce(&mut Parser) -> R,
+) -> TldrResult<R> {
+    THREAD_LOCAL_PARSERS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let parser = cache.entry(key).or_insert_with(|| {
+            let mut p = Parser::new();
+            p.set_language(&ts_lang).expect("Error loading grammar");
+            p
+        });
+        parser
+            .set_language(&ts_lang)
+            .map_err(|e| TldrError::ParseError {
+                file: path
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| std::path::PathBuf::from("<source>")),
+                line: None,
+                message: format!("Failed to set language: {}", e),
+            })?;
+        Ok(f(parser))
+    })
+}
+
+/// Map a `(language, dialect)` key to its tree-sitter grammar.
+///
+/// `TsDialect::Tsx` on a TS/JS language selects `LANGUAGE_TSX`, `Ts`
+/// selects the plain TypeScript grammar; every other language falls back
+/// to its default grammar.
+fn grammar_for_key(lang: TldrLanguage, dialect: TsDialect) -> Option<Language> {
+    match (lang, dialect) {
+        (TldrLanguage::TypeScript | TldrLanguage::JavaScript, TsDialect::Tsx) => {
+            Some(tree_sitter_typescript::LANGUAGE_TSX.into())
+        }
+        (TldrLanguage::TypeScript | TldrLanguage::JavaScript, TsDialect::Ts) => {
+            Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+        }
+        _ => ParserPool::get_ts_language(lang),
+    }
+}
+
+/// Parse source code through the per-thread parser cache (PERF-2), with an
+/// optional path selecting the TS/JS grammar dialect — the thread-local
+/// twin of [`parse_with_path`]. Same grammar routing, same size cap, same
+/// error shapes; only the parser storage differs (per-thread map instead
+/// of the global mutex-guarded pool).
+pub fn parse_with_path_threadlocal(
+    source: &str,
+    lang: TldrLanguage,
+    path: Option<&Path>,
+) -> TldrResult<Tree> {
+    if (source.len() as u64) > MAX_PARSE_SIZE {
+        return Err(TldrError::ParseError {
+            file: path
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from("<source>")),
+            line: None,
+            message: format!(
+                "File too large: {} bytes (max {})",
+                source.len(),
+                MAX_PARSE_SIZE
+            ),
+        });
+    }
+
+    let dialect = TsDialect::from_path_and_lang(path, lang);
+    let ts_lang = grammar_for_key(lang, dialect)
+        .ok_or_else(|| TldrError::UnsupportedLanguage(lang.to_string()))?;
+    let key = ParserKey::new(lang, dialect);
+
+    with_thread_local_parser(key, ts_lang, path, |parser| parser.parse(source, None))?.ok_or_else(
+        || TldrError::ParseError {
+            file: path
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from("<source>")),
+            line: None,
+            message: "Parsing returned None".to_string(),
+        },
+    )
+}
+
+/// Parse a file from disk through the per-thread parser cache (PERF-2).
+/// Thread-local twin of [`parse_file`].
+pub fn parse_file_threadlocal(path: &std::path::Path) -> TldrResult<(Tree, String, TldrLanguage)> {
+    parse_file_with_lang_threadlocal(path, None)
+}
+
+/// Parse a file from disk through the per-thread parser cache (PERF-2),
+/// optionally honoring a caller-supplied language hint. Thread-local twin
+/// of [`ParserPool::parse_file_with_lang`]: identical pipeline (size
+/// policy, JSONL/Log/Text/CSV arms, UTF-8 lossy fallback, TSX dialect
+/// routing), but the underlying `tree_sitter::Parser` lives in this
+/// thread's cache instead of the global mutex-guarded pool — required for
+/// callers running under rayon, where pool access would serialize all
+/// workers on one lock (the pool guard is held across the whole `parse`).
+pub fn parse_file_with_lang_threadlocal(
+    path: &std::path::Path,
+    lang_hint: Option<TldrLanguage>,
+) -> TldrResult<(Tree, String, TldrLanguage)> {
+    parse_file_pipeline(path, lang_hint, &ParseStrategy::ThreadLocal)
+}
+
+/// Parse source with an EXPLICIT grammar dialect through the per-thread
+/// parser cache. Crate-visible for the callgraph builder, whose language
+/// strings map `"typescript"`/`"javascript"` to the TSX grammar — a
+/// different routing than the path-based [`parse_with_path`] — while
+/// sharing the per-thread cache. The dialect is part of the cache key, so
+/// the callgraph `(TypeScript, Tsx)` slot cannot collide with the
+/// path-based `(TypeScript, Ts)` slot.
+pub(crate) fn parse_with_dialect_threadlocal(
+    source: &str,
+    lang: TldrLanguage,
+    dialect: TsDialect,
+) -> TldrResult<Tree> {
+    let ts_lang = grammar_for_key(lang, dialect)
+        .ok_or_else(|| TldrError::UnsupportedLanguage(lang.to_string()))?;
+    let key = ParserKey::new(lang, dialect);
+
+    with_thread_local_parser(key, ts_lang, None, |parser| parser.parse(source, None))?.ok_or_else(
+        || TldrError::ParseError {
+            file: std::path::PathBuf::from("<source>"),
+            line: None,
+            message: "Parsing returned None".to_string(),
+        },
+    )
 }
 
 #[cfg(test)]

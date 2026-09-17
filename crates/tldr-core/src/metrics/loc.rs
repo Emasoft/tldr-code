@@ -29,6 +29,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::encoding::is_binary_file;
@@ -39,6 +40,11 @@ use crate::metrics::file_utils::{
 use crate::metrics::types::LocInfo;
 use crate::types::Language;
 use crate::TldrError;
+
+/// PERF-2: at or below this file count the fan-out overhead beats the
+/// per-file read cost — stay sequential (same threshold as
+/// `search::enriched::enrich_and_deduplicate`).
+const PARALLEL_MIN_FILES: usize = 4;
 
 // =============================================================================
 // Public Types
@@ -614,6 +620,123 @@ pub fn analyze_file(
     Ok((info, language))
 }
 
+/// PERF-2: one entry collected during the directory walk — either an
+/// eligible file (with its precomputed relative path and detected
+/// language) or a walk-level warning. Collected in walk order so the
+/// parallel fan-out can merge results back in exactly the order the
+/// sequential loop produced.
+enum LocWalkItem {
+    Warning(String),
+    File {
+        path: PathBuf,
+        relative: PathBuf,
+        lang: Language,
+    },
+}
+
+/// Running totals for [`analyze_directory`], shared by the bounded
+/// sequential walk and the PERF-2 parallel fan-out so both paths build
+/// identical reports from one merge implementation.
+struct LocWalk {
+    by_language: HashMap<Language, (usize, LocInfo)>, // (file_count, loc_info)
+    by_file: Vec<FileLocEntry>,
+    by_directory: BTreeMap<PathBuf, LocInfo>,
+    warnings: Vec<String>,
+    files_processed: usize,
+}
+
+impl LocWalk {
+    fn new() -> Self {
+        Self {
+            by_language: HashMap::new(),
+            by_file: Vec::new(),
+            // BTreeMap (was HashMap): the directory breakdown is sorted by
+            // descending total_lines with a STABLE sort, so equal-total
+            // directories used to fall back to HashMap iteration order —
+            // an undefined order that could differ run-to-run. Path-sorted
+            // insertion makes the tie order deterministic.
+            by_directory: BTreeMap::new(),
+            warnings: Vec::new(),
+            files_processed: 0,
+        }
+    }
+
+    /// Record one successfully analyzed file (the inline Ok arm the two
+    /// walk paths share).
+    fn record_ok(
+        &mut self,
+        relative_path: &Path,
+        info: &LocInfo,
+        detected_lang: Language,
+        options: &LocOptions,
+    ) {
+        self.files_processed += 1;
+
+        // Update language totals
+        let entry = self
+            .by_language
+            .entry(detected_lang)
+            .or_insert((0, LocInfo::default()));
+        entry.0 += 1;
+        entry.1.merge(info);
+
+        // Update per-file if requested
+        if options.by_file {
+            self.by_file.push(FileLocEntry {
+                path: relative_path.to_path_buf(),
+                language: detected_lang.as_str().to_string(),
+                code_lines: info.code_lines,
+                comment_lines: info.comment_lines,
+                blank_lines: info.blank_lines,
+                total_lines: info.total_lines,
+            });
+        }
+
+        // Update per-directory if requested
+        if options.by_dir {
+            if let Some(parent) = relative_path.parent() {
+                let dir_path = if parent.as_os_str().is_empty() {
+                    PathBuf::from(".")
+                } else {
+                    parent.to_path_buf()
+                };
+                let dir_entry = self.by_directory.entry(dir_path).or_default();
+                dir_entry.merge(info);
+            }
+        }
+    }
+
+    /// Record one failed analysis (the inline Err arms the two walk paths
+    /// share).
+    fn record_err(&mut self, entry_path: &Path, e: TldrError) {
+        match e {
+            TldrError::FileTooLarge {
+                path,
+                size_mb,
+                max_mb,
+            } => {
+                self.warnings.push(format!(
+                    "Skipped large file: {} ({}MB > {}MB)",
+                    path.display(),
+                    size_mb,
+                    max_mb
+                ));
+            }
+            TldrError::UnsupportedLanguage(msg) if msg.contains("Binary file") => {
+                self.warnings
+                    .push(format!("Skipped binary file: {}", entry_path.display()));
+            }
+            TldrError::UnsupportedLanguage(_) => {
+                // Skip unsupported language files silently
+            }
+            e => {
+                self.warnings
+                    .push(format!("Error reading {}: {}", entry_path.display(), e));
+            }
+        }
+    }
+}
+
 /// Analyze a directory for LOC.
 ///
 /// Recursively walks the directory, analyzing supported files.
@@ -635,11 +758,7 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
         return Err(TldrError::PathNotFound(path.to_path_buf()));
     }
 
-    let mut by_language: HashMap<Language, (usize, LocInfo)> = HashMap::new(); // (file_count, loc_info)
-    let mut by_file: Vec<FileLocEntry> = Vec::new();
-    let mut by_directory: HashMap<PathBuf, LocInfo> = HashMap::new();
-    let mut warnings: Vec<String> = Vec::new();
-    let mut files_processed = 0;
+    let mut walk = LocWalk::new();
 
     // cross-cutting-and-clear-fix-bugs-v1 (P18.X4): when no language filter
     // is supplied, detect the dominant language by scanning extensions
@@ -678,121 +797,167 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
         builder.git_global(false);
     }
 
-    // Walk directory
-    for entry in builder.build() {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                warnings.push(format!("Walk error: {}", e));
-                continue;
-            }
-        };
-
-        let entry_path = entry.path();
-
-        // Skip directories
-        if entry_path.is_dir() {
-            continue;
-        }
-
-        // Check max files limit
-        if options.max_files > 0 && files_processed >= options.max_files {
-            warnings.push(format!(
-                "Stopped after {} files (max_files limit)",
-                options.max_files
-            ));
-            break;
-        }
-
-        // Get relative path for pattern checking
-        let relative_path = entry_path.strip_prefix(path).unwrap_or(entry_path);
-
-        // Skip paths matching patterns (using relative path to avoid skipping
-        // hidden temp directories in absolute path)
-        if should_skip_path_with_lang(relative_path, lang_hint) {
-            continue;
-        }
-        if should_exclude(relative_path, &options.exclude) {
-            continue;
-        }
-
-        // Detect language
-        let lang = match Language::from_path(entry_path) {
-            Some(l) => l,
-            None => continue, // Skip unsupported files
-        };
-
-        // Filter by language if specified
-        if let Some(filter_lang) = options.lang {
-            if lang != filter_lang {
-                continue;
-            }
-        }
-
-        // Analyze file
-        match analyze_file(entry_path, Some(lang), options.max_file_size_mb) {
-            Ok((info, detected_lang)) => {
-                files_processed += 1;
-
-                // Update language totals
-                let entry = by_language
-                    .entry(detected_lang)
-                    .or_insert((0, LocInfo::default()));
-                entry.0 += 1;
-                entry.1.merge(&info);
-
-                // Update per-file if requested
-                if options.by_file {
-                    by_file.push(FileLocEntry {
-                        path: relative_path.to_path_buf(),
-                        language: detected_lang.as_str().to_string(),
-                        code_lines: info.code_lines,
-                        comment_lines: info.comment_lines,
-                        blank_lines: info.blank_lines,
-                        total_lines: info.total_lines,
-                    });
+    // Walk directory.
+    //
+    // PERF-2: the per-file work (`analyze_file` = full read + line state
+    // machine) is embarrassingly parallel. The unbounded walk is split in
+    // three: (1) collect eligible files in walk order, (2) analyze them
+    // across rayon workers, (3) merge per-file results back in walk
+    // order. The merge is the same bookkeeping the inline loop did, so
+    // `by_file` and `warnings` keep their exact ordering and the maps
+    // keep their exact totals (rayon's indexed collect preserves input
+    // order). `max_files > 0` stays on the inline sequential loop: its
+    // stop position depends on how many files analyzed successfully AS
+    // the walk proceeded — information that only exists sequentially —
+    // and it exists precisely to bound the work, so fanning it out would
+    // defeat its purpose.
+    if options.max_files > 0 {
+        for entry in builder.build() {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    walk.warnings.push(format!("Walk error: {}", e));
+                    continue;
                 }
+            };
 
-                // Update per-directory if requested
-                if options.by_dir {
-                    if let Some(parent) = relative_path.parent() {
-                        let dir_path = if parent.as_os_str().is_empty() {
-                            PathBuf::from(".")
-                        } else {
-                            parent.to_path_buf()
-                        };
-                        let dir_entry = by_directory.entry(dir_path).or_default();
-                        dir_entry.merge(&info);
+            let entry_path = entry.path();
+
+            // Skip directories
+            if entry_path.is_dir() {
+                continue;
+            }
+
+            // Check max files limit
+            if walk.files_processed >= options.max_files {
+                walk.warnings.push(format!(
+                    "Stopped after {} files (max_files limit)",
+                    options.max_files
+                ));
+                break;
+            }
+
+            // Get relative path for pattern checking
+            let relative_path = entry_path.strip_prefix(path).unwrap_or(entry_path);
+
+            // Skip paths matching patterns (using relative path to avoid
+            // skipping hidden temp directories in absolute path)
+            if should_skip_path_with_lang(relative_path, lang_hint) {
+                continue;
+            }
+            if should_exclude(relative_path, &options.exclude) {
+                continue;
+            }
+
+            // Detect language
+            let lang = match Language::from_path(entry_path) {
+                Some(l) => l,
+                None => continue, // Skip unsupported files
+            };
+
+            // Filter by language if specified
+            if let Some(filter_lang) = options.lang {
+                if lang != filter_lang {
+                    continue;
+                }
+            }
+
+            // Analyze file
+            match analyze_file(entry_path, Some(lang), options.max_file_size_mb) {
+                Ok((info, detected_lang)) => {
+                    walk.record_ok(relative_path, &info, detected_lang, options)
+                }
+                Err(e) => walk.record_err(entry_path, e),
+            }
+        }
+    } else {
+        // Phase 1: walk + collect (cheap metadata; filters identical to
+        // the bounded loop above).
+        let mut items: Vec<LocWalkItem> = Vec::new();
+        for entry in builder.build() {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    items.push(LocWalkItem::Warning(format!("Walk error: {}", e)));
+                    continue;
+                }
+            };
+
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                continue;
+            }
+
+            let relative_path = entry_path.strip_prefix(path).unwrap_or(entry_path);
+            if should_skip_path_with_lang(relative_path, lang_hint) {
+                continue;
+            }
+            if should_exclude(relative_path, &options.exclude) {
+                continue;
+            }
+
+            let lang = match Language::from_path(entry_path) {
+                Some(l) => l,
+                None => continue, // Skip unsupported files
+            };
+            if let Some(filter_lang) = options.lang {
+                if lang != filter_lang {
+                    continue;
+                }
+            }
+
+            items.push(LocWalkItem::File {
+                path: entry_path.to_path_buf(),
+                relative: relative_path.to_path_buf(),
+                lang,
+            });
+        }
+
+        // Phase 2: analyze across workers (sequential for small sets —
+        // the fan-out overhead beats the per-file read cost below the
+        // threshold).
+        let results: Vec<Option<Result<(LocInfo, Language), TldrError>>> =
+            if items.len() > PARALLEL_MIN_FILES {
+                items
+                    .par_iter()
+                    .map(|item| match item {
+                        LocWalkItem::Warning(_) => None,
+                        LocWalkItem::File { path, lang, .. } => {
+                            Some(analyze_file(path, Some(*lang), options.max_file_size_mb))
+                        }
+                    })
+                    .collect()
+            } else {
+                items
+                    .iter()
+                    .map(|item| match item {
+                        LocWalkItem::Warning(_) => None,
+                        LocWalkItem::File { path, lang, .. } => {
+                            Some(analyze_file(path, Some(*lang), options.max_file_size_mb))
+                        }
+                    })
+                    .collect()
+            };
+
+        // Phase 3: merge in walk order.
+        for (item, result) in items.iter().zip(results) {
+            match item {
+                LocWalkItem::Warning(warning) => walk.warnings.push(warning.clone()),
+                LocWalkItem::File { path, relative, .. } => {
+                    match result.expect("file items always carry a result") {
+                        Ok((info, detected_lang)) => {
+                            walk.record_ok(relative, &info, detected_lang, options)
+                        }
+                        Err(e) => walk.record_err(path, e),
                     }
                 }
-            }
-            Err(TldrError::FileTooLarge {
-                path,
-                size_mb,
-                max_mb,
-            }) => {
-                warnings.push(format!(
-                    "Skipped large file: {} ({}MB > {}MB)",
-                    path.display(),
-                    size_mb,
-                    max_mb
-                ));
-            }
-            Err(TldrError::UnsupportedLanguage(msg)) if msg.contains("Binary file") => {
-                warnings.push(format!("Skipped binary file: {}", entry_path.display()));
-            }
-            Err(TldrError::UnsupportedLanguage(_)) => {
-                // Skip unsupported language files silently
-            }
-            Err(e) => {
-                warnings.push(format!("Error reading {}: {}", entry_path.display(), e));
             }
         }
     }
 
     // Build language breakdown — keyed by language name.
     let mut by_language_map: BTreeMap<String, LanguageLocEntry> = BTreeMap::new();
-    for (lang, (count, info)) in by_language.into_iter() {
+    for (lang, (count, info)) in walk.by_language.into_iter() {
         let key = lang.as_str().to_string();
         by_language_map.insert(
             key.clone(),
@@ -817,7 +982,8 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
 
     // Build directory breakdown if requested
     let by_directory_vec = if options.by_dir {
-        let mut vec: Vec<DirectoryLocEntry> = by_directory
+        let mut vec: Vec<DirectoryLocEntry> = walk
+            .by_directory
             .into_iter()
             .map(|(path, info)| DirectoryLocEntry {
                 path,
@@ -836,9 +1002,13 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
     Ok(LocReport {
         summary,
         by_language: by_language_map,
-        by_file: if options.by_file { Some(by_file) } else { None },
+        by_file: if options.by_file {
+            Some(walk.by_file)
+        } else {
+            None
+        },
         by_directory: by_directory_vec,
-        warnings,
+        warnings: walk.warnings,
     })
 }
 
