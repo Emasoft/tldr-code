@@ -1395,6 +1395,7 @@ fn disambiguate_structure_entry_call_names(entries: &mut [StructureEntry]) {
             byte_start: None,
             byte_end: None,
             signature: e.signature.clone(),
+            container: None,
         })
         .collect();
     crate::ast::extractor::disambiguate_call_names(&mut defs);

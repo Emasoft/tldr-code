@@ -314,7 +314,11 @@ fn extract_ooxml_with_cap(
         // grammar through the shared pool, then run the shared element
         // walker (Language::Xml dispatches to `elements::walk_xml`).
         let tree = PARSER_POOL.parse(&text, Language::Xml)?;
-        for mut def in extract_elements(Language::Xml, &tree, &text) {
+        // `host = None` (script-inner-js-v1): an OPC part is already a
+        // virtual document of the zip; embedded `<script>` extraction inside
+        // docx/xlsx/pptx parts has no host file name to name a nested virtual
+        // document after. Word/Excel/PowerPoint parts carry no scripts.
+        for mut def in extract_elements(Language::Xml, &tree, &text, None) {
             // Post-process for the container context:
             // - byte_start/byte_end stay PART-RELATIVE (module docs — the
             //   walker already emitted part-relative offsets, nothing to

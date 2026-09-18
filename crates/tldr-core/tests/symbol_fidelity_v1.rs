@@ -392,6 +392,76 @@ function lone(a, b) {
 }
 
 // =============================================================================
+// Embedded scripts (script-inner-js-v1) — an inline <script>'s symbols ride
+// the HOST file's definition table as a virtual JS document: same JS spans
+// and signatures, translated onto host-file lines, provenance in `container`
+// =============================================================================
+
+/// HTML host with ONE inline script whose function carries an attached JSDoc
+/// comment — the case that exercises every translated field at once:
+/// the trivia-widened line span, the declaration line, the byte span (the
+/// declaration NODE, not the trivia), the signature, the container.
+const HTML_VIRTUAL_DOC_FIXTURE: &str = "<!DOCTYPE html>\n\
+                                        <html>\n\
+                                        <body>\n\
+                                        <script>\n\
+                                        /** Adds two numbers. */\n\
+                                        function add(a, b) {\n\
+                                        \x20 return a + b;\n\
+                                        }\n\
+                                        </script>\n\
+                                        </body>\n\
+                                        </html>\n";
+
+#[test]
+fn html_inline_script_symbols_carry_virtual_document_provenance() {
+    // L1 <!DOCTYPE html> | L2 <html> | L3 <body> | L4 <script>
+    // L5 /** Adds two numbers. */ | L6 function add(a, b) { | L7 return | L8 }
+    // L9 </script> | L10 </body> | L11 </html>
+    let defs = extract_definitions("virtual.html", HTML_VIRTUAL_DOC_FIXTURE, Language::Html);
+
+    let add = find_def(&defs, "virtual.html", "add");
+    // The JS trivia semantics survive translation: the attached JSDoc widens
+    // the LINE span (inner lines 2..5 → FILE lines 5..8, line_base = 3) and
+    // `definition_line` stays the `function` keyword line (inner 3 → 6).
+    assert_span(add, "virtual.html", "add", 5, 8);
+    assert_eq!(
+        add.definition_line,
+        Some(6),
+        "definition_line must translate onto the file's declaration line"
+    );
+    // Provenance: the virtual document name, `<hostfilename>#script-1`.
+    assert_eq!(
+        add.container.as_deref(),
+        Some("virtual.html#script-1"),
+        "embedded-script definitions must carry their virtual document's name"
+    );
+    // The signature stays the clean JS view.
+    assert_signature_starts_with(add, "virtual.html", "add", "function add(a, b) {");
+    // The byte span is the declaration NODE re-based onto the host file, so
+    // full_source[bs..be] is the exact JS source inside the HTML (the JSDoc
+    // comment above it is NOT part of the byte span).
+    let (bs, be) = (
+        add.byte_start
+            .expect("virtual-script defs carry byte spans") as usize,
+        add.byte_end.expect("virtual-script defs carry byte spans") as usize,
+    );
+    assert_eq!(
+        &HTML_VIRTUAL_DOC_FIXTURE[bs..be],
+        "function add(a, b) {\n  return a + b;\n}",
+        "byte span must slice back to the exact JS source in the host file"
+    );
+
+    // Host element rows stay container-less: `add` is the only container row.
+    assert!(
+        defs.iter()
+            .filter(|d| d.kind == "element")
+            .all(|d| d.container.is_none()),
+        "host element definitions must not carry a container"
+    );
+}
+
+// =============================================================================
 // Java — tree-sitter-java 0.23.5, annotations live INSIDE method_declaration (modifiers child)
 // =============================================================================
 

@@ -27,6 +27,16 @@
 //! - CSS   → `selector` per `rule_set` (whitespace-collapsed selector text,
 //!   incl. rules nested inside at-rules) + `at-rule` per block at-rule
 //!   (named after its at-keyword)
+//! - HTML+SVG → script-inner-js-v1: the body of an INLINE `<script>` parses
+//!   with the JAVASCRIPT grammar and emits the same `function`/`class`/
+//!   `method`/… rows a standalone `.js` file reports, AFTER the owning
+//!   script element's row, with `container` = `<hostfilename>#script-N`
+//!   (N = 1-based source order over the file's EXTRACTED scripts — external
+//!   `src`/`href` scripts, non-JS `type` values and whitespace-only bodies
+//!   never become virtual documents and consume no number) and every span
+//!   re-based onto FULL-file coordinates so `full_source[bs..be]` is the
+//!   symbol's exact source in the host file. A body whose JS parse has
+//!   error nodes emits nothing (never fails the file).
 //! - LaTeX → `section` per sectioning command (`\part`…`\subparagraph`; the
 //!   grammar nests each section's content inside it, so the region spans to
 //!   the next sectioning command of equal-or-higher level or `\end{document}`)
@@ -606,8 +616,10 @@ fn html_style_inner_css_emits_rebased_selectors_at_rules_and_slices_back() {
     assert_element_invariants(&defs, "styled.html");
 
     // Exact sequence: the style element's CSS body emits AFTER the owning
-    // element row (selector → at-rule → its nested selector), and the
-    // `<script>` body contributes NOTHING beyond its element row.
+    // element row (selector → at-rule → its nested selector). The `<script>`
+    // body contains no extractable JS definitions (`var x = 1;` declares no
+    // function/class/constant the unified walk reports), so it contributes
+    // nothing beyond its element row.
     let sequence: Vec<(String, String)> = defs
         .iter()
         .map(|d| (d.kind.clone(), d.name.clone()))
@@ -730,9 +742,12 @@ fn svg_style_inner_css_emits_from_chardata_and_cdata_bodies() {
 }
 
 #[test]
-fn whitespace_only_style_body_and_script_body_emit_no_inner_rows() {
+fn whitespace_only_style_body_and_definition_free_script_body_emit_no_inner_rows() {
     // Whitespace-only <style> body: the element rows still emit, no CSS rows
-    // (and no wasted parse). A script body never emits inner JS.
+    // (and no wasted parse). The script body declares nothing the JS
+    // definition walk reports (`var x = 1;`), so it stays inert too; the
+    // guards for EXTERNAL / non-JS / syntax-broken scripts are pinned in
+    // the script-inner-js-v1 tests below.
     let src = "<html>\n<style>\n   \n</style>\n<script>\nvar x = 1;\n</script>\n</html>\n";
     let defs = extract_elements("guarded.html", src, Language::Html);
     assert_element_invariants(&defs, "guarded.html");
@@ -752,6 +767,322 @@ fn whitespace_only_style_body_and_script_body_emit_no_inner_rows() {
     assert_eq!(
         sequence, expected,
         "element-extraction-v1 [guarded.html]: whitespace style + script inner stay inert"
+    );
+}
+
+// =============================================================================
+// script-inner JS (script-inner-js-v1): inline <script> bodies emit JS
+// definitions as virtual documents `<host>#script-N` — spans re-based onto
+// FULL-file coordinates, external/non-JS/broken scripts skipped
+// =============================================================================
+
+/// Find a VIRTUAL-SCRIPT definition by kind + name + container, dumping the
+/// full list on miss so a RED run reads as a report.
+fn find_virtual<'a>(
+    defs: &'a [DefinitionInfo],
+    file: &str,
+    kind: &str,
+    name: &str,
+    container: &str,
+) -> &'a DefinitionInfo {
+    defs.iter()
+        .find(|d| d.kind == kind && d.name == name && d.container.as_deref() == Some(container))
+        .unwrap_or_else(|| {
+            panic!(
+                "element-extraction-v1 [{file}]: virtual definition {kind}:`{name}` \
+                 (container {container}) not found.\nExtracted definitions ({})=\n{defs:#?}",
+                defs.len()
+            )
+        })
+}
+
+/// Two mid-file inline scripts (a function + a class with two methods): the
+/// JS rows land AFTER the owning script element's row in source order, every
+/// line number is a FILE line (line_base = the newlines before the body),
+/// every byte span slices back to the symbol's EXACT source inside the host
+/// HTML, and each row carries its virtual document's `#script-N` name.
+const HTML_SCRIPT_INNER_FIXTURE: &str = "<!DOCTYPE html>\n\
+                                         <html>\n\
+                                         <head><title>Demo</title></head>\n\
+                                         <body>\n\
+                                         <script>\n\
+                                         function sayHi(name) {\n\
+                                         \x20 return \"hi \" + name;\n\
+                                         }\n\
+                                         </script>\n\
+                                         <p>Text</p>\n\
+                                         <script>\n\
+                                         class Counter {\n\
+                                         \x20 constructor() { this.n = 0; }\n\
+                                         \x20 increment() { this.n += 1; }\n\
+                                         }\n\
+                                         </script>\n\
+                                         </body>\n\
+                                         </html>\n";
+
+#[test]
+fn html_inline_scripts_emit_js_definitions_as_rebased_virtual_documents() {
+    let defs = extract_elements("page.html", HTML_SCRIPT_INNER_FIXTURE, Language::Html);
+
+    // EXACT source-order sequence: element rows keep their pre-order places
+    // and each script's JS rows follow its own `script` element row.
+    let sequence: Vec<(String, String, Option<String>)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone(), d.container.clone()))
+        .collect();
+    let expected: Vec<(String, String, Option<String>)> = [
+        ("element", "html", None),
+        ("element", "head", None),
+        ("element", "title", None),
+        ("element", "body", None),
+        ("element", "script", None),
+        ("function", "sayHi", Some("page.html#script-1")),
+        ("element", "p", None),
+        ("element", "script", None),
+        ("class", "Counter", Some("page.html#script-2")),
+        ("method", "constructor", Some("page.html#script-2")),
+        ("method", "increment", Some("page.html#script-2")),
+    ]
+    .iter()
+    .map(|(k, n, c)| (k.to_string(), n.to_string(), c.map(str::to_string)))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [page.html]: expected exact element/JS sequence"
+    );
+
+    // Host element rows carry NO provenance; script rows name their document.
+    // (pinned by the container column of the sequence above)
+
+    // Mid-file line offsets: script 1's body starts on line 5, so the JS
+    // tree's line 2 is FILE line 6.
+    let say_hi = find_virtual(
+        &defs,
+        "page.html",
+        "function",
+        "sayHi",
+        "page.html#script-1",
+    );
+    assert_span(say_hi, "page.html", "function:sayHi", 6, 8);
+    assert_eq!(
+        say_hi.definition_line,
+        Some(6),
+        "definition_line must translate onto the file's declaration line"
+    );
+    assert_eq!(
+        say_hi.signature, "function sayHi(name) {",
+        "signature stays the JS signature"
+    );
+    // Byte slice-back against the FULL source: the rebased span is the exact
+    // symbol text inside the HTML.
+    let (ss, se) = (
+        say_hi.byte_start.unwrap() as usize,
+        say_hi.byte_end.unwrap() as usize,
+    );
+    assert_eq!(
+        &HTML_SCRIPT_INNER_FIXTURE[ss..se],
+        "function sayHi(name) {\n  return \"hi \" + name;\n}",
+        "function:sayHi must slice back to the exact JS source in the host file"
+    );
+
+    // Script 2 (lines 11-16): class + methods, all in #script-2.
+    let counter = find_virtual(&defs, "page.html", "class", "Counter", "page.html#script-2");
+    assert_span(counter, "page.html", "class:Counter", 12, 15);
+    assert_eq!(counter.definition_line, Some(12));
+    let (cs, ce) = (
+        counter.byte_start.unwrap() as usize,
+        counter.byte_end.unwrap() as usize,
+    );
+    assert_eq!(
+        &HTML_SCRIPT_INNER_FIXTURE[cs..ce],
+        "class Counter {\n  constructor() { this.n = 0; }\n  increment() { this.n += 1; }\n}",
+        "class:Counter must slice back to the exact JS source in the host file"
+    );
+
+    let ctor = find_virtual(
+        &defs,
+        "page.html",
+        "method",
+        "constructor",
+        "page.html#script-2",
+    );
+    assert_span(ctor, "page.html", "method:constructor", 13, 13);
+    let (os, oe) = (
+        ctor.byte_start.unwrap() as usize,
+        ctor.byte_end.unwrap() as usize,
+    );
+    assert_eq!(
+        &HTML_SCRIPT_INNER_FIXTURE[os..oe],
+        "constructor() { this.n = 0; }",
+        "method:constructor must slice back to the exact JS source in the host file"
+    );
+
+    let inc = find_virtual(
+        &defs,
+        "page.html",
+        "method",
+        "increment",
+        "page.html#script-2",
+    );
+    assert_span(inc, "page.html", "method:increment", 14, 14);
+}
+
+/// Guards: an external `src` script and a non-JS `type` never become virtual
+/// documents (only their element rows emit), a syntax-broken script emits
+/// nothing, and none of them consume a `#script-N` number — the numbering
+/// stays contiguous over the file's EXTRACTED scripts. One bad script never
+/// fails the file: the good scripts around it still emit.
+const HTML_SCRIPT_GUARDS_FIXTURE: &str = "<!DOCTYPE html>\n\
+                                          <html>\n\
+                                          <body>\n\
+                                          <script src=\"app.js\"></script>\n\
+                                          <script type=\"application/json\">{\"a\": 1}</script>\n\
+                                          <script type=\"module\">\n\
+                                          export function good() {\n\
+                                          \x20 return 1;\n\
+                                          }\n\
+                                          </script>\n\
+                                          <script>\n\
+                                          function broken( { oops\n\
+                                          </script>\n\
+                                          <script>\n\
+                                          function second() {\n\
+                                          \x20 return 2;\n\
+                                          }\n\
+                                          </script>\n\
+                                          </body>\n\
+                                          </html>\n";
+
+#[test]
+fn html_external_non_js_and_broken_scripts_are_not_virtual_documents() {
+    let defs = extract_elements("guards.html", HTML_SCRIPT_GUARDS_FIXTURE, Language::Html);
+
+    // The external script, the JSON script and the broken script keep only
+    // their element rows; the module script and the good plain script emit.
+    // Numbering is contiguous over the EXTRACTED scripts: `good` is #script-1
+    // (the two skipped scripts consumed no number) and `second` is #script-2.
+    let sequence: Vec<(String, String, Option<String>)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone(), d.container.clone()))
+        .collect();
+    let expected: Vec<(String, String, Option<String>)> = [
+        ("element", "html", None),
+        ("element", "body", None),
+        ("element", "script", None),
+        ("element", "script", None),
+        ("element", "script", None),
+        ("function", "good", Some("guards.html#script-1")),
+        ("element", "script", None),
+        ("element", "script", None),
+        ("function", "second", Some("guards.html#script-2")),
+    ]
+    .iter()
+    .map(|(k, n, c)| (k.to_string(), n.to_string(), c.map(str::to_string)))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [guards.html]: external/non-JS/broken scripts stay inert"
+    );
+
+    let good = find_virtual(
+        &defs,
+        "guards.html",
+        "function",
+        "good",
+        "guards.html#script-1",
+    );
+    assert_span(good, "guards.html", "function:good", 7, 9);
+    let (gs, ge) = (
+        good.byte_start.unwrap() as usize,
+        good.byte_end.unwrap() as usize,
+    );
+    assert_eq!(
+        &HTML_SCRIPT_GUARDS_FIXTURE[gs..ge],
+        "function good() {\n  return 1;\n}",
+        "the byte span is the JS declaration NODE — the `export ` token stays outside it \
+         (the line span keeps the wrapper/trivia semantics)"
+    );
+
+    let second = find_virtual(
+        &defs,
+        "guards.html",
+        "function",
+        "second",
+        "guards.html#script-2",
+    );
+    assert_span(second, "guards.html", "function:second", 15, 17);
+}
+
+/// SVG `<script>` bodies in both spellings the XML grammar produces (the same
+/// shape family as the style-inner CSS batches): a plain body is a `CharData`
+/// child of the script element's `content`, a CDATA-wrapped body is
+/// `content` → `CDSect` → `CData`. Both become virtual documents with
+/// full-file spans.
+const SVG_SCRIPT_INNER_FIXTURE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\">\n\
+                                        <script><![CDATA[\n\
+                                        function boot() {\n\
+                                        \x20 return 1;\n\
+                                        }\n\
+                                        ]]></script>\n\
+                                        <script type=\"text/ecmascript\">\n\
+                                        function go(n) {\n\
+                                        \x20 return n + 1;\n\
+                                        }\n\
+                                        </script>\n\
+                                        <script href=\"lib.js\"/>\n\
+                                        </svg>\n";
+
+#[test]
+fn svg_script_bodies_emit_from_chardata_and_cdata_bodies() {
+    let defs = extract_elements("chart.svg", SVG_SCRIPT_INNER_FIXTURE, Language::Xml);
+
+    // CDATA script → #script-1, plain ecmascript script → #script-2; the
+    // external `<script href="lib.js"/>` (self-closing) keeps only its
+    // element row.
+    let sequence: Vec<(String, String, Option<String>)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone(), d.container.clone()))
+        .collect();
+    let expected: Vec<(String, String, Option<String>)> = [
+        ("element", "svg", None),
+        ("element", "script", None),
+        ("function", "boot", Some("chart.svg#script-1")),
+        ("element", "script", None),
+        ("function", "go", Some("chart.svg#script-2")),
+        ("element", "script", None),
+    ]
+    .iter()
+    .map(|(k, n, c)| (k.to_string(), n.to_string(), c.map(str::to_string)))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [chart.svg]: expected both script bodies to emit"
+    );
+
+    // CDATA body: the CDSect-wrapped CData chunk rebases onto FILE lines 3-5.
+    let boot = find_virtual(&defs, "chart.svg", "function", "boot", "chart.svg#script-1");
+    assert_span(boot, "chart.svg", "function:boot", 3, 5);
+    let (bs, be) = (
+        boot.byte_start.unwrap() as usize,
+        boot.byte_end.unwrap() as usize,
+    );
+    assert_eq!(
+        &SVG_SCRIPT_INNER_FIXTURE[bs..be],
+        "function boot() {\n  return 1;\n}",
+        "function:boot must slice back to the exact JS source in the SVG"
+    );
+
+    // Plain CharData body: lines 8-10.
+    let go = find_virtual(&defs, "chart.svg", "function", "go", "chart.svg#script-2");
+    assert_span(go, "chart.svg", "function:go", 8, 10);
+    let (gs, ge) = (
+        go.byte_start.unwrap() as usize,
+        go.byte_end.unwrap() as usize,
+    );
+    assert_eq!(
+        &SVG_SCRIPT_INNER_FIXTURE[gs..ge],
+        "function go(n) {\n  return n + 1;\n}",
+        "function:go must slice back to the exact JS source in the SVG"
     );
 }
 

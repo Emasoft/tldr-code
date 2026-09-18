@@ -630,7 +630,14 @@ fn extract_file_structure(
     if language == Language::Bash {
         definitions.retain(|d| d.kind != "function");
     }
-    definitions.extend(super::elements::extract_elements(language, &tree, &source));
+    // script-inner-js-v1: the host file's FILE NAME names the virtual
+    // documents of embedded inline scripts (`page.html#script-1`) — see
+    // `ast::elements`. A non-UTF-8 file name disables the extraction (a
+    // nameless host cannot name a virtual document).
+    let host_label = path.file_name().and_then(|n| n.to_str());
+    definitions.extend(super::elements::extract_elements(
+        language, &tree, &source, host_label,
+    ));
 
     // schema-unification-v1 BUG-21: derive `method_infos` from `definitions`
     // (which already carry line + signature for kind="method" entries) so
@@ -701,10 +708,13 @@ pub(crate) fn merge_yaml_chunk_structure(
         let chunk_slice = &source[chunk.byte_base..chunk.byte_end];
 
         let mut chunk_defs = extract_definitions(&chunk.tree, chunk_slice, Language::Yaml);
+        // `host = None`: yaml has no script elements, and the chunk slice has
+        // no host file name to give anyway (script-inner-js-v1 is inert here).
         chunk_defs.extend(super::elements::extract_elements(
             Language::Yaml,
             &chunk.tree,
             chunk_slice,
+            None,
         ));
         for def in chunk_defs.iter_mut() {
             crate::ast::yaml_chunk::translate_definition(def, chunk.byte_base, chunk.line_base);
@@ -782,6 +792,7 @@ fn log_entry_definition(entry: crate::ast::logs::LogEntry) -> DefinitionInfo {
         byte_start: Some(entry.byte_start),
         byte_end: Some(entry.byte_end),
         signature: entry.timestamp.unwrap_or_default(),
+        container: None,
     }
 }
 
@@ -812,6 +823,7 @@ fn csv_record_definition(
         byte_start: Some(record.byte_start),
         byte_end: Some(record.byte_end),
         signature: String::new(),
+        container: None,
     }
 }
 
@@ -834,6 +846,7 @@ fn csv_cell_definition(field: &crate::ast::csvscan::CsvField) -> DefinitionInfo 
         byte_start: Some(field.byte_start),
         byte_end: Some(field.byte_end),
         signature: String::new(),
+        container: None,
     }
 }
 
@@ -2659,6 +2672,7 @@ fn collect_definition_entries<'tree>(
                     byte_start: None,
                     byte_end: None,
                     signature,
+                    container: None,
                 },
                 node,
             });
@@ -3038,6 +3052,7 @@ fn make_constant_def(node: Node, name: String, source: &str) -> DefinitionInfo {
         byte_start: None,
         byte_end: None,
         signature,
+        container: None,
     }
 }
 
@@ -3127,6 +3142,7 @@ fn try_field_definition(
                             byte_start: None,
                             byte_end: None,
                             signature: signature.clone(),
+                            container: None,
                         });
                     }
                 }
@@ -3150,6 +3166,7 @@ fn try_field_definition(
                                     byte_start: None,
                                     byte_end: None,
                                     signature: signature.clone(),
+                                    container: None,
                                 });
                             }
                             break;
@@ -3176,6 +3193,7 @@ fn try_field_definition(
                                     byte_start: None,
                                     byte_end: None,
                                     signature: signature.clone(),
+                                    container: None,
                                 });
                             }
                             break;
@@ -3214,6 +3232,7 @@ fn try_field_definition(
                     byte_start: None,
                     byte_end: None,
                     signature,
+                    container: None,
                 });
             }
         }
@@ -3559,6 +3578,7 @@ pub(crate) fn try_callback_call_definition(
         byte_start: None,
         byte_end: None,
         signature: format!("{callee}(…)"),
+        container: None,
     })
 }
 
@@ -3612,6 +3632,7 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
                     byte_start: None,
                     byte_end: None,
                     signature,
+                    container: None,
                 });
             }
             "defmodule" => {
@@ -3633,6 +3654,7 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
                     byte_start: None,
                     byte_end: None,
                     signature,
+                    container: None,
                 });
             }
             _ => {}

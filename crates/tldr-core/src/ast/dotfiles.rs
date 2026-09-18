@@ -153,6 +153,7 @@ pub fn parse_env_file(source: &str) -> Vec<DefinitionInfo> {
             byte_start: Some(line.content.0 as u64),
             byte_end: Some(line.content.1 as u64),
             signature: truncate(value),
+            container: None,
         });
     }
     defs
@@ -179,6 +180,7 @@ pub fn parse_ignore_file(source: &str) -> Vec<DefinitionInfo> {
             byte_start: Some(line.content.0 as u64),
             byte_end: Some(line.content.1 as u64),
             signature: String::new(),
+            container: None,
         });
     }
     defs

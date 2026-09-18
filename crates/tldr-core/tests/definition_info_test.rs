@@ -17,6 +17,10 @@ fn test_definition_info_serde_roundtrip() {
         byte_start: None,
         byte_end: None,
         signature: "pub fn foo(x: i32) -> bool".to_string(),
+        // script-inner-js-v1: additive provenance field — the virtual
+        // document an embedded-script definition came from; `None` for host
+        // definitions and omitted from JSON (skip_serializing_if).
+        container: None,
     };
     let json = serde_json::to_string(&def).unwrap();
     assert!(
@@ -41,6 +45,7 @@ fn test_definition_info_byte_spans_additive_serde() {
         byte_start: Some(2),
         byte_end: Some(13),
         signature: "\"settings\": {".to_string(),
+        container: None,
     };
     let json = serde_json::to_string(&element).unwrap();
     assert!(
@@ -59,6 +64,7 @@ fn test_definition_info_byte_spans_additive_serde() {
         byte_start: None,
         byte_end: None,
         signature: String::new(),
+        container: None,
     };
     let json = serde_json::to_string(&code_fn).unwrap();
     assert!(

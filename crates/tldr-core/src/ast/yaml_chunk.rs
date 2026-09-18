@@ -512,6 +512,7 @@ mod tests {
             byte_start: Some(0),
             byte_end: Some(9),
             signature: "k: v".into(),
+            container: None,
         };
         translate_definition(&mut def, 1000, 500);
         assert_eq!(def.line_start, 501);
@@ -534,6 +535,7 @@ mod tests {
             byte_start: None,
             byte_end: None,
             signature: String::new(),
+            container: None,
         };
         let mut defs = vec![
             mk("document", "document-1"),
@@ -631,7 +633,7 @@ mod large_file {
         // what extract_file_structure assembles below the chunk threshold
         // (legacy definitions are empty; functions/classes/methods too).
         let tree = PARSER_POOL.parse(&source, Language::Yaml).expect("parse");
-        let direct = crate::ast::elements::extract_elements(Language::Yaml, &tree, &source);
+        let direct = crate::ast::elements::extract_elements(Language::Yaml, &tree, &source, None);
 
         assert!(warnings.is_empty(), "all chunks parse clean: {warnings:?}");
         assert_defs_equal(&structure.definitions, &direct);

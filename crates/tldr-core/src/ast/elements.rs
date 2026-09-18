@@ -21,6 +21,7 @@
 //! | XML/SVG  | `selector` / `at-rule` | the CSS body of a `<style>` element (style-inner-css-v1, below) — same rows a standalone stylesheet would emit | as CSS | the inner rule/at-rule node, re-based onto full-file coordinates |
 //! | HTML     | `element`   | every `element` (paired or wrapping a `self_closing_tag`), `script_element`, and `style_element` | the tag name; `tag#id` when an `id` attribute exists | the whole element node incl. children |
 //! | HTML     | `selector` / `at-rule` | the CSS body of a `style_element` (style-inner-css-v1, below) | as CSS | the inner rule/at-rule node, re-based onto full-file coordinates |
+//! | HTML+SVG | JS kinds    | the JS body of an inline `<script>` (script-inner-js-v1, below) — the same rows a standalone `.js` file emits | as JS | the inner JS definition node, re-based onto full-file coordinates |
 //! | CSS      | `selector`  | every `rule_set` — top level OR nested inside an at-rule block          | the full selector text, whitespace-collapsed (`h1,\n  .card` → `h1, .card`) | the whole `rule_set` |
 //! | CSS      | `at-rule`   | every BLOCK-bearing at-rule (`at_rule`, `media_statement`, `supports_statement`, `keyframes_statement`) | the at-keyword (`@media`, `@keyframes`, `@font-face`, …) | the whole statement incl. its block |
 //! | LaTeX    | `section`   | every sectioning command (`part`, `chapter`, `section`, `subsection`, `subsubsection`, `paragraph`, `subparagraph` — starred variants and KOMA `\addsec`/`\addchap`/`\addpart` fold into the same node kinds) | the heading text: the braced group after the command, whitespace-collapsed; when the heading embeds commands the raw braced text is kept; with no braced heading, the command token | the whole sectioning node — the grammar nests the section's content inside it, so it spans to the next sectioning command of equal-or-higher level (or `\end{document}`/EOF) |
@@ -41,8 +42,60 @@
 //! `\n` count before the body), so `full_source[byte_start..byte_end]` is
 //! the exact selector/at-rule source text and the line numbers are the
 //! file's. A whitespace-only body emits nothing; a failed inner parse keeps
-//! just the element row. `<script>` inner JS is documented FUTURE — no
-//! code-language walker runs inside embedded scripts.
+//! just the element row.
+//!
+//! ## Script-inner JS (script-inner-js-v1)
+//!
+//! The JAVASCRIPT grammar ALSO runs on the bodies of INLINE `<script>`
+//! elements embedded in HTML and SVG hosts: each such body is parsed with
+//! `Language::JavaScript` (the non-TSX `LANGUAGE_TYPESCRIPT` dialect — the
+//! same grammar `tldr structure` uses for `.js` files) and the unified
+//! definition walk (`ast::extractor::extract_definition_entries`) emits its
+//! `function`/`class`/`method`/`constant`/`field`/`call`/… rows exactly as a
+//! standalone `.js` file would, AFTER the owning script element's `element`
+//! row. The rows ride the host file's `definitions` array with a
+//! **provenance marker**: `DefinitionInfo::container` =
+//! `<hostfilename>#script-N` — the virtual document's name, where N is the
+//! 1-based source-order index over the file's EXTRACTED scripts (an external
+//! script and a non-JS type never become virtual documents and consume no
+//! number; the numbering is per file across both the HTML and the SVG walk,
+//! deterministic). Host-file definitions carry `container: None`, so a
+//! virtual-script symbol is always distinguishable from same-named host
+//! elements (collisions are allowed; body lookup is byte-span-first).
+//!
+//! Detection rules, per script element:
+//! - **External → skipped.** An HTML `script_element` with a `src` attribute
+//!   (or an XML `script` with `src`/`href`/`xlink:href` — SVG 1.1 loaded
+//!   scripts by `xlink:href`, SVG 2 by `href`) references another file;
+//!   `tldr imports` (doclinks) already indexes that reference and the body
+//!   is not inline code. Such external scripts keep their empty
+//!   `raw_text`/`content` body — nothing would emit anyway, but the skip is
+//!   explicit so an empty inline script and an external one are the same
+//!   "no virtual document" outcome.
+//! - **Non-JS `type` → skipped.** The `type` attribute must be ABSENT or one
+//!   of the JS mimes (`text/javascript`, `application/javascript`,
+//!   `module`, `text/ecmascript`; matched case-insensitively after
+//!   trimming). Anything else — `application/json` data blocks, `importmap`,
+//!   `text/babel`/JSX, `text/plain`, templates — is not JavaScript and is
+//!   not parsed (documented skip).
+//! - **Whitespace-only body → nothing** (no wasted parse); **a body whose
+//!   JS parse has error nodes → nothing** (a syntax-broken script emits no
+//!   definitions; a partial error-recovered tree would fabricate rows).
+//!   Neither can fail the host walk: one bad script costs only its own rows.
+//!
+//! Spans re-base onto FULL-file coordinates exactly like the style-inner CSS
+//! path (bytes += the body's file offset; lines/`definition_line` += the
+//! `\n` count before the body), so `full_source[byte_start..byte_end]` is
+//! the symbol's exact source text in the host file and `tldr body
+//! page.html sayHi` slices the script's bytes out of the HTML. One
+//! documented asymmetry: the byte span is the JS definition NODE (the
+//! declaration), while `line_start` keeps the code-language attached-trivia
+//! semantics (a JSDoc comment above the function widens the LINE span but
+//! not the byte span) — the same fields mean exactly what they mean for a
+//! standalone `.js` file. Scripts are extracted only when a host label is
+//! available (the `extract_elements` `host` argument, the host file's file
+//! name): the OOXML part walker and the yaml chunk merger pass `None`, and
+//! a nameless host cannot name a virtual document.
 //!
 //! # SVG (and other XML dialects)
 //!
@@ -50,9 +103,11 @@
 //! `g`, `path`, `defs`, `style`, `linearGradient`, … all surface as nested
 //! `element` definitions in source order — that IS the requested
 //! groups/paths/elements/definitions/styles coverage — and each carries a
-//! `#id` name wherever an `id` attribute exists. The ONE special case is
-//! `<style>` (style-inner-css-v1, above): its CSS body emits as
-//! `selector`/`at-rule` rows parsed with the CSS grammar.
+//! `#id` name wherever an `id` attribute exists. TWO special cases run
+//! inner-grammar walkers: `<style>` (style-inner-css-v1, above — its CSS
+//! body emits as `selector`/`at-rule` rows) and `<script>`
+//! (script-inner-js-v1, above — its JS body emits as JS definition rows in a
+//! `<file>#script-N` virtual document).
 //!
 //! Non-elements never emit: XML prolog/doctypedecl/PIs/comments and HTML
 //! doctype/comments are skipped by kind, CSS `;`-terminated statements
@@ -82,7 +137,9 @@
 //!   EXCLUSIVE, so `source[byte_start..byte_end]` is the element text and
 //!   starts with its first token. These are `None` for non-format code
 //!   languages (the format engine, XML/HTML/CSS included, always populates
-//!   them).
+//!   them) — with ONE exception: script-inner JS definitions
+//!   (script-inner-js-v1) populate them, re-based onto full-file coordinates,
+//!   so body-by-name slices the host file.
 //! - `line_start`: first line (1-indexed) containing node bytes.
 //! - `line_end`: last line (1-indexed) containing node bytes — the trailing
 //!   `end_position().row + 1` convention would spill onto a phantom line when
@@ -104,10 +161,22 @@ use crate::types::{DefinitionInfo, Language};
 
 /// Extract format elements as `DefinitionInfo` entries.
 ///
+/// `host` is the host file's FILE NAME (e.g. `"page.html"`), used ONLY to
+/// name the virtual documents of embedded inline scripts
+/// (script-inner-js-v1): `Some(name)` enables script-inner JS extraction
+/// (`<file>#script-N` provenance on the emitted rows), `None` disables it —
+/// callers without a host file name (OOXML zip parts, yaml chunk merges,
+/// unit probes) keep the pre-script-inner behavior byte-for-byte.
+///
 /// Returns an EMPTY vec for every non-format (code) language — the caller
 /// (`extractor::extract_file_structure`) appends the result to its
 /// `definitions` unconditionally.
-pub fn extract_elements(language: Language, tree: &Tree, source: &str) -> Vec<DefinitionInfo> {
+pub fn extract_elements(
+    language: Language,
+    tree: &Tree,
+    source: &str,
+    host: Option<&str>,
+) -> Vec<DefinitionInfo> {
     let mut elements = Vec::new();
     let root = tree.root_node();
 
@@ -118,8 +187,16 @@ pub fn extract_elements(language: Language, tree: &Tree, source: &str) -> Vec<De
         Language::Bash => walk_bash(root, source, &mut elements),
         // Formats extension, batch E2: markup/stylesheets flow through the
         // same element engine (kinds `element` / `selector` / `at-rule`).
-        Language::Xml => walk_xml(root, source, &mut elements),
-        Language::Html => walk_html(root, source, &mut elements),
+        // script-inner-js-v1: the script counter is per FILE — the 1-based
+        // `#script-N` numbering spans the whole host document in source order.
+        Language::Xml => {
+            let mut script_no = 0u32;
+            walk_xml(root, source, host, &mut script_no, &mut elements);
+        }
+        Language::Html => {
+            let mut script_no = 0u32;
+            walk_html(root, source, host, &mut script_no, &mut elements);
+        }
         Language::Css => walk_css(root, source, &mut elements),
         // LaTeX batch (2025-11): document markup joins the same engine
         // (kinds `section` / `environment`).
@@ -172,6 +249,9 @@ fn element_def(kind: &str, name: String, node: Node, source: &str) -> Definition
         byte_start: Some(node.start_byte() as u64),
         byte_end: Some(node.end_byte() as u64),
         signature,
+        // Host-file elements carry no virtual-document provenance — only
+        // script-inner JS rows do (script-inner-js-v1).
+        container: None,
     }
 }
 
@@ -449,12 +529,29 @@ fn walk_bash(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
 /// coordinates (see [`emit_style_inner_css`]) — `<defs><style>` nesting needs
 /// no special casing because the recursion reaches the style element at any
 /// depth.
-fn walk_xml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
+///
+/// script-inner-js-v1 (SVG): the SAME body shapes (`content` → `CharData`,
+/// or `content` → `CDSect` → `CData` — one grammar, one shape family) on an
+/// `element` whose tag name is exactly `script` are parsed with the
+/// JAVASCRIPT grammar and emit JS definition rows in a
+/// `<hostfilename>#script-N` virtual document (see
+/// [`emit_script_inner_js`]). External scripts (`src`/`href`/`xlink:href`
+/// attribute — SVG 1.1 loaded by `xlink:href`, SVG 2 by `href`) and non-JS
+/// `type` values are skipped; a self-closing `<script …/>` (`EmptyElemTag`)
+/// has no content and emits nothing on its own.
+fn walk_xml(
+    node: Node,
+    source: &str,
+    host: Option<&str>,
+    script_no: &mut u32,
+    out: &mut Vec<DefinitionInfo>,
+) {
     if node.kind() == "element" {
         if let Some(name) = xml_element_name(&node, source) {
             out.push(element_def("element", name, node, source));
         }
-        if xml_tag_name(&node, source).as_deref() == Some("style") {
+        let tag = xml_tag_name(&node, source);
+        if tag.as_deref() == Some("style") {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() != "content" {
@@ -481,12 +578,76 @@ fn walk_xml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
                 }
             }
         }
+        // script-inner-js-v1: same body shapes, JS grammar, virtual document.
+        if tag.as_deref() == Some("script") {
+            if let Some(host) = host {
+                let (external, script_type) = xml_script_attrs(&node, source);
+                if !external && is_js_script_type(script_type.as_deref()) {
+                    let mut cursor = node.walk();
+                    for child in node.children(&mut cursor) {
+                        if child.kind() != "content" {
+                            continue;
+                        }
+                        let mut inner = child.walk();
+                        for text in child.children(&mut inner) {
+                            match text.kind() {
+                                "CharData" => {
+                                    emit_script_inner_js(&text, source, host, script_no, out)
+                                }
+                                "CDSect" => {
+                                    let mut sect = text.walk();
+                                    for part in text.children(&mut sect) {
+                                        if part.kind() == "CData" {
+                                            emit_script_inner_js(
+                                                &part, source, host, script_no, out,
+                                            );
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_xml(child, source, out);
+        walk_xml(child, source, host, script_no, out);
     }
+}
+
+/// (external, type) of an XML `script` element: the `src`/`href`/
+/// `xlink:href` attributes make it an EXTERNAL script (nothing inline to
+/// extract; doclinks indexes the reference), `type` is its declared MIME
+/// (case preserved — [`is_js_script_type`] does the matching). Attributes
+/// are the `Attribute` named children of the `STag`; attributes on a
+/// self-closing `EmptyElemTag` never reach here because that shape has no
+/// `content` to extract anyway.
+fn xml_script_attrs(element: &Node, source: &str) -> (bool, Option<String>) {
+    let mut external = false;
+    let mut script_type = None;
+    let mut cursor = element.walk();
+    for child in element.children(&mut cursor) {
+        if child.kind() != "STag" {
+            continue;
+        }
+        let mut tag_cursor = child.walk();
+        for part in child.children(&mut tag_cursor) {
+            if part.kind() != "Attribute" {
+                continue;
+            }
+            let (name, value) = xml_attribute(&part, source);
+            match name.as_str() {
+                "src" | "href" | "xlink:href" => external = true,
+                "type" if script_type.is_none() => script_type = value,
+                _ => {}
+            }
+        }
+    }
+    (external, script_type)
 }
 
 /// Raw tag name of an XML `element`: the `Name` child of its `STag`
@@ -586,13 +747,45 @@ fn xml_attribute(attribute: &Node, source: &str) -> (String, Option<String>) {
 /// child (verified: `style_element = start_tag raw_text? end_tag`). When that
 /// body is non-empty it is parsed with the CSS grammar and its
 /// selectors/at-rules emit too, with spans re-based onto FULL-file
-/// coordinates (see [`emit_style_inner_css`]). `<script>` inner JS is a
-/// documented FUTURE — no code-language walker equivalent exists here.
-fn walk_html(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
+/// coordinates (see [`emit_style_inner_css`]).
+///
+/// script-inner-js-v1: a `script_element` has the SAME shape
+/// (`script_element = start_tag raw_text? end_tag` — verified against
+/// `tree-sitter-html-0.23.2/src/node-types.json` + probe dump; an EXTERNAL
+/// `<script src=…></script>` still carries an `raw_text` child, it is just
+/// EMPTY) — its `raw_text` body of an inline, JS-typed script is parsed with
+/// the JAVASCRIPT grammar and emits JS definition rows in a
+/// `<hostfilename>#script-N` virtual document (see
+/// [`emit_script_inner_js`]). A `src` attribute makes the script external —
+/// doclinks already indexes that reference — and a non-JS `type` is not
+/// JavaScript; both are skipped before any parse.
+fn walk_html(
+    node: Node,
+    source: &str,
+    host: Option<&str>,
+    script_no: &mut u32,
+    out: &mut Vec<DefinitionInfo>,
+) {
     match node.kind() {
-        "element" | "script_element" => {
+        "element" => {
             if let Some(name) = html_element_name(&node, source) {
                 out.push(element_def("element", name, node, source));
+            }
+        }
+        "script_element" => {
+            if let Some(name) = html_element_name(&node, source) {
+                out.push(element_def("element", name, node, source));
+            }
+            if let Some(host) = host {
+                let (external, script_type) = html_script_attrs(&node, source);
+                if !external && is_js_script_type(script_type.as_deref()) {
+                    let mut cursor = node.walk();
+                    for child in node.children(&mut cursor) {
+                        if child.kind() == "raw_text" {
+                            emit_script_inner_js(&child, source, host, script_no, out);
+                        }
+                    }
+                }
             }
         }
         "style_element" => {
@@ -612,7 +805,54 @@ fn walk_html(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_html(child, source, out);
+        walk_html(child, source, host, script_no, out);
+    }
+}
+
+/// (external, type) of an HTML `script_element`: a `src` attribute (on its
+/// `start_tag` — the only external form HTML has) makes the script EXTERNAL,
+/// `type` is its declared MIME (case preserved — [`is_js_script_type`] does
+/// the matching). Attributes are the `attribute` children of the start tag;
+/// the value comes quoted (`quoted_attribute_value`) or bare
+/// (`attribute_value`) and `html_attribute` already surfaces it verbatim.
+fn html_script_attrs(script_element: &Node, source: &str) -> (bool, Option<String>) {
+    let mut external = false;
+    let mut script_type = None;
+    let mut cursor = script_element.walk();
+    for child in script_element.children(&mut cursor) {
+        if child.kind() != "start_tag" && child.kind() != "self_closing_tag" {
+            continue;
+        }
+        let mut tag_cursor = child.walk();
+        for part in child.children(&mut tag_cursor) {
+            if part.kind() != "attribute" {
+                continue;
+            }
+            let (name, value) = html_attribute(&part, source);
+            if name.eq_ignore_ascii_case("src") {
+                external = true;
+            } else if name.eq_ignore_ascii_case("type") && script_type.is_none() {
+                script_type = value;
+            }
+        }
+    }
+    (external, script_type)
+}
+
+/// The `type` gate of script-inner-js-v1: a script's body is JavaScript when
+/// the `type` attribute is ABSENT (the HTML default is JS) or one of the JS
+/// MIME values — `text/javascript`, `application/javascript`, `module`,
+/// `text/ecmascript` — matched case-insensitively after trimming. Anything
+/// else (`application/json` data blocks, `importmap`, `speculationrules`,
+/// `text/babel`/JSX, `text/plain`, templates) is NOT JavaScript and the body
+/// is never parsed: it would be garbage under the JS grammar.
+fn is_js_script_type(script_type: Option<&str>) -> bool {
+    match script_type {
+        None => true,
+        Some(t) => matches!(
+            t.trim().to_ascii_lowercase().as_str(),
+            "text/javascript" | "application/javascript" | "module" | "text/ecmascript"
+        ),
     }
 }
 
@@ -735,6 +975,92 @@ fn emit_style_inner_css(body: &Node, source: &str, out: &mut Vec<DefinitionInfo>
             *line += line_base;
         }
         out.push(def);
+    }
+}
+
+// =============================================================================
+// script-inner JS — the body of html script_element / xml (svg) script
+// elements (script-inner-js-v1), parsed with the JAVASCRIPT grammar and
+// re-based onto the FULL file's coordinates
+// =============================================================================
+
+/// Parse one inline `<script>` body chunk (the `raw_text` child of an HTML
+/// `script_element`, a `CharData` child of an XML `script` element's
+/// `content`, or the `CData` node inside that content's `CDSect` wrapper)
+/// with the JAVASCRIPT grammar and emit its definitions as rows of the
+/// virtual document `<host>#script-N`.
+///
+/// The JS rows are the unified definition walk's output
+/// (`ast::extractor::extract_definition_entries`) — the exact
+/// `function`/`class`/`method`/`constant`/`field`/`call`/… set a standalone
+/// `.js` file reports — with every span re-based onto FULL-file coordinates
+/// so the host file's slice-back invariant holds:
+///
+/// - `byte_start`/`byte_end` = the JS definition NODE's range + the body's
+///   byte offset in the full file. `full_source[byte_start..byte_end]` is
+///   the symbol's exact source text in the host file — this is what makes
+///   `tldr body page.html sayHi` slice the script's bytes out of the HTML
+///   byte-exactly. (The code-language convention of leaving byte spans
+///   `None` is deliberately overridden here: the body's definition is
+///   addressable inside the host, like any format element.)
+/// - `line_start`/`line_end`/`definition_line` += the number of `\n` bytes
+///   in the full file BEFORE the body (`line_base`) — the inner tree's row 0
+///   is the physical row the body starts on, so inner line N is full line
+///   `N + line_base` (the same math as [`emit_style_inner_css`]). The LINE
+///   span keeps the code-language attached-trivia semantics: a JSDoc comment
+///   above a function widens the line span but not the byte span, exactly as
+///   for a standalone `.js` file.
+/// - `container` = `<host>#script-N` on EVERY row; `name`/`kind`/
+///   `signature` stay the JS symbol's own values.
+///
+/// Guards (checked by the callers and here): an empty/whitespace-only body
+/// emits nothing (no wasted parse); a body whose JS parse carries error
+/// nodes emits NOTHING — a syntax-broken script must not fabricate rows out
+/// of error-recovered garbage; a failed parse (`Err`) likewise. Neither can
+/// fail the host walk — one bad script costs only its own rows. `*script_no`
+/// is consumed ONLY by a body that actually becomes a virtual document
+/// (non-empty, JS-typed, parses clean), so `#script-N` numbers stay
+/// contiguous over the file's extracted scripts.
+fn emit_script_inner_js(
+    body: &Node,
+    source: &str,
+    host: &str,
+    script_no: &mut u32,
+    out: &mut Vec<DefinitionInfo>,
+) {
+    let text = &source[body.byte_range()];
+    if text.trim().is_empty() {
+        return;
+    }
+    let Ok(tree) = crate::ast::parser::PARSER_POOL.parse(text, Language::JavaScript) else {
+        return;
+    };
+    if tree.root_node().has_error() {
+        return;
+    }
+
+    *script_no += 1;
+    let container = format!("{host}#script-{}", *script_no);
+
+    let content_offset = body.start_byte();
+    let line_base = source.as_bytes()[..content_offset]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count() as u32;
+
+    for entry in crate::ast::extract_definition_entries(&tree, text, Language::JavaScript) {
+        let mut info = entry.info;
+        let node_start = entry.node.start_byte() as u64 + content_offset as u64;
+        let node_end = entry.node.end_byte() as u64 + content_offset as u64;
+        info.byte_start = Some(node_start);
+        info.byte_end = Some(node_end);
+        info.line_start += line_base;
+        info.line_end += line_base;
+        if let Some(line) = info.definition_line.as_mut() {
+            *line += line_base;
+        }
+        info.container = Some(container.clone());
+        out.push(info);
     }
 }
 
@@ -1115,9 +1441,9 @@ mod tests {
     #[test]
     fn non_format_languages_return_empty() {
         let tree = parse("def foo(): pass", Language::Python).unwrap();
-        assert!(extract_elements(Language::Python, &tree, "def foo(): pass").is_empty());
+        assert!(extract_elements(Language::Python, &tree, "def foo(): pass", None).is_empty());
         let tree = parse("fn foo() {}", Language::Rust).unwrap();
-        assert!(extract_elements(Language::Rust, &tree, "fn foo() {}").is_empty());
+        assert!(extract_elements(Language::Rust, &tree, "fn foo() {}", None).is_empty());
     }
 
     #[test]
@@ -1126,10 +1452,12 @@ mod tests {
         // name, and a void (self-closing) element. The style element's CSS
         // body ALSO emits (style-inner-css-v1): `a{}` parses as a rule_set
         // whose selector row lands right after the owning `style` element.
+        // The script is EXTERNAL (`src`), so no virtual JS document is
+        // extracted and no `container` rows appear.
         let src = "<html><head><title>Page</title><style>a{}</style></head>\
                    <body><script src=\"app.js\"></script><br/></body></html>";
         let tree = parse(src, Language::Html).unwrap();
-        let elements = extract_elements(Language::Html, &tree, src);
+        let elements = extract_elements(Language::Html, &tree, src, Some("page.html"));
         let named: Vec<(String, String)> = elements
             .iter()
             .map(|e| (e.kind.clone(), e.name.clone()))
@@ -1147,15 +1475,15 @@ mod tests {
                 ("element".to_string(), "br".to_string()),
             ]
         );
-        // The script_element still emits as a plain element and its inner JS
-        // never emits (documented FUTURE — no code-language walker inside
-        // embedded scripts): the only non-`element` kind is the inner-CSS
-        // selector row.
+        // The external script_element emits as a plain element and its `src`
+        // reference is doclinks' business — no inner JS rows (script-inner-js-v1
+        // skips external scripts); the only non-`element` kind is the
+        // inner-CSS selector row.
 
         // XML: id-naming and class-naming on nested elements.
         let src = "<?xml version=\"1.0\"?><root id=\"r\"><child/></root>";
         let tree = parse(src, Language::Xml).unwrap();
-        let elements = extract_elements(Language::Xml, &tree, src);
+        let elements = extract_elements(Language::Xml, &tree, src, Some("p.xml"));
         let names: Vec<&str> = elements.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["root#r", "child"]);
 
@@ -1163,7 +1491,7 @@ mod tests {
         // surfacing as its own nested selector.
         let src = "body { color: red; }\n@media (min-width: 1px) { b { color: blue } }\n";
         let tree = parse(src, Language::Css).unwrap();
-        let elements = extract_elements(Language::Css, &tree, src);
+        let elements = extract_elements(Language::Css, &tree, src, None);
         let kinds: Vec<&str> = elements.iter().map(|e| e.kind.as_str()).collect();
         let names: Vec<&str> = elements.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(kinds, vec!["selector", "at-rule", "selector"]);
@@ -1174,7 +1502,7 @@ mod tests {
     fn json_array_items_are_not_definitions() {
         let src = r#"{"items": [1, {"a": 2}]}"#;
         let tree = parse(src, Language::Json).unwrap();
-        let elements = extract_elements(Language::Json, &tree, src);
+        let elements = extract_elements(Language::Json, &tree, src, None);
         let names: Vec<&str> = elements.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["items", "a"], "array scalars are not elements");
         // The outer key spans the whole array; the nested key only its pair.
@@ -1191,7 +1519,7 @@ mod tests {
     fn yaml_documents_are_numbered_in_source_order() {
         let src = "a: 1\n---\nb: 2\n";
         let tree = parse(src, Language::Yaml).unwrap();
-        let elements = extract_elements(Language::Yaml, &tree, src);
+        let elements = extract_elements(Language::Yaml, &tree, src, None);
         let named: Vec<(String, String)> = elements
             .iter()
             .map(|e| (e.kind.clone(), e.name.clone()))
@@ -1211,7 +1539,7 @@ mod tests {
     fn byte_spans_slice_back_to_the_element() {
         let src = "x = { a = 1, b = 2 }\n[table]\ny = 3\n";
         let tree = parse(src, Language::Toml).unwrap();
-        let elements = extract_elements(Language::Toml, &tree, src);
+        let elements = extract_elements(Language::Toml, &tree, src, None);
         for e in &elements {
             let (start, end) = match (e.byte_start, e.byte_end) {
                 (Some(s), Some(en)) => (s as usize, en as usize),
@@ -1237,7 +1565,7 @@ mod tests {
         // name joins header cells with " | " and ignores the delimiter row.
         let src = "# Top\n\n```rust\nfn main() {}\n```\n\n```\nplain\n```\n\n| Col A | Col B |\n| ----- | ----- |\n| a     | b     |\n";
         let tree = parse(src, Language::Markdown).unwrap();
-        let elements = extract_elements(Language::Markdown, &tree, src);
+        let elements = extract_elements(Language::Markdown, &tree, src, None);
         let sequence: Vec<(String, String)> = elements
             .iter()
             .map(|e| (e.kind.clone(), e.name.clone()))
@@ -1283,14 +1611,15 @@ mod tests {
     fn elements_carry_byte_spans_and_code_languages_do_not() {
         let json_src = r#"{"k": 1}"#;
         let tree = parse(json_src, Language::Json).unwrap();
-        let elements = extract_elements(Language::Json, &tree, json_src);
+        let elements = extract_elements(Language::Json, &tree, json_src, None);
         assert_eq!(elements.len(), 1);
         assert!(elements[0].byte_start.is_some() && elements[0].byte_end.is_some());
         assert!(elements[0].definition_line.is_none());
+        assert!(elements[0].container.is_none());
 
         let tree = parse("fn foo() {}", Language::Rust).unwrap();
         // (code-language path returns empty — byte spans stay None everywhere
         // until the code-language batch populates them)
-        assert!(extract_elements(Language::Rust, &tree, "fn foo() {}").is_empty());
+        assert!(extract_elements(Language::Rust, &tree, "fn foo() {}", None).is_empty());
     }
 }

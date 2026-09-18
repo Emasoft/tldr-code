@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+### Added
+
+- **Embedded HTML/SVG `<script>` bodies are now navigable as virtual JS
+  documents** (script-inner-js-v1, `crates/tldr-core/src/ast/elements.rs` +
+  `DefinitionInfo::container` in `types.rs`). An inline `<script>` element in
+  an HTML or SVG host file has its body parsed with the JAVASCRIPT grammar
+  (the same non-TSX grammar `.js` files use) and the unified definition walk
+  emits its `function`/`class`/`method`/`constant`/`field`/`call`/… rows into
+  the HOST file's `definitions` array — the same rows a standalone `.js` file
+  would report — right after the owning script element's row. Each such row
+  carries a new additive provenance field, `container`
+  (`skip_serializing_if = "Option::is_none"`, zero schema break): the virtual
+  document's name `<hostfilename>#script-N`, where N is the 1-based
+  source-order index over the file's EXTRACTED scripts. Detection rules:
+  external scripts (`src` on HTML; `src`/`href`/`xlink:href` on SVG —
+  `tldr imports` already indexes those references) and non-JS `type` values
+  (only absent, `text/javascript`, `application/javascript`, `module`,
+  `text/ecmascript` count as JS; JSON data blocks, import maps, JSX/babel and
+  templates are documented skips) never become virtual documents and consume
+  no number; a whitespace-only body emits nothing and a body whose JS parse
+  has error nodes emits nothing (a syntax-broken script never fails the host
+  walk). Spans re-base onto FULL-file coordinates exactly like the
+  style-inner CSS path — `byte_start`/`byte_end` = the JS declaration node's
+  range shifted by the body's file offset (the virtual-script definitions are
+  the one code-language case with byte spans, so `full_source[bs..be]` is the
+  symbol's exact source inside the HTML), and
+  `line_start`/`line_end`/`definition_line` shift by the newlines before the
+  body, keeping the code-language attached-trivia semantics (a JSDoc comment
+  above a function widens the line span, not the byte span); `name`/`kind`/
+  `signature` stay the JS symbol's own values. Host-file definitions keep
+  `container: None`, so name collisions between a script symbol and a host
+  element are allowed. `tldr body page.html sayHi` therefore extracts the
+  function's exact bytes out of the HTML through the existing element-fallback
+  byte path (pinned byte-for-byte in `body_elements_v1`); `element_extraction_v1`
+  pins the html two-script + svg plain/CDATA shapes, the guard rules, the
+  global line offsets and the byte slice-backs; `symbol_fidelity_v1` pins the
+  translated trivia/declaration-line/container fields. The OOXML part walker
+  and the yaml chunk merger pass no host label and keep the pre-existing
+  behavior.
+
 ### Fixed
 
 - **The bugbot timeout watchdog can no longer kill an unrelated process via a stale/recycled

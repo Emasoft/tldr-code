@@ -230,6 +230,7 @@ fn heading(
         byte_start: Some(byte_start as u64),
         byte_end: Some(byte_end as u64),
         signature: String::new(),
+        container: None,
     }
 }
 

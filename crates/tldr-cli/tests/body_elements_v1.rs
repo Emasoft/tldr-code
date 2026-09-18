@@ -17,6 +17,10 @@
 //!    leading indentation excluded, trailing newline per the producer);
 //!    definitions with only a line span (code-language classes, constants,
 //!    …) use the same line machinery MINUS the trailing newline.
+//!    script-inner-js-v1 rides this path: a symbol defined inside an inline
+//!    `<script>` of an HTML/SVG host is a definition of the HOST file with
+//!    global byte spans, so `tldr body page.html sayHi` extracts the JS
+//!    function's exact bytes out of the HTML.
 //!
 //! Every expectation below is a byte-for-byte comparison against a literal
 //! fixture, mirroring body_command_test.rs's harness style.
@@ -315,4 +319,38 @@ fn not_found_error_shape_is_unchanged() {
         );
         assert!(output.stdout.is_empty(), "stdout must stay empty on error");
     }
+}
+
+/// (12) script-inner-js-v1: a symbol defined inside an inline `<script>` of
+/// an HTML host resolves through the element fallback's BYTE path — the
+/// definition's byte span is the symbol's exact source inside the host file
+/// (global offsets, translated by the script-inner emitter), so the body is
+/// the JS function verbatim with no surrounding markup and no trailing
+/// newline. The host file's own language (html) has no function-kind nodes,
+/// so only the fallback can find it.
+#[test]
+fn html_inline_script_function_body_is_byte_exact() {
+    let dir = TempDir::new().expect("tempdir");
+    let src = "<!DOCTYPE html>\n\
+               <html>\n\
+               <body>\n\
+               <script>\n\
+               function sayHi(name) {\n\
+               \x20 return \"hi \" + name;\n\
+               }\n\
+               </script>\n\
+               </body>\n\
+               </html>\n";
+    let file = write(&dir, "page.html", src);
+
+    let json = body_json(&file, "sayHi");
+
+    assert_eq!(json["function"], "sayHi");
+    assert_eq!(json["language"], "html");
+    // FILE lines (the virtual document's lines translated onto the host).
+    assert_eq!(json["line_start"], 5);
+    assert_eq!(json["line_end"], 7);
+    let expected = "function sayHi(name) {\n  return \"hi \" + name;\n}";
+    assert_eq!(json["body"].as_str().expect("body is a string"), expected);
+    assert_eq!(json["byte_count"], expected.len());
 }

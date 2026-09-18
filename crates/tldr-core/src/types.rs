@@ -1594,6 +1594,33 @@ pub struct DefinitionInfo {
     pub byte_end: Option<u64>,
     /// Signature line (e.g., "pub fn foo(x: i32) -> bool")
     pub signature: String,
+    /// The VIRTUAL DOCUMENT a definition was extracted from, when that
+    /// document is embedded content inside the host file rather than the
+    /// host's own syntax (script-inner-js-v1).
+    ///
+    /// The body of an inline `<script>` element in an HTML/SVG host file is
+    /// parsed with the JAVASCRIPT grammar and its definitions are emitted into
+    /// the HOST file's `definitions` array (there is no physical file to
+    /// attach them to). Every definition from one carries the virtual
+    /// document's name here — `<hostfilename>#script-N` (the host file's file
+    /// name plus the 1-based source-order index over the file's EXTRACTED
+    /// scripts: an external `src`/`href` script and a non-JS `type` never
+    /// become virtual documents and consume no number, see
+    /// `ast::elements`). The name/kind/signature/line fields stay the JS
+    /// symbol's own values, and `byte_start`/`byte_end` are GLOBAL host-file
+    /// offsets (`full_source[byte_start..byte_end]` is the symbol's exact
+    /// source text in the host file), so body-by-name navigation works
+    /// unchanged.
+    ///
+    /// Host-file definitions (elements, selectors, code symbols, every other
+    /// producer) keep `None` — name collisions between a virtual-script symbol
+    /// and a host element are allowed (body lookup is byte-span-first).
+    ///
+    /// Additive field: skipped in JSON when absent (mirroring
+    /// `definition_line`/`byte_start`), so caches written before it existed
+    /// and schema consumers that pin the definition key set are unaffected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<String>,
 }
 
 /// Structure of a single file
