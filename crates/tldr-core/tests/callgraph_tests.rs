@@ -536,3 +536,182 @@ mod arch_tests {
         }
     }
 }
+
+// =============================================================================
+// C# cross-file inherited call edges (issue #87)
+// =============================================================================
+//
+// `tldr calls` must emit an edge when a derived class calls an inherited
+// method whose definition lives in ANOTHER file. This exercises the full V2
+// pipeline: CsharpHandler call classification (Intra when the enclosing class
+// declares bases), base_list extraction (identifier/generic_name/
+// qualified_name), and the builder's resolve_method_in_bases BFS over
+// ClassIndex.
+
+mod csharp_inherited_calls_tests {
+    use std::fs;
+    use std::path::Path;
+
+    use tempfile::TempDir;
+    use tldr_core::callgraph::{build_project_call_graph_v2, BuildConfig};
+
+    fn write_cs_file(root: &Path, name: &str, content: &str) {
+        let full_path = root.join(name);
+        fs::write(&full_path, content).expect("Failed to write C# file");
+    }
+
+    fn build_csharp_call_graph(root: &Path) -> tldr_core::callgraph::CallGraphIR {
+        let config = BuildConfig {
+            language: "csharp".to_string(),
+            use_type_resolution: true,
+            respect_ignore: false,
+            ..Default::default()
+        };
+        build_project_call_graph_v2(root, config).expect("Call graph build should succeed")
+    }
+
+    /// dst_func is qualified (e.g. "Base.Run"), so compare the last dotted
+    /// segment.
+    fn has_edge_from(
+        ir: &tldr_core::callgraph::CallGraphIR,
+        src_contains: &str,
+        dst_func: &str,
+    ) -> bool {
+        ir.edges.iter().any(|e| {
+            e.src_func.contains(src_contains) && e.dst_func.split('.').next_back() == Some(dst_func)
+        })
+    }
+
+    /// 3-file inheritance chain (Base.cs / Derived.cs / Main.cs): a bare call
+    /// to `Run()` inside Derived.Go must produce a cross-file edge to
+    /// Base.Run. Before the #87 fix this edge was silently missing.
+    #[test]
+    fn calls_cross_file_inherited_method_produces_edge() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+
+        write_cs_file(
+            root,
+            "Base.cs",
+            r#"public class Base
+{
+    public virtual void Run()
+    {
+    }
+}
+"#,
+        );
+        write_cs_file(
+            root,
+            "Derived.cs",
+            r#"public class Derived : Base
+{
+    public void Go()
+    {
+        Run();
+    }
+}
+"#,
+        );
+        write_cs_file(
+            root,
+            "Main.cs",
+            r#"public class Program
+{
+    public static void Main()
+    {
+        Derived d = new Derived();
+        d.Run();
+    }
+}
+"#,
+        );
+
+        let ir = build_csharp_call_graph(root);
+
+        assert!(
+            has_edge_from(&ir, "Derived.Go", "Run"),
+            "Expected edge Derived.Go -> Base.Run; edges: {:?}",
+            ir.edges
+                .iter()
+                .map(|e| format!("{} -> {}", e.src_func, e.dst_func))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Control: the same shape contained in a single file already worked and
+    /// must keep working (regression guard for the classification change).
+    #[test]
+    fn calls_same_file_inherited_method_produces_edge() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+
+        write_cs_file(
+            root,
+            "All.cs",
+            r#"public class Base
+{
+    public virtual void Run()
+    {
+    }
+}
+
+public class Derived : Base
+{
+    public void Go()
+    {
+        Run();
+    }
+}
+"#,
+        );
+
+        let ir = build_csharp_call_graph(root);
+
+        assert!(
+            has_edge_from(&ir, "Derived.Go", "Run"),
+            "Same-file inherited call must still resolve; edges: {:?}",
+            ir.edges
+                .iter()
+                .map(|e| format!("{} -> {}", e.src_func, e.dst_func))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Negative: a base class that is not part of the analyzed project
+    /// (framework type) must stay unresolved — no edge is fabricated, and no
+    /// panic occurs. Generic (`RepositoryBase<T>`) and qualified
+    /// (`Framework.Base`) base names must not break the build either.
+    #[test]
+    fn calls_unknown_base_stays_unresolved_without_fabricated_edges() {
+        let dir = TempDir::new().expect("temp dir");
+        let root = dir.path();
+
+        write_cs_file(
+            root,
+            "Repo.cs",
+            r#"public class UserRepo : Framework.RepositoryBase<object>
+{
+    public void SaveAll()
+    {
+        Save(new object());
+        MissingExternal();
+    }
+}
+"#,
+        );
+
+        let ir = build_csharp_call_graph(root);
+
+        assert!(
+            !ir.edges
+                .iter()
+                .any(|e| e.src_func.contains("UserRepo.SaveAll")),
+            "Unknown-base calls must stay unresolved; edges: {:?}",
+            ir.edges
+                .iter()
+                .map(|e| format!("{} -> {}", e.src_func, e.dst_func))
+                .collect::<Vec<_>>()
+        );
+    }
+}

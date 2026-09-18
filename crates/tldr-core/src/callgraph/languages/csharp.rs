@@ -19,6 +19,21 @@
 //! - Static calls: `Type.StaticMethod()` -> CallType::Attr
 //! - Constructor calls: `new Class()` -> CallType::Direct
 //!
+//! # Inherited Calls (issue #87)
+//!
+//! A bare call (`Run()`) inside a class that declares base types is
+//! classified as `CallType::Intra` even when the method is not defined in
+//! the current file: the builder resolves such calls through the base-class
+//! chain (`resolve_method_in_bases` BFS over `ClassIndex`), which spans
+//! files. Base types are extracted from `base_list` for `identifier`,
+//! `generic_name` (`Base<T>` -> `Base`) and `qualified_name` (`NS.Base`)
+//! nodes, mirroring `crate::inheritance::csharp`.
+//!
+//! Base classes that live outside the analyzed project (framework types
+//! such as `ControllerBase`) stay unresolved: the BFS finds nothing in the
+//! `ClassIndex` and the generic resolver runs — no edge is fabricated for
+//! external bases.
+//!
 //! # Spec Reference
 //!
 //! See `migration/spec/callgraph-spec.md` Section 9.14 for C#-specific details.
@@ -55,6 +70,9 @@ struct PropertyAccessorContext<'a> {
     calls_by_func: &'a mut HashMap<String, Vec<CallSite>>,
     class: &'a str,
     prop_name: Option<&'a str>,
+    /// Base types declared by `class` (issue #87: bare calls inside
+    /// accessors can target inherited members too).
+    enclosing_bases: Option<&'a [String]>,
 }
 
 impl CsharpHandler {
@@ -148,13 +166,23 @@ impl CsharpHandler {
     }
 
     /// Collect all class, interface, struct, and method definitions.
+    ///
+    /// Returns `(methods, classes, class_bases)` where `class_bases` maps
+    /// each declared type name to the base types named in its `base_list`
+    /// (issue #87: needed to classify bare calls inside a type that can
+    /// inherit members).
     fn collect_definitions(
         &self,
         tree: &Tree,
         source: &[u8],
-    ) -> (HashSet<String>, HashSet<String>) {
+    ) -> (
+        HashSet<String>,
+        HashSet<String>,
+        HashMap<String, Vec<String>>,
+    ) {
         let mut methods = HashSet::new();
         let mut classes = HashSet::new();
+        let mut class_bases: HashMap<String, Vec<String>> = HashMap::new();
 
         for node in walk_tree(tree.root_node()) {
             match node.kind() {
@@ -171,14 +199,74 @@ impl CsharpHandler {
                 }
                 "class_declaration" | "interface_declaration" | "struct_declaration" => {
                     if let Some(name) = self.get_identifier_from_node(&node, source) {
-                        classes.insert(name);
+                        classes.insert(name.clone());
+                        class_bases.insert(name, Self::extract_base_types(&node, source));
                     }
                 }
                 _ => {}
             }
         }
 
-        (methods, classes)
+        (methods, classes, class_bases)
+    }
+
+    /// Extract base type names from the `base_list` child of a type
+    /// declaration.
+    ///
+    /// Handles `identifier` (simple name), `generic_name` (e.g.
+    /// `RepositoryBase<User>` -> `RepositoryBase`) and `qualified_name`
+    /// (e.g. `NS.Base`) nodes — the complete extraction previously found
+    /// only in `crate::inheritance::csharp`. The callgraph parser used to
+    /// collect `identifier` bases only, which silently dropped generic and
+    /// namespace-qualified bases and broke cross-file base-chain
+    /// resolution for subclasses of such types (issue #87).
+    fn extract_base_types(node: &Node, source: &[u8]) -> Vec<String> {
+        let mut bases = Vec::new();
+
+        for i in 0..node.child_count() {
+            let Some(child) = node.child(i) else {
+                continue;
+            };
+            if child.kind() != "base_list" {
+                continue;
+            }
+            for j in 0..child.child_count() {
+                let Some(base) = child.child(j) else {
+                    continue;
+                };
+                match base.kind() {
+                    "identifier" => bases.push(get_node_text(&base, source).to_string()),
+                    "generic_name" => {
+                        if let Some(name) = Self::generic_type_name(&base, source) {
+                            bases.push(name);
+                        }
+                    }
+                    "qualified_name" => {
+                        bases.push(get_node_text(&base, source).to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        bases
+    }
+
+    /// Get the base type name from a `generic_name` node
+    /// (`RepositoryBase<User>` -> `RepositoryBase`).
+    fn generic_type_name(node: &Node, source: &[u8]) -> Option<String> {
+        if let Some(name) = node.child_by_field_name("name") {
+            return Some(get_node_text(&name, source).to_string());
+        }
+        // Fallback: first identifier child
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                if child.kind() == "identifier" {
+                    return Some(get_node_text(&child, source).to_string());
+                }
+            }
+        }
+        None
     }
 
     /// Get the identifier (name) from a declaration node.
@@ -234,6 +322,15 @@ impl CsharpHandler {
     }
 
     /// Extract calls from a method/constructor body.
+    ///
+    /// `enclosing_bases` carries the base types declared by the class (or
+    /// struct/interface) enclosing the call site, when the call site is
+    /// inside one. A bare call to a method not defined in this file may
+    /// still target an inherited member, so it is classified `Intra` (not
+    /// `Direct`) whenever the enclosing type declares any base — the
+    /// builder's `resolve_intra_call` then resolves it via
+    /// `resolve_method_in_bases` across files, falling back to the generic
+    /// resolver when the chain misses (issue #87).
     fn extract_calls_from_node(
         &self,
         node: &Node,
@@ -241,6 +338,7 @@ impl CsharpHandler {
         defined_methods: &HashSet<String>,
         defined_classes: &HashSet<String>,
         caller: &str,
+        enclosing_bases: Option<&[String]>,
     ) -> Vec<CallSite> {
         let mut calls = Vec::new();
 
@@ -291,7 +389,9 @@ impl CsharpHandler {
                             "identifier" => {
                                 // Simple call: Method()
                                 let method_name = get_node_text(&func_node, source).to_string();
-                                let call_type = if defined_methods.contains(&method_name) {
+                                let call_type = if defined_methods.contains(&method_name)
+                                    || enclosing_bases.is_some_and(|bases| !bases.is_empty())
+                                {
                                     CallType::Intra
                                 } else {
                                     CallType::Direct
@@ -311,7 +411,9 @@ impl CsharpHandler {
                                 if let Some(name) =
                                     self.get_identifier_from_node(&func_node, source)
                                 {
-                                    let call_type = if defined_methods.contains(&name) {
+                                    let call_type = if defined_methods.contains(&name)
+                                        || enclosing_bases.is_some_and(|bases| !bases.is_empty())
+                                    {
                                         CallType::Intra
                                     } else {
                                         CallType::Direct
@@ -409,6 +511,7 @@ impl CsharpHandler {
         source: &[u8],
         defined_methods: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        class_bases: &HashMap<String, Vec<String>>,
         calls_by_func: &mut HashMap<String, Vec<CallSite>>,
         current_class: &mut Option<String>,
     ) {
@@ -419,6 +522,7 @@ impl CsharpHandler {
                     source,
                     defined_methods,
                     defined_classes,
+                    class_bases,
                     calls_by_func,
                     current_class,
                 );
@@ -432,6 +536,7 @@ impl CsharpHandler {
         source: &[u8],
         defined_methods: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        class_bases: &HashMap<String, Vec<String>>,
         calls_by_func: &mut HashMap<String, Vec<CallSite>>,
         current_class: &mut Option<String>,
     ) {
@@ -442,6 +547,7 @@ impl CsharpHandler {
                     source,
                     defined_methods,
                     defined_classes,
+                    class_bases,
                     calls_by_func,
                     current_class,
                 );
@@ -452,6 +558,7 @@ impl CsharpHandler {
                     source,
                     defined_methods,
                     defined_classes,
+                    class_bases,
                     calls_by_func,
                     current_class,
                 );
@@ -462,6 +569,7 @@ impl CsharpHandler {
                     source,
                     defined_methods,
                     defined_classes,
+                    class_bases,
                     calls_by_func,
                     current_class,
                 );
@@ -472,6 +580,7 @@ impl CsharpHandler {
                     source,
                     defined_methods,
                     defined_classes,
+                    class_bases,
                     calls_by_func,
                     current_class,
                 );
@@ -491,6 +600,7 @@ impl CsharpHandler {
                     source,
                     defined_methods,
                     defined_classes,
+                    class_bases,
                     calls_by_func,
                     current_class,
                 );
@@ -504,6 +614,7 @@ impl CsharpHandler {
         source: &[u8],
         defined_methods: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        class_bases: &HashMap<String, Vec<String>>,
         calls_by_func: &mut HashMap<String, Vec<CallSite>>,
         current_class: &mut Option<String>,
     ) {
@@ -524,6 +635,7 @@ impl CsharpHandler {
             source,
             defined_methods,
             defined_classes,
+            class_bases,
             calls_by_func,
             current_class,
         );
@@ -536,6 +648,7 @@ impl CsharpHandler {
         source: &[u8],
         defined_methods: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        class_bases: &HashMap<String, Vec<String>>,
         calls_by_func: &mut HashMap<String, Vec<CallSite>>,
         current_class: &Option<String>,
     ) {
@@ -592,6 +705,13 @@ impl CsharpHandler {
         };
 
         let mut all_calls = Vec::new();
+        // issue #87: bare calls in a method of a class that declares bases may
+        // target inherited members -- pass the bases down for Intra
+        // classification.
+        let enclosing_bases = current_class
+            .as_deref()
+            .and_then(|c| class_bases.get(c))
+            .map(|b| b.as_slice());
         if let Some(body_node) = body {
             all_calls.extend(self.extract_calls_from_node(
                 &body_node,
@@ -599,6 +719,7 @@ impl CsharpHandler {
                 defined_methods,
                 defined_classes,
                 &full_name,
+                enclosing_bases,
             ));
         }
         if let Some(arrow_node) = arrow {
@@ -608,6 +729,7 @@ impl CsharpHandler {
                 defined_methods,
                 defined_classes,
                 &full_name,
+                enclosing_bases,
             ));
         }
         if let Some(init_node) = constructor_init {
@@ -617,6 +739,7 @@ impl CsharpHandler {
                 defined_methods,
                 defined_classes,
                 &full_name,
+                enclosing_bases,
             ));
         }
 
@@ -636,6 +759,7 @@ impl CsharpHandler {
         source: &[u8],
         defined_methods: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        class_bases: &HashMap<String, Vec<String>>,
         calls_by_func: &mut HashMap<String, Vec<CallSite>>,
         current_class: &Option<String>,
     ) {
@@ -653,8 +777,15 @@ impl CsharpHandler {
         } else {
             format!("{class}.<init>")
         };
-        let calls =
-            self.extract_calls_from_node(&node, source, defined_methods, defined_classes, &caller);
+        let enclosing_bases = class_bases.get(class).map(|b| b.as_slice());
+        let calls = self.extract_calls_from_node(
+            &node,
+            source,
+            defined_methods,
+            defined_classes,
+            &caller,
+            enclosing_bases,
+        );
         extend_calls_if_any(calls_by_func, caller, calls);
     }
 
@@ -664,12 +795,14 @@ impl CsharpHandler {
         source: &[u8],
         defined_methods: &HashSet<String>,
         defined_classes: &HashSet<String>,
+        class_bases: &HashMap<String, Vec<String>>,
         calls_by_func: &mut HashMap<String, Vec<CallSite>>,
         current_class: &Option<String>,
     ) {
         let Some(class) = current_class.as_deref() else {
             return;
         };
+        let enclosing_bases = class_bases.get(class).map(|b| b.as_slice());
         let prop_name = node
             .child_by_field_name("name")
             .map(|n| get_node_text(&n, source).to_string());
@@ -695,6 +828,7 @@ impl CsharpHandler {
                         calls_by_func,
                         class,
                         prop_name: prop_name.as_deref(),
+                        enclosing_bases,
                     };
                     self.handle_property_accessor_list_calls(child, &mut context);
                 }
@@ -710,6 +844,7 @@ impl CsharpHandler {
                         defined_methods,
                         defined_classes,
                         &caller,
+                        enclosing_bases,
                     );
                     extend_calls_if_any(calls_by_func, caller, calls);
                 }
@@ -725,6 +860,7 @@ impl CsharpHandler {
                         defined_methods,
                         defined_classes,
                         &caller,
+                        enclosing_bases,
                     );
                     extend_calls_if_any(calls_by_func, caller, calls);
                 }
@@ -774,6 +910,7 @@ impl CsharpHandler {
                     context.defined_methods,
                     context.defined_classes,
                     &caller,
+                    context.enclosing_bases,
                 );
                 extend_calls_if_any(context.calls_by_func, caller.clone(), calls);
             }
@@ -789,8 +926,16 @@ impl CsharpHandler {
         calls_by_func: &mut HashMap<String, Vec<CallSite>>,
     ) {
         let caller = "<top-level>".to_string();
-        let calls =
-            self.extract_calls_from_node(&node, source, defined_methods, defined_classes, &caller);
+        // Top-level statements have no enclosing class, so no bases: bare
+        // calls keep the historical Direct classification.
+        let calls = self.extract_calls_from_node(
+            &node,
+            source,
+            defined_methods,
+            defined_classes,
+            &caller,
+            None,
+        );
         extend_calls_if_any(calls_by_func, caller, calls);
     }
 }
@@ -827,7 +972,8 @@ impl CallGraphLanguageSupport for CsharpHandler {
         tree: &Tree,
     ) -> Result<HashMap<String, Vec<CallSite>>, ParseError> {
         let source_bytes = source.as_bytes();
-        let (defined_methods, defined_classes) = self.collect_definitions(tree, source_bytes);
+        let (defined_methods, defined_classes, class_bases) =
+            self.collect_definitions(tree, source_bytes);
         let mut calls_by_func: HashMap<String, Vec<CallSite>> = HashMap::new();
         let mut current_class: Option<String> = None;
         self.process_extract_calls_node(
@@ -835,6 +981,7 @@ impl CallGraphLanguageSupport for CsharpHandler {
             source_bytes,
             &defined_methods,
             &defined_classes,
+            &class_bases,
             &mut calls_by_func,
             &mut current_class,
         );
@@ -890,23 +1037,17 @@ impl CallGraphLanguageSupport for CsharpHandler {
                         let line = node.start_position().row as u32 + 1;
                         let end_line = node.end_position().row as u32 + 1;
 
-                        // Collect method names and base classes
+                        // Collect method names and base classes. issue #87:
+                        // extract_base_types handles identifier, generic_name
+                        // and qualified_name base nodes (previously only
+                        // identifier was collected, dropping e.g.
+                        // `RepositoryBase<User>` and `NS.Base` from the
+                        // inheritance graph).
                         let mut methods = Vec::new();
-                        let mut bases = Vec::new();
+                        let bases = Self::extract_base_types(&node, source_bytes);
 
                         for i in 0..node.child_count() {
                             if let Some(child) = node.child(i) {
-                                if child.kind() == "base_list" {
-                                    for j in 0..child.child_count() {
-                                        if let Some(base) = child.child(j) {
-                                            if base.kind() == "identifier" {
-                                                bases.push(
-                                                    get_node_text(&base, source_bytes).to_string(),
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
                                 if child.kind() == "declaration_list" {
                                     for j in 0..child.named_child_count() {
                                         if let Some(member) = child.named_child(j) {
@@ -1896,6 +2037,140 @@ public interface IProcessor {
                 "should have Fallback from interface default method: {:?}",
                 calls
             );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Inherited Call Tests (issue #87)
+    // -------------------------------------------------------------------------
+    mod inherited_call_tests {
+        use super::*;
+
+        fn extract_defs(source: &str) -> Vec<ClassDef> {
+            let handler = CsharpHandler::new();
+            let tree = handler.parse_source(source).unwrap();
+            handler
+                .extract_definitions(source, Path::new("Test.cs"), &tree)
+                .unwrap()
+                .1
+        }
+
+        #[test]
+        fn test_bare_call_in_class_with_bases_classified_intra() {
+            // The method `Run` is NOT defined in this file, but the enclosing
+            // class declares a base: the call may target an inherited member,
+            // so it must be classified Intra for the builder to route it
+            // through resolve_method_in_bases (which walks ClassIndex across
+            // files). Direct here was the #87 bug: cross-file inherited calls
+            // never reached inheritance-aware resolution.
+            let source = r#"
+public class Derived : Base
+{
+    public void Go()
+    {
+        Run();
+    }
+}
+"#;
+            let calls = extract_calls(source);
+            let go_calls = calls.get("Derived.Go").expect("Derived.Go call sites");
+            let run_call = go_calls
+                .iter()
+                .find(|c| c.target == "Run")
+                .expect("bare Run() call");
+            assert_eq!(run_call.call_type, CallType::Intra);
+        }
+
+        #[test]
+        fn test_bare_call_in_class_without_bases_stays_direct() {
+            // No declared bases -> nothing to inherit -> historical Direct
+            // classification is preserved (no behavior change for unrelated
+            // bare calls).
+            let source = r#"
+public class Foo
+{
+    public void Go()
+    {
+        External();
+    }
+}
+"#;
+            let calls = extract_calls(source);
+            let go_calls = calls.get("Foo.Go").expect("Foo.Go call sites");
+            let ext_call = go_calls
+                .iter()
+                .find(|c| c.target == "External")
+                .expect("bare External() call");
+            assert_eq!(ext_call.call_type, CallType::Direct);
+        }
+
+        #[test]
+        fn test_bare_call_in_generic_base_class_classified_intra() {
+            // Generic method call inside a class with bases: same Intra
+            // routing as plain bare calls.
+            let source = r#"
+public class Repo : RepositoryBase<object>
+{
+    public void SaveAll()
+    {
+        Save<object>(new object());
+    }
+}
+"#;
+            let calls = extract_calls(source);
+            let saveall_calls = calls.get("Repo.SaveAll").expect("Repo.SaveAll call sites");
+            let save_call = saveall_calls
+                .iter()
+                .find(|c| c.target == "Save")
+                .expect("generic Save<T>() call");
+            assert_eq!(save_call.call_type, CallType::Intra);
+        }
+
+        #[test]
+        fn test_base_list_extracts_generic_and_qualified_bases() {
+            // extract_definitions must collect identifier, generic_name and
+            // qualified_name bases (previously identifier-only, which dropped
+            // these from ClassIndex and broke base-chain BFS).
+            let source = r#"
+public class Repo : RepositoryBase<User>, NS.IRepo
+{
+}
+"#;
+            let classes = extract_defs(source);
+            assert_eq!(classes.len(), 1);
+            let repo = &classes[0];
+            assert_eq!(repo.name, "Repo");
+            assert_eq!(
+                repo.bases,
+                vec!["RepositoryBase".to_string(), "NS.IRepo".to_string()]
+            );
+        }
+
+        #[test]
+        fn test_base_list_simple_identifiers() {
+            let source = r#"
+public class Derived : Base, IService
+{
+}
+"#;
+            let classes = extract_defs(source);
+            let derived = classes.iter().find(|c| c.name == "Derived").unwrap();
+            assert_eq!(
+                derived.bases,
+                vec!["Base".to_string(), "IService".to_string()]
+            );
+        }
+
+        #[test]
+        fn test_class_without_base_list_has_empty_bases() {
+            let source = r#"
+public class Standalone
+{
+}
+"#;
+            let classes = extract_defs(source);
+            assert_eq!(classes.len(), 1);
+            assert!(classes[0].bases.is_empty());
         }
     }
 }
