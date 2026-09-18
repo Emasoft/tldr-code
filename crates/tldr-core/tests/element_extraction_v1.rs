@@ -59,6 +59,20 @@
 //!   heading's first line. The documented false-positive classes (shouted
 //!   prose, decimal numbers reading like outlines) are pinned in `ast::toc`'s
 //!   unit tests.
+//! - SQL → `table`/`view`/`index`/`function`/`procedure`/`trigger`/`schema`/
+//!   `type`/`constraint` per DDL statement from the NATIVE schema-outline
+//!   scanner (`ast::sqlscan` — crates.io publishes only tree-sitter-sql
+//!   0.0.2, dead since 2021, so no grammar is wired and no Language::Sql
+//!   variant exists; `.sql` resolves through the unknown-extension ladder to
+//!   Text): statements split at TOP-LEVEL `;` only (tokenizer-aware — `;`
+//!   inside strings/quoted identifiers/comments/PostgreSQL dollar-quoted
+//!   bodies never splits), region = the chunk's first content byte .. the
+//!   terminating `;` INCLUSIVE (a leading comment block is attached trivia),
+//!   name = schema-qualified identifier chain with quote/backtick/bracket
+//!   wrappers stripped, signature = the statement's first line trimmed
+//!   (≤120 chars, `…`-truncated) and `definition_line` = the statement's
+//!   first KEYWORD line (comments never move it). Column-level extraction is
+//!   documented future work; DML/out-of-scope DDL emits nothing.
 //! - Markdown → `heading` per ATX heading (`#`…`######`) and setext heading
 //!   (`text` + `===`/`---` underline), named after the heading text (the
 //!   `#`/underline markers are separate grammar children and never enter the
@@ -1508,6 +1522,184 @@ fn text_toc_headings_are_definitions_with_exact_spans() {
     let appendix = find_element(&defs, "notes.txt", "heading", "Appendix 2");
     assert_span(appendix, "notes.txt", "heading:Appendix 2", 14, 14);
     assert_byte_slice(appendix, TEXT_FIXTURE, "notes.txt", "Appendix 2");
+}
+
+// =============================================================================
+// SQL — native schema-outline scanner (NO tree-sitter): DDL statements as
+// definitions
+// =============================================================================
+//
+// `.sql` never reaches a tree-sitter tree (crates.io publishes only
+// tree-sitter-sql 0.0.2, dead since 2021 — the root Cargo.toml audit note).
+// The `get_code_structure` hook early-returns to the `ast::sqlscan` scanner
+// through the `Language::Text` branch (the unknown-extension ladder resolves
+// `.sql` to Text), and each DDL statement maps onto `DefinitionInfo` with its
+// kind from the closed kind table, the schema-qualified name (quote wrappers
+// stripped), signature = the statement's first line, and definition_line =
+// the statement's first KEYWORD line. `assert_element_invariants` is
+// deliberately NOT applied here: SQL definitions DO set `definition_line`
+// (the keyword line is the declaration line, the same convention text
+// headings use).
+//
+// Line map (the pinned spans below are computed against exactly this text):
+//  1: -- app schema; this comment never splits a statement
+//  2: CREATE TABLE IF NOT EXISTS public.users (
+//  3:   id integer PRIMARY KEY,
+//  4:   email text NOT NULL,
+//  5:   team_id integer REFERENCES teams (id)
+//  6: );
+//  7:
+//  8: CREATE VIEW v_active AS
+//  9:   SELECT * FROM users WHERE active;
+// 10:
+// 11: CREATE UNIQUE INDEX idx_users_email ON public.users (email);
+// 12:
+// 13: CREATE OR REPLACE FUNCTION touch_row() RETURNS trigger AS $$
+// 14: BEGIN
+// 15:   RETURN NEW;
+// 16: END;
+// 17: $$ LANGUAGE plpgsql;
+// 18:
+// 19: ALTER TABLE ONLY public.users ADD CONSTRAINT users_email_key UNIQUE (email);
+// 20:
+// 21: INSERT INTO audit_log VALUES (1, 'seed; not a terminator'); -- DML never emits
+const SQL_FIXTURE: &str = "\
+-- app schema; this comment never splits a statement
+CREATE TABLE IF NOT EXISTS public.users (
+  id integer PRIMARY KEY,
+  email text NOT NULL,
+  team_id integer REFERENCES teams (id)
+);
+
+CREATE VIEW v_active AS
+  SELECT * FROM users WHERE active;
+
+CREATE UNIQUE INDEX idx_users_email ON public.users (email);
+
+CREATE OR REPLACE FUNCTION touch_row() RETURNS trigger AS $$
+BEGIN
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+ALTER TABLE ONLY public.users ADD CONSTRAINT users_email_key UNIQUE (email);
+
+INSERT INTO audit_log VALUES (1, 'seed; not a terminator'); -- DML never emits
+";
+
+#[test]
+fn sql_schema_objects_are_definitions_with_exact_spans() {
+    let defs = extract_elements("schema.sql", SQL_FIXTURE, Language::Text);
+
+    // EXACT source-order sequence: the attached-comment table (whose region
+    // starts at the comment), the two-line view, the unique index, the
+    // dollar-quoted function, and the pg_dump ALTER … ADD CONSTRAINT. The
+    // trailing INSERT (with a `;` inside its string literal) never emits.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("table", "public.users"),
+        ("view", "v_active"),
+        ("index", "idx_users_email"),
+        ("function", "touch_row"),
+        ("constraint", "users_email_key"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [schema.sql]: expected exact DDL sequence"
+    );
+
+    // Every DDL definition: definition_line = the statement's first KEYWORD
+    // line (the attached comment never moves it), byte spans present, and
+    // the byte region is an exact slice of the source.
+    for d in &defs {
+        assert!(
+            d.byte_start.is_some() && d.byte_end.is_some(),
+            "element-extraction-v1 [schema.sql]: {} must carry byte spans",
+            d.name
+        );
+        let (s, e) = (d.byte_start.unwrap() as usize, d.byte_end.unwrap() as usize);
+        assert!(e > s);
+        let _ = &SQL_FIXTURE[s..e];
+    }
+
+    // Table: region = the attached comment + the whole CREATE statement,
+    // terminator `;` included; definition_line = the keyword line.
+    let table = find_element(&defs, "schema.sql", "table", "public.users");
+    assert_span(table, "schema.sql", "table:public.users", 1, 6);
+    assert_eq!(
+        table.definition_line,
+        Some(2),
+        "element-extraction-v1 [schema.sql]: table definition_line = the keyword line"
+    );
+    let table_slice =
+        &SQL_FIXTURE[table.byte_start.unwrap() as usize..table.byte_end.unwrap() as usize];
+    assert_eq!(
+        table_slice,
+        "-- app schema; this comment never splits a statement\n\
+         CREATE TABLE IF NOT EXISTS public.users (\n  \
+         id integer PRIMARY KEY,\n  \
+         email text NOT NULL,\n  \
+         team_id integer REFERENCES teams (id)\n);",
+        "table region = attached comment + statement + terminator"
+    );
+    assert_eq!(
+        table.signature, "CREATE TABLE IF NOT EXISTS public.users (",
+        "signature = the statement's first line (comments skipped)"
+    );
+
+    // View: the head wraps onto a second line; the region covers both.
+    let view = find_element(&defs, "schema.sql", "view", "v_active");
+    assert_span(view, "schema.sql", "view:v_active", 8, 9);
+    assert_eq!(view.definition_line, Some(8));
+    let view_slice =
+        &SQL_FIXTURE[view.byte_start.unwrap() as usize..view.byte_end.unwrap() as usize];
+    assert_eq!(
+        view_slice,
+        "CREATE VIEW v_active AS\n  SELECT * FROM users WHERE active;"
+    );
+
+    // Index: single line.
+    let index = find_element(&defs, "schema.sql", "index", "idx_users_email");
+    assert_span(index, "schema.sql", "index:idx_users_email", 11, 11);
+    assert_eq!(index.definition_line, Some(11));
+
+    // Function: the dollar-quoted body's embedded `;` never splits it — the
+    // region runs to the `;` AFTER the closing `$$`.
+    let function = find_element(&defs, "schema.sql", "function", "touch_row");
+    assert_span(function, "schema.sql", "function:touch_row", 13, 17);
+    assert_eq!(function.definition_line, Some(13));
+    let function_slice =
+        &SQL_FIXTURE[function.byte_start.unwrap() as usize..function.byte_end.unwrap() as usize];
+    assert!(
+        function_slice.ends_with("$$ LANGUAGE plpgsql;"),
+        "function region ends at the terminator past the dollar-quoted body"
+    );
+    assert_eq!(
+        function.signature,
+        "CREATE OR REPLACE FUNCTION touch_row() RETURNS trigger AS $$"
+    );
+
+    // Constraint: pg_dump's ALTER … ONLY … ADD CONSTRAINT names the
+    // CONSTRAINT (the table is the statement's target).
+    let constraint = find_element(&defs, "schema.sql", "constraint", "users_email_key");
+    assert_span(
+        constraint,
+        "schema.sql",
+        "constraint:users_email_key",
+        19,
+        19,
+    );
+    assert_eq!(constraint.definition_line, Some(19));
+    assert_eq!(
+        constraint.signature,
+        "ALTER TABLE ONLY public.users ADD CONSTRAINT users_email_key UNIQUE (email);"
+    );
 }
 
 // =============================================================================

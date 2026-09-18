@@ -267,6 +267,41 @@ fn new_languages_map_from_extension() {
         tldr_core::ast::parser::parse("a\tb\n1\t2\n", Language::Tsv).is_err(),
         "tsv has no tree-sitter grammar — direct parse must fail"
     );
+    // sql-schema-scan-v1: `.sql`/`.ddl` deliberately DO NOT map through
+    // `from_path`/`from_extension` — there is NO Language::Sql variant and
+    // none is added (crates.io publishes only tree-sitter-sql 0.0.2,
+    // DerekStride, dead since 2021 — the root Cargo.toml audit note). A
+    // `.sql` file instead resolves through the unknown-extension ladder
+    // (`validation::resolve_target_language`, unknown-ext-text-v1) to
+    // `Language::Text`, and the native schema-outline scanner in
+    // `ast::sqlscan` keys on the PATH inside the extractor's Text
+    // early-return and `get_imports`'s path dispatch. Both absences are
+    // pinned: the extension mapping stays None, and a direct Text parse
+    // (no grammar for prose, hence none for SQL either) must fail — the
+    // Log/Text/CSV no-grammar precedent.
+    assert_eq!(
+        Language::from_path(std::path::Path::new("db/schema.sql")),
+        None,
+        ".sql must NOT map to a Language variant — the scanner keys on the path"
+    );
+    assert_eq!(Language::from_path(std::path::Path::new("dump.ddl")), None);
+    assert_eq!(Language::from_extension(".sql"), None);
+    assert_eq!(Language::from_extension(".ddl"), None);
+    assert!(
+        tldr_core::ast::parser::parse("CREATE TABLE t (id int);", Language::Text).is_err(),
+        "sql has no tree-sitter grammar — direct parse must fail"
+    );
+    // The ladder itself: an on-disk `.sql` file resolves to Text (the path
+    // `tldr structure schema.sql` takes), which routes the extraction to the
+    // native scanner.
+    let sql_dir = tempfile::TempDir::new().expect("tempdir");
+    let sql_path = sql_dir.path().join("schema.sql");
+    std::fs::write(&sql_path, "CREATE TABLE t (id int);\n").expect("write fixture");
+    assert_eq!(
+        tldr_core::resolve_target_language(&sql_path).unwrap(),
+        Some(Language::Text),
+        "unknown extension + text content → Text (unknown-ext-text-v1)"
+    );
 }
 
 #[test]

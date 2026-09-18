@@ -848,6 +848,18 @@ mod structure_tests {
             "key",
             "section",
             "document",
+            // sql-schema-scan-v1: DDL kinds from `ast::sqlscan`. This test's
+            // fixtures are code languages only, so these kinds never occur
+            // here either; the list stays authoritative for the whole
+            // `definitions` channel. ("function" and "type" above double as
+            // the SQL function/type kinds.)
+            "table",
+            "view",
+            "index",
+            "procedure",
+            "trigger",
+            "schema",
+            "constraint",
         ];
         let cases: Vec<(&str, Language)> = vec![
             ("test_python.py", Language::Python),

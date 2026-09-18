@@ -18,6 +18,9 @@
 //!   (the only CSV grammar crate on crates.io is unbuildable — cc build-dep
 //!   conflict with ts 0.25 + ts-0.20-era exports with no bridge LanguageFns;
 //!   the Log/Text no-grammar precedent)
+//! - `sqlscan` - native SQL schema-outline scanning for `.sql`/`.ddl` files
+//!   (crates.io only publishes tree-sitter-sql 0.0.2, dead since 2021 — the
+//!   Log/Text/CSV no-grammar precedent; statement-splitter + DDL kind table)
 //! - `ooxml` - OOXML containers (.docx/.xlsx/.pptx): in-memory unzip +
 //!   the XML element walker over the container's XML parts
 //! - `doclinks` - document link extraction: markdown/html/xml hyperlinks
@@ -36,6 +39,7 @@ pub mod jsonl;
 pub mod logs;
 pub mod ooxml;
 pub mod parser;
+pub mod sqlscan;
 pub mod toc;
 pub mod yaml_chunk;
 
@@ -56,4 +60,5 @@ pub use jsonl::{
 pub use logs::{is_log_path, parse_log_file, stream_log_entries, LogEntry};
 pub use ooxml::{extract_ooxml, is_ooxml_path, OoxmlKind};
 pub use parser::ParserPool;
+pub use sqlscan::{extract_sql_refs, is_sql_path, parse_sql_schema};
 pub use toc::{is_text_path, parse_text_file, scan_toc};

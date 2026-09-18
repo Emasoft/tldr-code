@@ -1809,3 +1809,146 @@ fn csv_records_and_header_cells_are_elements() {
         );
     }
 }
+
+/// SQL PIN (`sql_schema_objects_are_elements`, sql-schema-scan-v1): `.sql`
+/// files never reach a tree-sitter tree (crates.io publishes only
+/// tree-sitter-sql 0.0.2, dead since 2021 — the root `Cargo.toml` audit
+/// note), so the native schema-outline scanner in `ast::sqlscan` is the ONLY
+/// source of SQL definitions, reached through the `Language::Text`
+/// early-return keyed on the `.sql` PATH. `tldr structure <file>.sql` must
+/// surface one definition per DDL statement in the closed kind table — named
+/// after the schema-qualified identifier chain (quote wrappers stripped) —
+/// with exact byte regions (statement + terminating `;`, attached leading
+/// comments included), signature = the statement's first line and
+/// `definition_line` = the statement's first KEYWORD line. A `;` inside a
+/// string, a comment, or a PostgreSQL dollar-quoted function body never
+/// splits a statement; DML emits nothing.
+#[test]
+fn sql_schema_objects_are_elements() {
+    let fixture = "\
+-- billing schema; this comment never splits a statement
+CREATE TABLE IF NOT EXISTS public.users (
+  id integer PRIMARY KEY,
+  team_id integer REFERENCES teams (id)
+);
+
+CREATE UNIQUE INDEX idx_users_email ON public.users (email);
+
+CREATE OR REPLACE FUNCTION touch_row() RETURNS trigger AS $$
+BEGIN
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+ALTER TABLE ONLY public.users ADD CONSTRAINT users_email_key UNIQUE (email);
+
+INSERT INTO audit_log VALUES (1, 'seed; inert');
+";
+    let dir = TempDir::new().unwrap_or_else(|e| panic!("symbol-fidelity-v1: tempdir failed: {e}"));
+    let path = dir.path().join("schema.sql");
+    fs::write(&path, fixture)
+        .unwrap_or_else(|e| panic!("symbol-fidelity-v1: write schema.sql failed: {e}"));
+
+    let structure = get_code_structure(&path, Language::Text, 0, None)
+        .unwrap_or_else(|e| panic!("symbol-fidelity-v1: schema.sql extraction failed: {e}"));
+    assert_eq!(
+        structure.files.len(),
+        1,
+        "symbol-fidelity-v1 [schema.sql]: expected exactly one FileStructure"
+    );
+    assert_eq!(
+        structure.language,
+        Some(Language::Text),
+        "symbol-fidelity-v1 [schema.sql]: language must report text — there is no \
+         Language::Sql variant; the scanner keys on the PATH"
+    );
+    let defs = &structure.files[0].definitions;
+
+    // EXACT sequence, source order — the DDL statements only; the trailing
+    // INSERT (its string literal even contains a `;`) never emits.
+    let sequence: Vec<(String, String)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone()))
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("table", "public.users"),
+        ("index", "idx_users_email"),
+        ("function", "touch_row"),
+        ("constraint", "users_email_key"),
+    ]
+    .iter()
+    .map(|(k, n)| (k.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "symbol-fidelity-v1 [schema.sql]: expected exact DDL sequence, got {defs:#?}"
+    );
+
+    // The table's region = the attached comment block + the whole CREATE
+    // statement + terminator; definition_line stays on the keyword line.
+    let table = defs
+        .iter()
+        .find(|d| d.kind == "table" && d.name == "public.users")
+        .unwrap_or_else(|| panic!("symbol-fidelity-v1 [schema.sql]: table not found.\n{defs:#?}"));
+    assert_eq!(
+        (table.line_start, table.line_end),
+        (1, 5),
+        "symbol-fidelity-v1 [schema.sql]: table region spans the attached comment and the statement"
+    );
+    assert_eq!(
+        table.definition_line,
+        Some(2),
+        "symbol-fidelity-v1 [schema.sql]: table definition_line = the CREATE TABLE keyword line"
+    );
+    let table_slice =
+        &fixture[table.byte_start.unwrap() as usize..table.byte_end.unwrap() as usize];
+    assert_eq!(
+        table_slice,
+        "-- billing schema; this comment never splits a statement\n\
+         CREATE TABLE IF NOT EXISTS public.users (\n  \
+         id integer PRIMARY KEY,\n  \
+         team_id integer REFERENCES teams (id)\n);",
+        "symbol-fidelity-v1 [schema.sql]: table byte region = comment + statement + `;`"
+    );
+    assert_eq!(
+        table.signature, "CREATE TABLE IF NOT EXISTS public.users (",
+        "symbol-fidelity-v1 [schema.sql]: signature = the statement's first line"
+    );
+
+    // The dollar-quoted body's `;`s never split the function: its region
+    // runs to the `;` past the closing `$$`.
+    let function = defs
+        .iter()
+        .find(|d| d.kind == "function" && d.name == "touch_row")
+        .unwrap_or_else(|| {
+            panic!("symbol-fidelity-v1 [schema.sql]: function not found.\n{defs:#?}")
+        });
+    assert_eq!(
+        (function.line_start, function.line_end),
+        (9, 13),
+        "symbol-fidelity-v1 [schema.sql]: the dollar-quoted body never splits the function"
+    );
+    let function_slice =
+        &fixture[function.byte_start.unwrap() as usize..function.byte_end.unwrap() as usize];
+    assert!(
+        function_slice.ends_with("$$ LANGUAGE plpgsql;"),
+        "symbol-fidelity-v1 [schema.sql]: function region ends at its own terminator"
+    );
+
+    // Every definition: byte spans present + definition_line = the keyword
+    // line (SQL statements DO carry signatures — the first line).
+    for d in defs {
+        assert!(
+            d.byte_start.is_some() && d.byte_end.is_some(),
+            "symbol-fidelity-v1 [schema.sql]: {}:`{}` must carry byte spans",
+            d.kind,
+            d.name
+        );
+        assert!(
+            !d.signature.is_empty(),
+            "symbol-fidelity-v1 [schema.sql]: {}:`{}` must carry its first-line signature",
+            d.kind,
+            d.name
+        );
+    }
+}

@@ -31,7 +31,14 @@
 //! angle-wrapped path with spaces (`<./docs/guide with spaces.md>`, real on
 //! disk), a shell-escaped path and a plain relative path (`./b.txt`), pinning
 //! the prose reference scan end to end (imports fields, the impact closure
-//! of the spaced target, and importers `--lang text`). No
+//! of the spaced target, and importers `--lang text`). The sql-schema batch
+//! adds `build_sql_project`: `a.sql` carries two real `REFERENCES <table>`
+//! foreign-key edges (inline and table-level) next to a `REFERENCES` inside
+//! a DEFAULT string literal that must stay inert, pinning the native SQL ref
+//! scan end to end — with the documented-by-design fact that table-name
+//! targets do not resolve to project files (they are names, not paths), so
+//! the rows surface in `tldr imports` and stay inert in the impact/importers
+//! file graph. No
 //! daemon is started; every command takes the direct-compute path.
 
 use assert_cmd::Command;
@@ -260,6 +267,35 @@ fn build_text_project() -> TempDir {
     );
     write(root.join("docs/guide with spaces.md"), "# Guide\n");
     write(root.join("b.txt"), "second plain-text file\n");
+    dir
+}
+
+/// Fixture for the sql-schema batch: `a.sql` is a real schema file whose
+/// only reference surface is foreign keys — an inline `REFERENCES b_table`
+/// column constraint and a table-level `FOREIGN KEY … REFERENCES a_table` —
+/// plus a `REFERENCES` inside a DEFAULT string literal that must stay inert
+/// (the ref scan runs through the statement tokenizer's masks). There is
+/// deliberately NO file named like either table: a REFERENCES target is a
+/// table NAME, not a path.
+fn build_sql_project() -> TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write(
+        root.join("a.sql"),
+        concat!(
+            "-- schema; the ';' in this comment never splits a statement\n",
+            "CREATE TABLE a_table (\n",
+            "  id integer PRIMARY KEY,\n",
+            "  b_id integer REFERENCES b_table (id),\n",
+            "  note text DEFAULT 'REFERENCES fake_string'\n",
+            ");\n",
+            "CREATE TABLE c_table (\n",
+            "  a_id integer,\n",
+            "  FOREIGN KEY (a_id) REFERENCES a_table (id)\n",
+            ");\n",
+        ),
+    );
     dir
 }
 
@@ -1434,6 +1470,48 @@ fn importers_finds_text_reference_source() {
         .as_str()
         .unwrap()
         .contains("b.txt"));
+}
+
+// =============================================================================
+// (9) sql-schema batch (build_sql_project): .sql REFERENCES edges
+// =============================================================================
+
+/// `tldr imports a.sql` — the SQL schema file rides the FOREIGN-KEY surface:
+/// one ImportInfo per `REFERENCES <table>` occurrence in source order,
+/// `module` = the table name as written (quote wrappers stripped),
+/// `is_from = true` (referenced by name at a point of use) and `alias =
+/// "references"`. The `REFERENCES` inside the DEFAULT string literal never
+/// emits. The envelope reports `language: "text"` — there is NO
+/// Language::Sql variant; the scanner keys on the `.sql` PATH.
+///
+/// BY DESIGN the table-name targets do not resolve to project files: a
+/// REFERENCES target is a table NAME, not a path, and the document graph
+/// (`tldr impact` / `tldr importers`) resolves path strings — so these rows
+/// are visible here and inert in the file graph (documented in
+/// `ast::sqlscan`'s module docs). Pinned imports-row only, accordingly.
+#[test]
+fn imports_sql_emits_foreign_key_reference_rows() {
+    let dir = build_sql_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(&["imports", "a.sql", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        json["language"], "text",
+        "a.sql resolves to Text (no Language::Sql variant exists)"
+    );
+
+    let imports = json["imports"].as_array().unwrap();
+    assert_eq!(imports.len(), 2, "exactly the 2 real FK edges: {json}");
+
+    assert_eq!(imports[0]["module"], "b_table", "inline column constraint");
+    assert_eq!(imports[0]["alias"], "references");
+    assert_eq!(imports[0]["is_from"], true);
+    assert!(imports[0]["names"].is_null(), "no imported names");
+
+    assert_eq!(imports[1]["module"], "a_table", "table-level FOREIGN KEY");
+    assert_eq!(imports[1]["alias"], "references");
+    assert_eq!(imports[1]["is_from"], true);
 }
 
 // =============================================================================

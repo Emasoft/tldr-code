@@ -145,13 +145,25 @@ pub fn get_code_structure(
     // heading-shaped prose, so the TOC scanner's rules are meaningless for
     // them. The dedicated line scanners in `ast::dotfiles` run BEFORE the
     // TOC scan; any other text file keeps the TOC heuristic.
+    //
+    // sql-schema-scan-v1: `.sql`/`.ddl` join the same ladder (the no-grammar
+    // precedent — crates.io publishes only tree-sitter-sql 0.0.2, dead since
+    // 2021, so there is no grammar and no Language::Sql variant; the file
+    // resolved here as Text through the unknown-extension rule). The native
+    // schema-outline scanner in `ast::sqlscan` runs FIRST in this dispatch —
+    // its `.sql` extension predicate cannot collide with the dotfile NAME
+    // predicates below except for a pathological `.env.sql` hybrid, which
+    // reads as a `.sql` document to every other tool and therefore scans as
+    // SQL. Plain prose keeps the TOC heuristic.
     if root.is_file() && (crate::ast::toc::is_text_path(root) || language == Language::Text) {
         let source = crate::ast::toc::parse_text_file(root)?;
         let file_name = root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let definitions = if crate::ast::dotfiles::is_env_path(&file_name) {
+        let definitions = if crate::ast::sqlscan::is_sql_path(root) {
+            crate::ast::sqlscan::parse_sql_schema(&source)
+        } else if crate::ast::dotfiles::is_env_path(&file_name) {
             crate::ast::dotfiles::parse_env_file(&source)
         } else if crate::ast::dotfiles::is_ignore_path(&file_name) {
             crate::ast::dotfiles::parse_ignore_file(&source)

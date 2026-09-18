@@ -36,6 +36,22 @@ use super::parser::parse_file_with_lang_threadlocal;
 /// * `Ok(Vec<ImportInfo>)` - List of imports
 /// * `Err(TldrError::PathNotFound)` - File doesn't exist
 pub fn get_imports(file_path: &Path, language: Language) -> TldrResult<Vec<ImportInfo>> {
+    // sql-schema-refs-v1: `.sql`/`.ddl` files resolve to Language::Text (no
+    // grammar exists — crates.io only publishes tree-sitter-sql 0.0.2, dead
+    // since 2021; no Language::Sql variant either), so the language arm below
+    // would run them through the PROSE reference scan (`scan_paths_and_urls`)
+    // — the wrong surface for a schema file. Their outbound references are
+    // `REFERENCES <table>` foreign-key edges, scanned by the native
+    // schema-outline scanner's ref pass. The dispatch keys on the PATH (the
+    // language arm cannot distinguish a `.sql` Text file from a `.txt` one);
+    // a `.sql` path IS SQL regardless of any language override — there is no
+    // Language::Sql to override to and the content is unambiguous. Table-name
+    // targets do not resolve to project files by design (see
+    // `ast::sqlscan`'s module docs); the rows stay visible in `tldr imports`.
+    if crate::ast::sqlscan::is_sql_path(file_path) {
+        let source = super::toc::parse_text_file(file_path)?;
+        return Ok(crate::ast::sqlscan::extract_sql_refs(&source));
+    }
     let (tree, source, _) = parse_file_with_lang(file_path, Some(language))?;
     extract_imports_from_tree_hosted(&tree, &source, language, host_label(file_path))
 }
@@ -50,6 +66,12 @@ pub fn get_imports_threadlocal(
     file_path: &Path,
     language: Language,
 ) -> TldrResult<Vec<ImportInfo>> {
+    // sql-schema-refs-v1: same path-based dispatch as `get_imports` above —
+    // both entry points must agree on what a `.sql` file's imports are.
+    if crate::ast::sqlscan::is_sql_path(file_path) {
+        let source = super::toc::parse_text_file(file_path)?;
+        return Ok(crate::ast::sqlscan::extract_sql_refs(&source));
+    }
     let (tree, source, _) = parse_file_with_lang_threadlocal(file_path, Some(language))?;
     extract_imports_from_tree_hosted(&tree, &source, language, host_label(file_path))
 }
@@ -136,7 +158,10 @@ pub fn extract_imports_from_tree_hosted(
         // angle-wrapped paths, shell-escaped paths, plain path tokens). The
         // tree is Text's structural placeholder and is ignored (regex-only
         // scan over the real source, which `parse_file_with_lang`'s Text
-        // arm supplies).
+        // arm supplies). sql-schema-refs-v1: `.sql`/`.ddl` NEVER reach this
+        // arm — `get_imports`/`get_imports_threadlocal` dispatch them to the
+        // native REFERENCES scanner on the PATH before any language arm
+        // (the prose scan would be the wrong surface for a schema file).
         // yaml-chunk-v1: a `.yaml` over the chunk threshold never produces a
         // usable whole-file tree (the grammar's int16 row overflow aborts the
         // parse at source row 32768 — see `ast::yaml_chunk`), so the file is

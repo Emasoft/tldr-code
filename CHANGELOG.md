@@ -4,6 +4,57 @@
 
 ### Added
 
+- **Native SQL schema-outline scanner: `.sql`/`.ddl` files now report their
+  DDL structure and foreign-key edges**
+  (sql-schema-scan-v1, `crates/tldr-core/src/ast/sqlscan.rs`). SQL has no
+  buildable tree-sitter grammar (crates.io publishes only `tree-sitter-sql`
+  0.0.2 — DerekStride, dead since 2021; audit note in the root `Cargo.toml`),
+  so `.sql` keeps resolving through the unknown-extension ladder to
+  `Language::Text` — NO `Language::Sql` variant is added — and the native
+  scanner joins the no-grammar precedent set (`ast::logs`, `ast::toc`,
+  `ast::csvscan`), dispatched on the `.sql`/`.ddl` PATH predicate.
+  - **Structure.** `tldr structure schema.sql` surfaces one definition per
+    DDL statement from a closed kind table: `table` (incl. `OR REPLACE` /
+    `GLOBAL`/`LOCAL`/`TEMP`/`TEMPORARY`/`UNLOGGED` / `IF NOT EXISTS`),
+    `view` (incl. `MATERIALIZED`), `index` (incl. `UNIQUE`/`CONCURRENTLY`),
+    `function` (postgres paren and oracle no-paren forms), `procedure`,
+    `trigger`, `schema`, `type` (incl. Oracle `TYPE BODY`), and
+    `constraint` (`ALTER TABLE [ONLY] … ADD CONSTRAINT <name>` — pg_dump's
+    spelling included). Names are schema-qualified identifier chains with
+    quote/backtick/bracket wrappers stripped (`public."User Table"` →
+    `public.User Table`); the region spans the statement's first content
+    byte through its terminating `;` (an attached leading comment block is
+    included, mirroring the attached-trivia convention), the signature is
+    the statement's first line (trimmed, ≤120 chars) and `definition_line`
+    is the statement's first KEYWORD line. Column-level extraction is
+    documented future work.
+  - **Statement splitter.** Statements split at TOP-LEVEL `;` only, via a
+    tokenizer-aware byte pass that masks line/block comments, single-quoted
+    strings (`''` escapes), double-quoted/backtick/bracket identifiers
+    (`""`/``` `` ```/`]]` doubling) and PostgreSQL dollar-quoted bodies
+    (`$tag$…$tag$`, tag rules per the PostgreSQL lexer; an unterminated mask
+    consumes to EOF so a stray `$$` cannot split every following statement).
+    Documented bounded limitations: procedural `BEGIN…END` bodies (SQLite
+    triggers, T-SQL/MySQL routines) are not body-aware, and MySQL dump-view
+    conditionals (`/*!50001 … */`) sit inside comments and emit nothing.
+  - **References (blast radius).** `tldr imports schema.sql` emits one
+    `ImportInfo` per `REFERENCES <table>` foreign-key edge (`module` = the
+    table name, `is_from = true`, `alias = "references"`) — inline column
+    constraints and table-level `FOREIGN KEY` alike, scanned through the
+    same tokenizer masks so a `REFERENCES` inside a string/comment/dollar
+    body never emits. The table-name targets deliberately do NOT resolve to
+    project files (they are names, not paths), so the rows stay visible in
+    `tldr imports` and inert in the `tldr impact`/`tldr importers` file
+    graph — documented at `ast::sqlscan`'s module docs.
+  - Pinned in `element_extraction_v1` (exact DDL sequence/spans + byte
+    slice-backs over a schema fixture), `symbol_fidelity_v1`
+    (`sql_schema_objects_are_elements` — language reports `text`, region =
+    comment + statement + terminator, dollar-quoted body never splits),
+    `formats_grammar_test` (`.sql`/`.ddl` stay unmapped in `from_path` +
+    direct Text parse fails + the unknown-ext ladder resolves to Text) and
+    `doclinks_v1` (`imports_sql_emits_foreign_key_reference_rows`), plus 33
+    unit tests in `ast::sqlscan`.
+
 - **Recursive SVG `<foreignObject>` indexing: the HTML inside a foreignObject
   is a depth-capped virtual html document with hierarchical containers**
   (VD-2, `crates/tldr-core/src/ast/elements.rs`). The HTML content nested in

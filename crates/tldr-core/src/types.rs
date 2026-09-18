@@ -1553,6 +1553,9 @@ pub struct DefinitionInfo {
     /// plus the format element kinds from `ast::elements` (element-extraction-v1):
     /// "key" (JSON/YAML/TOML object property or key/value pair), "section" (TOML
     /// `[table.path]`/`[[table.path]]` header), "document" (YAML `---` document).
+    /// Plus the SQL schema kinds from `ast::sqlscan` (sql-schema-scan-v1):
+    /// "table", "view", "index", "function", "procedure", "trigger", "schema",
+    /// "type", "constraint".
     /// The authoritative full set is the whitelist in `tests/bench_l1_multilang.rs`.
     pub kind: String,
     /// Start line (1-indexed)
