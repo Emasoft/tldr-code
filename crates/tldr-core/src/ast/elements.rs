@@ -148,14 +148,78 @@
 //! so a target referenced only from an inline script or style is
 //! discoverable end to end.
 //!
-//! 3. **Planned hook (VD-2, NOT implemented here):** `foreignObject`
-//!    recursion — the HTML content nested inside an SVG `foreignObject`
-//!    element should be walked as an HTML subtree (its own inline
-//!    scripts/styles), re-based onto the XML host's coordinates. The HTML/XML
-//!    walkers are structured so this is one added arm in `walk_xml` (detect
-//!    the `foreignObject` tag, re-enter `walk_html` on the subtree) plus a
-//!    numbering decision (do nested documents consume host `#script-N`/
-//!    `#style-N` numbers, or nested ones?); nothing else changes.
+//! 3. **foreignObject recursion (VD-2, `process_embedded_html`):** the HTML
+//!    content nested inside an SVG `foreignObject` — in a standalone
+//!    `.svg`/`.xml` host OR in an inline `<svg>` inside an HTML page — is a
+//!    document too: it is re-parsed with the HTML grammar as a **virtual html
+//!    document** named `<host>#fo-N`, it emits its own `element` rows
+//!    (markup is markup — consistent with the model), and its inline
+//!    scripts/styles recurse exactly like the host's, producing hierarchical
+//!    names: `page.html#fo-1#script-1`, `page.html#fo-1#style-1`, and one
+//!    level deeper `page.html#fo-2#script-1`. Every nested document's
+//!    OUTBOUND references merge into the host imports with `via` = the full
+//!    hierarchical container name.
+//!
+//!    # Termination (why circular html→svg→foreignObject→html cannot hang)
+//!
+//!    1. **Strict-substring invariant.** Every recursive re-parse operates on
+//!       a content slice STRICTLY CONTAINED in the document it came from —
+//!       the slice is the bytes between the `foreignObject` start/end tags,
+//!       which are strictly inside the parent's content. Recursion only ever
+//!       descends into strictly smaller byte ranges of the SAME file, so
+//!       termination is guaranteed by the strictly-decreasing size alone.
+//!       There is NO cross-file parsing at the extraction layer: external
+//!       `src`/`data`/`href` attributes stay references (the host doclink
+//!       scan indexes them; the scripts' `src`/`href` gates skip them), and
+//!       the reference GRAPH handles cross-file reachability. That is what
+//!       makes cycles impossible: `a.html` referencing `b.svg` never parses
+//!       `b.svg`'s content here — only a same-file byte slice is re-parsed.
+//!    2. **`MAX_EMBED_DEPTH` (8)** — belt-and-braces against pathological
+//!       nesting (stack depth): a virtual document at nesting level > 8 is
+//!       skipped with ONE warning on the host structure ("embedded document
+//!       nesting exceeds depth 8; deeper levels skipped: <container>").
+//!    3. **`MAX_VIRTUAL_DOCS_PER_FILE` (256)** — belt-and-braces against
+//!       quadratic blowup: the TOTAL number of embedded documents (scripts +
+//!       styles + foreignObject html documents, across ALL levels) per FILE;
+//!       beyond the budget, further documents are skipped with ONE warning.
+//!
+//!    # Node shapes (verified against the wired grammars, probe dump)
+//!
+//!    - HTML walker: a `foreignObject` inside inline `<svg>` is a generic
+//!      `element` (the html grammar has no dedicated kind; `tag_name` keeps
+//!      the source spelling, so the match is case-insensitive — the browser
+//!      parser adjusts foreign tag case). Its content is the byte range
+//!      between `start_tag` and `end_tag`. `script_element`/`style_element`
+//!      inside inline `<svg>` are the SAME dedicated kinds as anywhere else
+//!      in HTML (`start_tag raw_text? end_tag`), so the host walk reaches
+//!      them by normal recursion and numbers them at the HOST level; only
+//!      `foreignObject` content is re-owned by a nested virtual document.
+//!    - XML walker: a `foreignObject` `element` (case-sensitive match — the
+//!      SVG spelling; XML is case-sensitive like the `style`/`script` checks)
+//!      holds its content in a `content` child whose byte range spans the
+//!      embedded markup — `element` children (the common shape:
+//!      `<div>…</div>` IS an `element` there), `CharData` text, or a
+//!      `CDSect` wrapper around a `CData` text chunk (the same shape family
+//!      the style/script bodies use). A lone CDATA-wrapped body is
+//!      UNWRAPPED (the `<![CDATA[` wrapper would only trip the html
+//!      grammar's error recovery); any other content re-parses from the
+//!      whole `content` range. A self-closing `<foreignObject/>`
+//!      (`EmptyElemTag`) has no `content` child and yields nothing.
+//!
+//!    The host walk SKIPS the foreignObject subtree after handing it to the
+//!    virtual document (its elements would otherwise emit twice — once
+//!    container-less from the host walk and once from the document).
+//!    Nameless hosts (OOXML parts, yaml chunk merges) cannot name a virtual
+//!    document, so for them the subtree is NOT skipped and nothing recurses
+//!    — the pre-VD-2 behavior exactly. Files WITHOUT a foreignObject walk
+//!    byte-identically to the pre-VD-2 engine.
+//!
+//!    Malformed nested content (the re-parse carries error nodes) emits
+//!    NOTHING for that document, adds ONE warning naming it, never fails
+//!    the host, and consumes no `#fo-N` number (the numbering-continuity
+//!    pin: only successfully processed documents consume numbers — the same
+//!    rule scripts/styles pin for `#script-N`/`#style-N`). Empty or
+//!    whitespace-only content emits nothing and consumes nothing.
 //!
 //! # SVG (and other XML dialects)
 //!
@@ -221,6 +285,21 @@ use crate::ast::extract_doc_links;
 use crate::ast::imports::extract_imports_from_tree;
 use crate::types::{DefinitionInfo, ImportInfo, Language};
 
+/// VD-2: the deepest virtual-document nesting level that still processes.
+/// Level 1 is the first `foreignObject` document (the host file itself is
+/// level 0); a document at level > 8 is skipped with one warning. Belt and
+/// braces ONLY — the strict-substring invariant already guarantees
+/// termination (see the module docs); this cap bounds the recursion STACK
+/// against pathological 50-deep nesting.
+pub(crate) const MAX_EMBED_DEPTH: usize = 8;
+
+/// VD-2: the total number of embedded virtual documents (inline scripts +
+/// inline styles + foreignObject html documents, across ALL levels) one file
+/// may produce. Beyond the budget, further documents are skipped with one
+/// warning. Belt and braces ONLY — guards against quadratic blowup on a
+/// pathologically script-stuffed file.
+pub(crate) const MAX_VIRTUAL_DOCS_PER_FILE: usize = 256;
+
 /// Extract format elements as `DefinitionInfo` entries.
 ///
 /// `host` is the host file's FILE NAME (e.g. `"page.html"`), used ONLY to
@@ -241,6 +320,24 @@ pub fn extract_elements(
     host: Option<&str>,
 ) -> Vec<DefinitionInfo> {
     extract_elements_inner(language, tree, source, host).0
+}
+
+/// virtual-documents-v1 + VD-2: [`extract_elements`] plus the WARNING
+/// channel — the per-file warnings the embedded-document recursion produced
+/// (foreignObject nesting beyond `MAX_EMBED_DEPTH`, the
+/// `MAX_VIRTUAL_DOCS_PER_FILE` budget, malformed nested content). The
+/// structure path (`extractor::extract_file_structure`) merges them into the
+/// file's warning channel so `CodeStructure.warnings` reports them; the
+/// plain [`extract_elements`] (OOXML parts, yaml chunk merges, unit probes)
+/// keeps its signature and drops them.
+pub(crate) fn extract_elements_with_warnings(
+    language: Language,
+    tree: &Tree,
+    source: &str,
+    host: Option<&str>,
+) -> (Vec<DefinitionInfo>, Vec<String>) {
+    let (defs, _, warnings) = extract_elements_inner(language, tree, source, host);
+    (defs, warnings)
 }
 
 /// virtual-documents-v1: the OUTBOUND reference rows of an HTML/XML host's
@@ -273,14 +370,17 @@ pub(crate) fn embedded_document_refs(
     extract_elements_inner(language, tree, source, host).1
 }
 
-/// Both halves of the virtual-document walk (definitions + outbound refs), in
-/// one pre-order pass so numbering stays consistent between them.
+/// Both halves of the virtual-document walk (definitions + outbound refs +
+/// warnings), in one pre-order pass so numbering stays consistent between
+/// them. `embedded_document_refs` (the imports half) runs the same walk and
+/// drops the warnings — `ImportInfo` has no channel for them, and the
+/// definitions half surfaces them deterministically on the structure path.
 fn extract_elements_inner(
     language: Language,
     tree: &Tree,
     source: &str,
     host: Option<&str>,
-) -> (Vec<DefinitionInfo>, Vec<ImportInfo>) {
+) -> (Vec<DefinitionInfo>, Vec<ImportInfo>, Vec<String>) {
     let mut elements = Vec::new();
     let mut state = WalkState::new(host);
     let root = tree.root_node();
@@ -310,15 +410,11 @@ fn extract_elements_inner(
         _ => {}
     }
 
-    (elements, state.refs)
+    (elements, state.refs, state.warnings)
 }
 
 /// Walker state threaded through the HTML/XML pre-order walks (private).
 struct WalkState<'h> {
-    /// The host file's FILE NAME — enables virtual-document extraction
-    /// (script-inner-js-v1, style containers, outbound refs). `None` for
-    /// nameless hosts (OOXML parts, yaml chunk merges): no virtual documents.
-    host: Option<&'h str>,
     /// 1-based source-order counter over the file's EXTRACTED scripts
     /// (numbering-continuity pin: consumed only by bodies that actually
     /// become virtual documents).
@@ -327,19 +423,132 @@ struct WalkState<'h> {
     /// identical continuity rule.
     style_no: u32,
     /// Outbound reference rows collected from embedded virtual documents
-    /// (virtual-documents-v1). Empty unless `host` is `Some`.
+    /// (virtual-documents-v1). Empty unless the host is named.
     refs: Vec<ImportInfo>,
+    /// VD-2 warnings of the embedded-document recursion (nesting depth,
+    /// document budget, malformed nested content) — surfaced through
+    /// `extract_elements_with_warnings` onto `CodeStructure.warnings`.
+    warnings: Vec<String>,
+    /// VD-2 per-file recursion controls (host label, foreignObject counter,
+    /// document budget). The host label lives HERE (not as a separate field):
+    /// `process_embedded_html`'s only mutable-state vehicle is the budget, so
+    /// the naming root must ride with it wherever the recursion goes.
+    budget: EmbedBudget<'h>,
 }
 
 impl<'h> WalkState<'h> {
     fn new(host: Option<&'h str>) -> Self {
         Self {
-            host,
             script_no: 0,
             style_no: 0,
             refs: Vec::new(),
+            warnings: Vec::new(),
+            budget: EmbedBudget::new(host),
         }
     }
+
+    /// The host file's FILE NAME — enables virtual-document extraction
+    /// (script-inner-js-v1, style containers, outbound refs, VD-2
+    /// foreignObject recursion). `None` for nameless hosts (OOXML parts,
+    /// yaml chunk merges): no virtual documents at any level.
+    fn host(&self) -> Option<&'h str> {
+        self.budget.host
+    }
+}
+
+/// VD-2 per-file mutable controls for the embedded-document recursion — the
+/// `budget` parameter of [`process_embedded_html`]. One instance per file,
+/// threaded mutably through every level so the whole file shares one budget,
+/// one foreignObject counter, and one warning latch of each kind.
+struct EmbedBudget<'h> {
+    /// The host file's FILE NAME (the naming root for `<host>#fo-N` names
+    /// and the budget warning). `None` = nameless host: the whole
+    /// virtual-document machinery stays inert.
+    host: Option<&'h str>,
+    /// 1-based per-FILE foreignObject counter — consumed only by
+    /// successfully processed documents (continuity pin; a malformed or
+    /// depth-refused document gives its number back).
+    fo_no: u32,
+    /// Virtual documents consumed so far — scripts + styles + foreignObject
+    /// html documents, ALL levels.
+    docs: u32,
+    /// The cap on `docs` — `MAX_VIRTUAL_DOCS_PER_FILE` in production,
+    /// injected smaller by the budget unit test.
+    limit: usize,
+    /// Latch: the budget-exhausted warning is emitted once per file.
+    budget_warned: bool,
+    /// Latch: the depth-cap warning is emitted once per file.
+    depth_warned: bool,
+}
+
+impl<'h> EmbedBudget<'h> {
+    fn new(host: Option<&'h str>) -> Self {
+        Self {
+            host,
+            fo_no: 0,
+            docs: 0,
+            limit: MAX_VIRTUAL_DOCS_PER_FILE,
+            budget_warned: false,
+            depth_warned: false,
+        }
+    }
+}
+
+/// Consume one virtual-document slot from the file's budget. `false` = the
+/// budget is exhausted: the caller skips its document (consuming NO number —
+/// a skipped document never becomes a virtual document) after the ONE
+/// per-file warning has been emitted.
+fn take_doc_slot(budget: &mut EmbedBudget, warnings: &mut Vec<String>) -> bool {
+    if budget.docs >= budget.limit as u32 {
+        if !budget.budget_warned {
+            budget.budget_warned = true;
+            let host = budget.host.unwrap_or("<unnamed>");
+            warnings.push(format!(
+                "Skipped embedded documents of {host}: the virtual-document budget \
+                 ({} documents) is exhausted; further embedded scripts, styles and \
+                 foreignObject documents are not indexed",
+                budget.limit
+            ));
+        }
+        return false;
+    }
+    budget.docs += 1;
+    true
+}
+
+/// Number of `\n` bytes in `source` before `offset` — the line base an
+/// inner-tree row must add to become a FULL-file line (the inner tree's row 0
+/// is the physical row `offset` starts on). Shared by the script/style inner
+/// extraction and the VD-2 recursion rebasing.
+fn line_base_before(source: &str, offset: usize) -> u32 {
+    source.as_bytes()[..offset]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count() as u32
+}
+
+/// Re-base an inner-tree definition onto FULL-file coordinates and push it
+/// (bytes += the inner source's offset in the file, lines += the newlines
+/// before it). The slice-back invariant: `full_source[bs..be]` stays the
+/// exact source text of the definition.
+fn push_rebased(
+    mut def: DefinitionInfo,
+    byte_base: usize,
+    line_base: u32,
+    out: &mut Vec<DefinitionInfo>,
+) {
+    if let Some(start) = def.byte_start.as_mut() {
+        *start += byte_base as u64;
+    }
+    if let Some(end) = def.byte_end.as_mut() {
+        *end += byte_base as u64;
+    }
+    def.line_start += line_base;
+    def.line_end += line_base;
+    if let Some(line) = def.definition_line.as_mut() {
+        *line += line_base;
+    }
+    out.push(def);
 }
 
 // =============================================================================
@@ -670,6 +879,9 @@ fn walk_bash(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
 /// `type` values are skipped; a self-closing `<script …/>` (`EmptyElemTag`)
 /// has no content and emits nothing on its own.
 fn walk_xml(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<DefinitionInfo>) {
+    // VD-2: true after a foreignObject handed its content to a nested virtual
+    // document — the subtree is the document's, not the host walk's.
+    let mut skip_children = false;
     if node.kind() == "element" {
         if let Some(name) = xml_element_name(&node, source) {
             out.push(element_def("element", name, node, source));
@@ -703,7 +915,7 @@ fn walk_xml(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<Defin
             }
         }
         // script-inner-js-v1: same body shapes, JS grammar, virtual document.
-        if tag.as_deref() == Some("script") && state.host.is_some() {
+        if tag.as_deref() == Some("script") && state.host().is_some() {
             let (external, script_type) = xml_script_attrs(&node, source);
             if !external && is_js_script_type(script_type.as_deref()) {
                 let mut cursor = node.walk();
@@ -729,16 +941,94 @@ fn walk_xml(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<Defin
                 }
             }
         }
-        // VD-2 PLANNED HOOK (not implemented): `tag == "foreignObject"` would
-        // re-enter `walk_html` over the element's `content` subtree here,
-        // giving nested HTML scripts/styles the same virtual-document
-        // treatment (see the virtual-documents-v1 module-doc section).
+        // VD-2: a `foreignObject` (case-sensitive — the SVG spelling, like
+        // the `style`/`script` checks) carries HTML content: re-parsed with
+        // the HTML grammar as the virtual document `<host>#fo-N`, its
+        // scripts/styles/nested foreignObjects recursing depth-bounded. The
+        // subtree is then SKIPPED — the document owns its elements (they
+        // would otherwise emit twice). A self-closing `<foreignObject/>` has
+        // no `content` child and no children at all, so it never reaches the
+        // processing arm below.
+        if tag.as_deref() == Some("foreignObject") && state.host().is_some() {
+            if let Some((start, end)) = xml_foreign_object_slice(&node, source) {
+                let host = state.host().unwrap_or_default();
+                let WalkState {
+                    refs,
+                    warnings,
+                    budget,
+                    ..
+                } = state;
+                process_foreign_object_content(
+                    &source[start..end],
+                    start,
+                    line_base_before(source, start),
+                    0,
+                    host,
+                    budget,
+                    warnings,
+                    out,
+                    refs,
+                );
+                skip_children = true;
+            }
+        }
     }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        walk_xml(child, source, state, out);
+    if !skip_children {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk_xml(child, source, state, out);
+        }
     }
+}
+
+/// The HTML slice of an XML `foreignObject` element: the byte range of its
+/// `content` child — the `CData` text when the body is a lone CDATA-wrapped
+/// chunk (the `<![CDATA[` wrapper would only trip the html grammar's error
+/// recovery; verified shape: `content` → `CDSect` → `CData`), else the whole
+/// `content` range (which is where the `CharData` text AND the nested
+/// `element` children — the common markup shape — live). `None` without a
+/// `content` child (self-closing `EmptyElemTag`, or the flat error-recovery
+/// shape of a broken host document, which has no `element`/`content` nodes
+/// left to descend into).
+fn xml_foreign_object_slice(element: &Node, source: &str) -> Option<(usize, usize)> {
+    let mut cursor = element.walk();
+    for child in element.children(&mut cursor) {
+        if child.kind() != "content" {
+            continue;
+        }
+        let mut cdata: Option<(usize, usize)> = None;
+        let mut meaningful_others = false;
+        let mut inner = child.walk();
+        for part in child.children(&mut inner) {
+            match part.kind() {
+                "CDSect" => {
+                    let mut sect = part.walk();
+                    for piece in part.children(&mut sect) {
+                        if piece.kind() == "CData" {
+                            let range = piece.byte_range();
+                            cdata = Some((range.start, range.end));
+                        }
+                    }
+                }
+                // Whitespace-only CharData around a lone CDSect is padding,
+                // not a second content fragment.
+                "CharData" if !source[part.byte_range()].trim().is_empty() => {
+                    meaningful_others = true;
+                }
+                "element" => meaningful_others = true,
+                _ => {}
+            }
+        }
+        return match (cdata, meaningful_others) {
+            (Some(range), false) => Some(range),
+            _ => {
+                let range = child.byte_range();
+                Some((range.start, range.end))
+            }
+        };
+    }
+    None
 }
 
 /// (external, type) of an XML `script` element: the `src`/`href`/
@@ -882,17 +1172,51 @@ fn xml_attribute(attribute: &Node, source: &str) -> (String, Option<String>) {
 /// doclinks already indexes that reference — and a non-JS `type` is not
 /// JavaScript; both are skipped before any parse.
 fn walk_html(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<DefinitionInfo>) {
+    // VD-2: true after a foreignObject handed its content to a nested virtual
+    // document — the subtree is the document's, not the host walk's.
+    let mut skip_children = false;
     match node.kind() {
         "element" => {
             if let Some(name) = html_element_name(&node, source) {
                 out.push(element_def("element", name, node, source));
+            }
+            // VD-2: a `foreignObject` inside inline `<svg>` (matched
+            // case-insensitively — the html grammar keeps the source
+            // spelling while the browser parser adjusts foreign tag case)
+            // carries HTML content: re-parsed with the HTML grammar as the
+            // virtual document `<host>#fo-N`, its scripts/styles/nested
+            // foreignObjects recursing depth-bounded. The subtree is then
+            // SKIPPED — the document owns its elements. Nameless hosts keep
+            // the pre-VD-2 behavior (no name → no document → normal descent).
+            if html_tag_is_foreign_object(&node, source) && state.host().is_some() {
+                if let Some((start, end)) = html_element_content_range(&node) {
+                    let host = state.host().unwrap_or_default();
+                    let WalkState {
+                        refs,
+                        warnings,
+                        budget,
+                        ..
+                    } = state;
+                    process_foreign_object_content(
+                        &source[start..end],
+                        start,
+                        line_base_before(source, start),
+                        0,
+                        host,
+                        budget,
+                        warnings,
+                        out,
+                        refs,
+                    );
+                }
+                skip_children = true;
             }
         }
         "script_element" => {
             if let Some(name) = html_element_name(&node, source) {
                 out.push(element_def("element", name, node, source));
             }
-            if state.host.is_some() {
+            if state.host().is_some() {
                 let (external, script_type) = html_script_attrs(&node, source);
                 if !external && is_js_script_type(script_type.as_deref()) {
                     let mut cursor = node.walk();
@@ -919,9 +1243,59 @@ fn walk_html(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<Defi
         _ => {}
     }
 
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        walk_html(child, source, state, out);
+    if !skip_children {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk_html(child, source, state, out);
+        }
+    }
+}
+
+/// Raw `tag_name` of an HTML element (no `#id` refinement — see
+/// [`html_element_name`] for the naming view): the text of the `tag_name`
+/// child of its `start_tag` / `self_closing_tag`.
+fn html_raw_tag_name(element: &Node, source: &str) -> Option<String> {
+    let mut cursor = element.walk();
+    for child in element.children(&mut cursor) {
+        if child.kind() == "start_tag" || child.kind() == "self_closing_tag" {
+            let mut tag_cursor = child.walk();
+            for part in child.children(&mut tag_cursor) {
+                if part.kind() == "tag_name" {
+                    return Some(source[part.byte_range()].to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// VD-2: is this HTML element a `<foreignObject>` container? Case-insensitive
+/// — the html grammar preserves the source spelling of the `tag_name`
+/// (`foreignObject`, `foreignobject`, `FOREIGNOBJECT` all parse), and the
+/// browser parser adjusts foreign element case anyway.
+fn html_tag_is_foreign_object(element: &Node, source: &str) -> bool {
+    html_raw_tag_name(element, source).is_some_and(|tag| tag.eq_ignore_ascii_case("foreignobject"))
+}
+
+/// Byte range of an HTML `element`'s CONTENT — `(start_tag.end, end_tag.start)`
+/// (verified shape: `element = start_tag … end_tag` with the content as the
+/// children between them). `None` without both tags (self-closing/void
+/// elements, and the start-tag-only error-recovery shape), in which case
+/// there is nothing to re-parse.
+fn html_element_content_range(element: &Node) -> Option<(usize, usize)> {
+    let mut start = None;
+    let mut end = None;
+    let mut cursor = element.walk();
+    for child in element.children(&mut cursor) {
+        match child.kind() {
+            "start_tag" => start = Some(child.end_byte()),
+            "end_tag" => end = Some(child.start_byte()),
+            _ => {}
+        }
+    }
+    match (start, end) {
+        (Some(s), Some(e)) if e >= s => Some((s, e)),
+        _ => None,
     }
 }
 
@@ -1076,58 +1450,100 @@ fn html_attribute(attribute: &Node, source: &str) -> (String, Option<String>) {
 /// walks — style-inner-css-v1's shipped extraction is error-tolerant and that
 /// behavior is unchanged; "successfully processed" for numbering means the
 /// parse itself succeeded.)
+///
+/// The heavy lifting lives in [`emit_style_document`], the core shared with
+/// the VD-2 foreignObject recursion; this host-path adapter only derives the
+/// body's FULL-file position from the host tree's node.
 fn emit_style_inner_css(
     body: &Node,
     source: &str,
     state: &mut WalkState,
     out: &mut Vec<DefinitionInfo>,
 ) {
-    let text = &source[body.byte_range()];
+    let WalkState {
+        style_no,
+        refs,
+        warnings,
+        budget,
+        ..
+    } = state;
+    let host = budget.host;
+    let offset = body.start_byte();
+    let line_base = line_base_before(source, offset);
+    emit_style_document(
+        &source[body.byte_range()],
+        offset,
+        line_base,
+        host,
+        style_no,
+        budget,
+        warnings,
+        out,
+        refs,
+    );
+}
+
+/// The style-body core shared by the HOST walk ([`emit_style_inner_css`],
+/// byte/line base derived from the host tree) and the VD-2 foreignObject
+/// recursion (byte/line base composed through the nesting levels).
+///
+/// `text` is the CSS body; `byte_base`/`line_base` position it in the FULL
+/// file. `container_prefix` is `Some(<host or document name>)` for a named
+/// virtual document — the style number is consumed from `*counter` ONLY after
+/// the empty and parse guards pass and a budget slot is taken
+/// (`<prefix>#style-N`), the rows are stamped with it, and the stylesheet's
+/// loaded elements (`@import`/`url()`) become `via`-provenanced reference
+/// rows — or `None` for a nameless host (container-less rows, no number, no
+/// slot, no references — the pre-virtual-documents behavior).
+///
+/// Returns whether the body became a virtual document (or, for a nameless
+/// host, emitted its rows): `false` = empty or failed parse — the caller
+/// consumed nothing.
+#[allow(clippy::too_many_arguments)]
+fn emit_style_document(
+    text: &str,
+    byte_base: usize,
+    line_base: u32,
+    container_prefix: Option<&str>,
+    counter: &mut u32,
+    budget: &mut EmbedBudget,
+    warnings: &mut Vec<String>,
+    out_defs: &mut Vec<DefinitionInfo>,
+    out_imports: &mut Vec<ImportInfo>,
+) -> bool {
     if text.trim().is_empty() {
-        return;
+        return false;
     }
     let Ok(tree) = crate::ast::parser::PARSER_POOL.parse(text, Language::Css) else {
-        return;
+        return false;
     };
 
-    // Named virtual document: consume the style number and stamp the
-    // container on every row; nameless hosts keep container-less rows.
-    let container = match state.host {
-        Some(host) => {
-            state.style_no += 1;
-            Some(format!("{host}#style-{}", state.style_no))
+    // Named virtual document: budget slot + style number + container stamp;
+    // nameless hosts keep container-less rows and consume nothing.
+    let via = match container_prefix {
+        Some(prefix) => {
+            if !take_doc_slot(budget, warnings) {
+                return false;
+            }
+            *counter += 1;
+            let name = format!("{prefix}#style-{}", *counter);
+            Some(name)
         }
         None => None,
     };
 
-    let content_offset = body.start_byte();
-    let line_base = source.as_bytes()[..content_offset]
-        .iter()
-        .filter(|&&b| b == b'\n')
-        .count() as u32;
-
     let mut inner = Vec::new();
     walk_css(tree.root_node(), text, &mut inner);
-    for mut def in inner {
-        if let Some(start) = def.byte_start.as_mut() {
-            *start += content_offset as u64;
-        }
-        if let Some(end) = def.byte_end.as_mut() {
-            *end += content_offset as u64;
-        }
-        def.line_start += line_base;
-        def.line_end += line_base;
-        if let Some(line) = def.definition_line.as_mut() {
-            *line += line_base;
-        }
-        def.container = container.clone();
-        out.push(def);
+    for def in inner {
+        let mut def = def;
+        def.container = via.clone();
+        push_rebased(def, byte_base, line_base, out_defs);
     }
 
     // Outbound references: the stylesheet's loaded elements (`@import`/`url()`)
     // are blast-radius edges from the HOST file, attributed to this virtual
     // document. Nameless hosts collect nothing.
-    if let Some(via) = &container {
+    if let Some(via) = &via {
         let rows = crate::ast::extract_doc_links(Language::Css, text, None)
             .into_iter()
             .map(|mut row| {
@@ -1135,8 +1551,9 @@ fn emit_style_inner_css(
                 row
             })
             .collect();
-        state.refs.extend(dedup_refs(rows));
+        out_imports.extend(dedup_refs(rows));
     }
+    true
 }
 
 // =============================================================================
@@ -1194,40 +1611,92 @@ fn emit_style_inner_css(
 /// yields one row, the first source-ordered one surviving (so an `import`
 /// row with its imported names wins over a later text-scan row of the same
 /// string).
+///
+/// The heavy lifting lives in [`emit_script_document`], the core shared with
+/// the VD-2 foreignObject recursion; this host-path adapter only derives the
+/// body's FULL-file position from the host tree's node.
 fn emit_script_inner_js(
     body: &Node,
     source: &str,
     state: &mut WalkState,
     out: &mut Vec<DefinitionInfo>,
 ) {
-    let text = &source[body.byte_range()];
-    if text.trim().is_empty() {
-        return;
-    }
-    let Ok(tree) = crate::ast::parser::PARSER_POOL.parse(text, Language::JavaScript) else {
-        return;
-    };
-    if tree.root_node().has_error() {
-        return;
-    }
-
-    state.script_no += 1;
-    let host = state.host.expect(
+    let WalkState {
+        script_no,
+        refs,
+        warnings,
+        budget,
+        ..
+    } = state;
+    let host = budget.host.expect(
         "emit_script_inner_js is only called from walks with a host label \
          (callers gate on WalkState::host)",
     );
-    let container = format!("{host}#script-{}", state.script_no);
+    let offset = body.start_byte();
+    let line_base = line_base_before(source, offset);
+    emit_script_document(
+        &source[body.byte_range()],
+        offset,
+        line_base,
+        host,
+        script_no,
+        budget,
+        warnings,
+        out,
+        refs,
+    );
+}
 
-    let content_offset = body.start_byte();
-    let line_base = source.as_bytes()[..content_offset]
-        .iter()
-        .filter(|&&b| b == b'\n')
-        .count() as u32;
+/// The script-body core shared by the HOST walk ([`emit_script_inner_js`],
+/// byte/line base derived from the host tree) and the VD-2 foreignObject
+/// recursion (byte/line base composed through the nesting levels).
+///
+/// `text` is the JS body; `byte_base`/`line_base` position it in the FULL
+/// file; `container_prefix` is the naming root of the document the script
+/// lives in (`<host>` at the top level, `<host>#fo-N` inside a foreignObject
+/// document). The script number is consumed from `*counter` ONLY after the
+/// empty/parse guards pass and a budget slot is taken, so `#script-N`
+/// numbers stay contiguous over each document's extracted scripts. Rows are
+/// re-based onto FULL-file coordinates (see [`push_rebased`]) and stamped
+/// `container = <prefix>#script-N`; the body's outbound references (JS import
+/// surface + the doclinks path/URL scan) ride `out_imports` with
+/// `via = <prefix>#script-N`, deduplicated by `(module, via)`.
+///
+/// Returns whether the body became a virtual document: `false` = empty,
+/// failed parse, or error-carrying parse — nothing was emitted and no
+/// number/slot was consumed (the checks precede every mutation).
+#[allow(clippy::too_many_arguments)]
+fn emit_script_document(
+    text: &str,
+    byte_base: usize,
+    line_base: u32,
+    container_prefix: &str,
+    counter: &mut u32,
+    budget: &mut EmbedBudget,
+    warnings: &mut Vec<String>,
+    out_defs: &mut Vec<DefinitionInfo>,
+    out_imports: &mut Vec<ImportInfo>,
+) -> bool {
+    if text.trim().is_empty() {
+        return false;
+    }
+    let Ok(tree) = crate::ast::parser::PARSER_POOL.parse(text, Language::JavaScript) else {
+        return false;
+    };
+    if tree.root_node().has_error() {
+        return false;
+    }
+    if !take_doc_slot(budget, warnings) {
+        return false;
+    }
+
+    *counter += 1;
+    let container = format!("{container_prefix}#script-{}", *counter);
 
     for entry in crate::ast::extract_definition_entries(&tree, text, Language::JavaScript) {
         let mut info = entry.info;
-        let node_start = entry.node.start_byte() as u64 + content_offset as u64;
-        let node_end = entry.node.end_byte() as u64 + content_offset as u64;
+        let node_start = entry.node.start_byte() as u64 + byte_base as u64;
+        let node_end = entry.node.end_byte() as u64 + byte_base as u64;
         info.byte_start = Some(node_start);
         info.byte_end = Some(node_end);
         info.line_start += line_base;
@@ -1236,23 +1705,23 @@ fn emit_script_inner_js(
             *line += line_base;
         }
         info.container = Some(container.clone());
-        out.push(info);
+        out_defs.push(info);
     }
 
     // Outbound references (virtual-documents-v1): the script's import
     // surface, then the path/URL scan of the body text, all attributed to
     // this virtual document and deduplicated by (module, via).
-    let via = container;
     let mut rows = extract_imports_from_tree(&tree, text, Language::JavaScript).unwrap_or_default();
     rows.extend(extract_doc_links(Language::Text, text, None));
-    state.refs.extend(dedup_refs(
+    out_imports.extend(dedup_refs(
         rows.into_iter()
             .map(|mut row| {
-                row.via = Some(via.clone());
+                row.via = Some(container.clone());
                 row
             })
             .collect(),
     ));
+    true
 }
 
 /// virtual-documents-v1: collapse one virtual document's outbound-reference
@@ -1274,6 +1743,284 @@ fn dedup_refs(rows: Vec<ImportInfo>) -> Vec<ImportInfo> {
         }
     }
     out
+}
+
+// =============================================================================
+// VD-2 — foreignObject recursion: the html content inside an SVG
+// <foreignObject> (or inside an inline <svg> in an HTML page) re-parsed with
+// the HTML grammar as a depth-bounded virtual document <host>#fo-N
+// =============================================================================
+
+/// Hand ONE foreignObject's content to the virtual-document machinery — the
+/// entry both walkers share (the HOST walks call it at `parent_depth = 0`
+/// with the host's name; [`walk_embedded_html`] calls it for NESTED
+/// foreignObjects with the current document's name and depth). Owns the
+/// guards and the file-wide consumption so the recursion helper itself stays
+/// pure:
+///
+/// 1. empty/whitespace content → nothing, consumes nothing (no number, no
+///    slot);
+/// 2. `parent_depth + 1 > MAX_EMBED_DEPTH` → ONE warning naming the parent
+///    container, nothing consumed (levels > 8 stay unprocessed);
+/// 3. budget exhausted → the ONE per-file warning, nothing consumed;
+/// 4. otherwise the `#fo-N` name is assigned (`budget.fo_no` + slot) and
+///    [`process_embedded_html`] runs — on a `false` return (malformed
+///    content) both are GIVEN BACK, so only successfully processed documents
+///    consume numbers (the numbering-continuity pin).
+///
+/// Termination is the strict-substring invariant (see the module docs): the
+/// caller's slice is strictly contained in its parent document, so every
+/// recursion level operates on strictly fewer bytes of the same file. The
+/// depth cap and budget are belt-and-braces, not the termination argument.
+#[allow(clippy::too_many_arguments)]
+fn process_foreign_object_content(
+    html: &str,
+    byte_base: usize,
+    line_base: u32,
+    parent_depth: usize,
+    parent_container: &str,
+    budget: &mut EmbedBudget,
+    warnings: &mut Vec<String>,
+    out_defs: &mut Vec<DefinitionInfo>,
+    out_imports: &mut Vec<ImportInfo>,
+) {
+    if html.trim().is_empty() {
+        return;
+    }
+    let depth = parent_depth + 1;
+    if depth > MAX_EMBED_DEPTH {
+        if !budget.depth_warned {
+            budget.depth_warned = true;
+            warnings.push(format!(
+                "embedded document nesting exceeds depth {MAX_EMBED_DEPTH}; \
+                 deeper levels skipped: {parent_container}"
+            ));
+        }
+        return;
+    }
+    if !take_doc_slot(budget, warnings) {
+        return;
+    }
+    let Some(host) = budget.host else {
+        // Unreachable: both walkers gate on a named host before recursing.
+        return;
+    };
+    budget.fo_no += 1;
+    let container = format!("{host}#fo-{}", budget.fo_no);
+    if !process_embedded_html(
+        html,
+        byte_base,
+        line_base,
+        depth,
+        &container,
+        budget,
+        warnings,
+        out_defs,
+        out_imports,
+    ) {
+        // Malformed content: the document never existed — no rows, no refs,
+        // no name in any output. Give the number and the slot back so the
+        // `#fo-N` numbering stays contiguous over the file's processed
+        // foreignObjects.
+        budget.fo_no -= 1;
+        budget.docs -= 1;
+    }
+}
+
+/// The VD-2 per-document extraction: parse `html` (a foreignObject's content
+/// slice — STRICTLY CONTAINED in the parent document, which is what
+/// terminates the recursion) with the HTML grammar and walk it, emitting
+///
+/// - `element` rows for the embedded markup, `container` =
+///   `container_prefix` (the document's own hierarchical name);
+/// - `script_element`/`style_element` bodies as nested virtual documents
+///   `<container_prefix>#script-M` / `#style-M` (M counted per document) via
+///   the shared [`emit_script_document`]/[`emit_style_document`] cores, their
+///   outbound refs merging into `out_imports` with `via` = the full
+///   hierarchical name;
+/// - nested `foreignObject`s (inside inline `<svg>`s) recursively as sibling
+///   virtual documents `<host>#fo-K` — the per-file counter lives in
+///   `budget`, so a chain page.html → fo-1 → fo-2 → … names flatly per file
+///   while scripts/styles name hierarchically inside their document.
+///
+/// `byte_base`/`line_base` position `html` in the FULL file (composed
+/// additively through the nesting levels); `depth` is this document's
+/// 1-based nesting level. Returns whether the document processed (parse
+/// clean): a malformed re-parse emits ONE warning naming the document and
+/// `false` — it never fails the host, and the caller gives the consumed
+/// number/slot back.
+#[allow(clippy::too_many_arguments)]
+fn process_embedded_html(
+    html: &str,
+    byte_base: usize,
+    line_base: u32,
+    depth: usize,
+    container_prefix: &str,
+    budget: &mut EmbedBudget,
+    warnings: &mut Vec<String>,
+    out_defs: &mut Vec<DefinitionInfo>,
+    out_imports: &mut Vec<ImportInfo>,
+) -> bool {
+    let Ok(tree) = crate::ast::parser::PARSER_POOL.parse(html, Language::Html) else {
+        return false;
+    };
+    if tree.root_node().has_error() {
+        warnings.push(format!(
+            "Skipped embedded html document '{container_prefix}': the nested markup \
+             does not parse as HTML (malformed content); its definitions and \
+             references are not indexed"
+        ));
+        return false;
+    }
+    // `#script-M` / `#style-M` are numbered PER DOCUMENT (hierarchical
+    // naming) — fresh counters here, unlike the file-level counters of the
+    // top-level walk.
+    let mut script_no = 0u32;
+    let mut style_no = 0u32;
+    walk_embedded_html(
+        tree.root_node(),
+        html,
+        byte_base,
+        line_base,
+        depth,
+        container_prefix,
+        &mut script_no,
+        &mut style_no,
+        budget,
+        warnings,
+        out_defs,
+        out_imports,
+    );
+    true
+}
+
+/// The embedded document's own pre-order walk (the HTML walker over a
+/// re-parsed tree): same element/script/style kinds as [`walk_html`], but
+/// every row carries the document's `container`, spans re-base through
+/// `byte_base`/`line_base`, script/style numbering is the document-local
+/// counters, and a `foreignObject` element recurses through
+/// [`process_foreign_object_content`] instead of descending.
+#[allow(clippy::too_many_arguments)]
+fn walk_embedded_html(
+    node: Node,
+    html: &str,
+    byte_base: usize,
+    line_base: u32,
+    depth: usize,
+    container: &str,
+    script_no: &mut u32,
+    style_no: &mut u32,
+    budget: &mut EmbedBudget,
+    warnings: &mut Vec<String>,
+    out_defs: &mut Vec<DefinitionInfo>,
+    out_imports: &mut Vec<ImportInfo>,
+) {
+    // VD-2: true after a nested foreignObject handed its content to its own
+    // virtual document — the subtree is that document's.
+    let mut skip_children = false;
+    match node.kind() {
+        "element" => {
+            if let Some(name) = html_element_name(&node, html) {
+                let mut def = element_def("element", name, node, html);
+                def.container = Some(container.to_string());
+                push_rebased(def, byte_base, line_base, out_defs);
+            }
+            if html_tag_is_foreign_object(&node, html) {
+                if let Some((start, end)) = html_element_content_range(&node) {
+                    let nested = &html[start..end];
+                    let nested_byte_base = byte_base + start;
+                    let nested_line_base = line_base + line_base_before(html, start);
+                    process_foreign_object_content(
+                        nested,
+                        nested_byte_base,
+                        nested_line_base,
+                        depth,
+                        container,
+                        budget,
+                        warnings,
+                        out_defs,
+                        out_imports,
+                    );
+                }
+                skip_children = true;
+            }
+        }
+        "script_element" => {
+            if let Some(name) = html_element_name(&node, html) {
+                let mut def = element_def("element", name, node, html);
+                def.container = Some(container.to_string());
+                push_rebased(def, byte_base, line_base, out_defs);
+            }
+            // Same external/type gates as the host walk: an external `src`
+            // stays a REFERENCE (the host doclink scan indexes it) and never
+            // becomes a virtual document; no cross-file parsing happens here.
+            let (external, script_type) = html_script_attrs(&node, html);
+            if !external && is_js_script_type(script_type.as_deref()) {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "raw_text" {
+                        let offset = child.start_byte();
+                        emit_script_document(
+                            &html[child.byte_range()],
+                            byte_base + offset,
+                            line_base + line_base_before(html, offset),
+                            container,
+                            script_no,
+                            budget,
+                            warnings,
+                            out_defs,
+                            out_imports,
+                        );
+                    }
+                }
+            }
+        }
+        "style_element" => {
+            if let Some(name) = html_element_name(&node, html) {
+                let mut def = element_def("element", name, node, html);
+                def.container = Some(container.to_string());
+                push_rebased(def, byte_base, line_base, out_defs);
+            }
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "raw_text" {
+                    let offset = child.start_byte();
+                    emit_style_document(
+                        &html[child.byte_range()],
+                        byte_base + offset,
+                        line_base + line_base_before(html, offset),
+                        Some(container),
+                        style_no,
+                        budget,
+                        warnings,
+                        out_defs,
+                        out_imports,
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if !skip_children {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk_embedded_html(
+                child,
+                html,
+                byte_base,
+                line_base,
+                depth,
+                container,
+                script_no,
+                style_no,
+                budget,
+                warnings,
+                out_defs,
+                out_imports,
+            );
+        }
+    }
 }
 
 // =============================================================================
@@ -1667,7 +2414,7 @@ mod tests {
     fn nameless_host_keeps_style_rows_container_less_and_collects_no_refs() {
         let src = "<html><style>a{ color: red; }</style></html>";
         let tree = parse(src, Language::Html).unwrap();
-        let (defs, refs) = extract_elements_inner(Language::Html, &tree, src, None);
+        let (defs, refs, _) = extract_elements_inner(Language::Html, &tree, src, None);
         let selector = defs
             .iter()
             .find(|d| d.kind == "selector" && d.name == "a")
@@ -1681,7 +2428,7 @@ mod tests {
         // The SAME source WITH a host label: container + via-provenanced
         // loaded-element rows (here: none in the CSS — only the container
         // pin matters).
-        let (with_host, _) = extract_elements_inner(Language::Html, &tree, src, Some("p.html"));
+        let (with_host, _, _) = extract_elements_inner(Language::Html, &tree, src, Some("p.html"));
         let selector = with_host
             .iter()
             .find(|d| d.kind == "selector" && d.name == "a")
@@ -1864,5 +2611,186 @@ mod tests {
         // (code-language path returns empty — byte spans stay None everywhere
         // until the code-language batch populates them)
         assert!(extract_elements(Language::Rust, &tree, "fn foo() {}", None).is_empty());
+    }
+
+    // =========================================================================
+    // VD-2 — budget, depth cap, malformed content (direct helper probes)
+    // =========================================================================
+
+    /// The spec pins both caps as constants; they are the contract the
+    /// warning messages interpolate.
+    #[test]
+    fn embed_caps_are_the_spec_values() {
+        assert_eq!(MAX_EMBED_DEPTH, 8);
+        assert_eq!(MAX_VIRTUAL_DOCS_PER_FILE, 256);
+    }
+
+    /// Budget pin (testability design): `EmbedBudget::limit` is injected —
+    /// a direct walk with a limit of 2 lets the FIRST TWO virtual documents
+    /// (here: one script + one style, slots are consumed in source order
+    /// across ALL kinds) become `#script-1`/`#style-1` and skips the rest
+    /// with exactly ONE budget warning. The budget counts ALL virtual
+    /// documents of the file, across all levels (scripts + styles +
+    /// foreignObject documents).
+    #[test]
+    fn budget_exhaustion_skips_documents_and_warns_once() {
+        let src = "<html><body>\
+                   <script>function a() { return 1; }</script>\
+                   <style>.s { color: red; }</style>\
+                   <script>function b() { return 2; }</script>\
+                   <script>function c() { return 3; }</script>\
+                   </body></html>";
+        let tree = parse(src, Language::Html).unwrap();
+        let mut state = WalkState::new(Some("budget.html"));
+        state.budget.limit = 2; // the injected, tiny budget
+        let mut out = Vec::new();
+        walk_html(tree.root_node(), src, &mut state, &mut out);
+
+        // Documents 1-2 processed (the script and the style), documents 3+
+        // (scripts b and c) skipped.
+        assert!(
+            out.iter().any(|d| d.kind == "function"
+                && d.name == "a"
+                && d.container.as_deref() == Some("budget.html#script-1")),
+            "the first script must process: {out:#?}"
+        );
+        assert!(
+            out.iter().any(|d| d.kind == "selector"
+                && d.name == ".s"
+                && d.container.as_deref() == Some("budget.html#style-1")),
+            "the style must process: {out:#?}"
+        );
+        assert!(
+            !out.iter().any(|d| d.name == "b"),
+            "the second script is beyond the budget and must not emit: {out:#?}"
+        );
+        assert!(
+            !out.iter().any(|d| d.name == "c"),
+            "the third script is beyond the budget and must not emit: {out:#?}"
+        );
+        assert_eq!(state.warnings.len(), 1, "exactly ONE budget warning");
+        assert!(
+            state.warnings[0].contains("budget"),
+            "the warning names the budget: {:?}",
+            state.warnings[0]
+        );
+        assert!(
+            state.warnings[0].contains("budget.html"),
+            "the warning names the host: {:?}",
+            state.warnings[0]
+        );
+    }
+
+    /// The budget applies at EVERY level: the foreignObject documents
+    /// themselves consume slots too (they are virtual documents like the
+    /// scripts they contain), and a refused document's subtree stays
+    /// skipped — its inner scripts must not leak into host-level `#script-N`
+    /// numbering.
+    #[test]
+    fn budget_counts_foreign_object_documents() {
+        let src = "<svg><foreignObject><div><p>x</p></div></foreignObject></svg>";
+        let tree = parse(src, Language::Xml).unwrap();
+        let mut state = WalkState::new(Some("fo.svg"));
+        state.budget.limit = 0; // no documents affordable at all
+        let mut out = Vec::new();
+        walk_xml(tree.root_node(), src, &mut state, &mut out);
+
+        // The host element rows for svg/foreignObject emit (the walk itself
+        // is untouched), but the content is owned by NO document and not
+        // walked by the host either.
+        assert!(
+            out.iter().any(|d| d.kind == "element" && d.name == "svg"),
+            "the host element rows still emit: {out:#?}"
+        );
+        assert!(
+            !out.iter().any(|d| d.name == "div"),
+            "the budget-refused document's subtree stays skipped: {out:#?}"
+        );
+        assert!(
+            !out.iter().any(|d| d.container.is_some()),
+            "no virtual document was affordable: {out:#?}"
+        );
+        assert_eq!(state.warnings.len(), 1);
+    }
+
+    /// Malformed nested content (direct helper probe): a re-parse carrying
+    /// error nodes emits NOTHING for that document, warns once naming it,
+    /// and the `#fo-N` number is given back — the next document takes it.
+    #[test]
+    fn malformed_foreign_object_content_is_skipped_with_warning_and_no_number() {
+        let mut budget = EmbedBudget::new(Some("broken.html"));
+        let mut warnings = Vec::new();
+        let mut defs = Vec::new();
+        let mut refs = Vec::new();
+
+        // `<div><p>unclosed` — no closing tags (verified has_error shape).
+        process_foreign_object_content(
+            "<div><p>unclosed",
+            0,
+            0,
+            0,
+            "broken.html",
+            &mut budget,
+            &mut warnings,
+            &mut defs,
+            &mut refs,
+        );
+        assert!(
+            defs.is_empty(),
+            "nothing emitted for the broken doc: {defs:#?}"
+        );
+        assert_eq!(refs.len(), 0, "no references either");
+        assert_eq!(warnings.len(), 1, "one warning: {warnings:?}");
+        assert!(
+            warnings[0].contains("broken.html#fo-1"),
+            "the warning names the would-be document: {:?}",
+            warnings[0]
+        );
+        assert_eq!(budget.fo_no, 0, "the number was given back");
+        assert_eq!(budget.docs, 0, "the slot was given back");
+
+        // The NEXT document takes #fo-1 (continuity pin).
+        let mut defs2 = Vec::new();
+        process_foreign_object_content(
+            "<div id=\"ok\"><p>fine</p></div>",
+            0,
+            0,
+            0,
+            "broken.html",
+            &mut budget,
+            &mut warnings,
+            &mut defs2,
+            &mut refs,
+        );
+        assert!(
+            defs2
+                .iter()
+                .any(|d| d.name == "div#ok" && d.container.as_deref() == Some("broken.html#fo-1")),
+            "the next fo takes #fo-1: {defs2:#?}"
+        );
+        assert_eq!(warnings.len(), 1, "still exactly the one malformed warning");
+    }
+
+    /// Empty/whitespace content: nothing, consumes nothing, no warning.
+    #[test]
+    fn whitespace_foreign_object_content_consumes_nothing() {
+        let mut budget = EmbedBudget::new(Some("empty.html"));
+        let mut warnings = Vec::new();
+        let mut defs = Vec::new();
+        let mut refs = Vec::new();
+        process_foreign_object_content(
+            "  \n\t ",
+            0,
+            0,
+            0,
+            "empty.html",
+            &mut budget,
+            &mut warnings,
+            &mut defs,
+            &mut refs,
+        );
+        assert!(defs.is_empty() && refs.is_empty() && warnings.is_empty());
+        assert_eq!(budget.fo_no, 0, "no number consumed");
+        assert_eq!(budget.docs, 0, "no slot consumed");
     }
 }

@@ -4,6 +4,49 @@
 
 ### Added
 
+- **Recursive SVG `<foreignObject>` indexing: the HTML inside a foreignObject
+  is a depth-capped virtual html document with hierarchical containers**
+  (VD-2, `crates/tldr-core/src/ast/elements.rs`). The HTML content nested in
+  an SVG `<foreignObject>` — in a standalone `.svg`/`.xml` host OR in an
+  inline `<svg>` inside an HTML page — is re-parsed with the HTML grammar as
+  a virtual document `<hostfilename>#fo-N` that emits its own `element` rows
+  and whose inline scripts/styles recurse exactly like the host's, with
+  hierarchical names: `page.html#fo-1#script-1`, `page.html#fo-1#style-1`,
+  and one level deeper `page.html#fo-2#script-1` (the foreignObject counter
+  is per FILE, the script/style counters per document; only successfully
+  processed documents consume numbers — a malformed or depth-refused
+  foreignObject gives its number back). Every nested document's outbound
+  references merge into the host imports with `via` = the full hierarchical
+  container name, so a target referenced only by the deepest script is
+  discoverable through `tldr imports`/`tldr impact`.
+  - **Termination.** Circular html→svg→foreignObject→html nesting cannot
+    hang the walk: every recursive re-parse operates on a content slice
+    STRICTLY CONTAINED in its parent document (strictly-decreasing byte
+    ranges of the SAME file — there is NO cross-file parsing at the
+    extraction layer; external `src`/`data`/`href` stay references that the
+    doclink scan indexes, and the reference graph handles cross-file
+    reachability). Two belt-and-braces caps bound the stack and the work:
+    `MAX_EMBED_DEPTH = 8` (deeper levels skipped with ONE structure warning
+    "embedded document nesting exceeds depth 8; deeper levels skipped:
+    &lt;container&gt;") and `MAX_VIRTUAL_DOCS_PER_FILE = 256` (the total
+    embedded documents per file across ALL levels; beyond the budget, skip
+    with ONE warning).
+  - **Malformed nested content.** A foreignObject body whose HTML re-parse
+    carries error nodes emits nothing, adds one warning naming the document,
+    and never fails the host; empty/whitespace content consumes nothing.
+  - The host walk skips the foreignObject subtree (the document owns it —
+    no double emission); nameless hosts (OOXML parts, yaml chunk merges)
+    keep the pre-VD-2 behavior, and files without a foreignObject walk
+    byte-identically. The structure path surfaces the new warnings through
+    `CodeStructure.warnings` (`extract_elements_with_warnings`).
+  - Pinned in `element_extraction_v1` (3-level chain with hierarchical
+    containers + global byte slice-backs + deep refs with `via`, the 9-level
+    depth-cap warning, malformed-content skip + numbering continuity,
+    external `src`/`data` staying host-level references), `symbol_fidelity_v1`
+    (nested script container + region semantics through both rebasing
+    levels) and `doclinks_v1` (blast radius through the nested chain: impact
+    on the deep target finds page.html).
+
 - **Embedded HTML/SVG `<script>` and `<style>` bodies are now indexed virtual
   documents whose outbound references join the host graph**
   (virtual-documents-v1, `crates/tldr-core/src/ast/elements.rs` +

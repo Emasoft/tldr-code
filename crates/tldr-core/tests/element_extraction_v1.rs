@@ -2015,3 +2015,385 @@ fn elements_flow_through_the_definitions_array_of_every_format() {
         }
     }
 }
+
+// =============================================================================
+// VD-2 — recursive SVG foreignObject indexing: the html content inside a
+// <foreignObject> (standalone svg or inline svg in html) is a virtual html
+// document <host>#fo-N whose scripts/styles recurse with hierarchical names
+// =============================================================================
+
+/// Full structure extraction helper for the VD-2 warnings/imports pins (the
+/// `extract_elements` helper above returns definitions only).
+fn structure_of(
+    filename: &str,
+    content: &str,
+    language: Language,
+) -> tldr_core::types::CodeStructure {
+    let dir =
+        TempDir::new().unwrap_or_else(|e| panic!("element-extraction-v1: tempdir failed: {e}"));
+    let path = dir.path().join(filename);
+    fs::write(&path, content).unwrap_or_else(|e| {
+        panic!("element-extraction-v1: failed to write fixture {filename}: {e}")
+    });
+    get_code_structure(&path, language, 0, None)
+        .unwrap_or_else(|e| panic!("element-extraction-v1: extraction failed for {filename}: {e}"))
+}
+
+/// The 3-level chain: page.html > inline svg > foreignObject > html (script +
+/// style + nested svg > foreignObject > script). Every container is
+/// hierarchical (`page.html#fo-1`, `page.html#fo-1#script-1`, … — the fo
+/// counter is per FILE, script/style counters per document), every byte span
+/// slices back against the FULL file at every level, and the deepest script's
+/// outbound reference rides the HOST imports with `via`.
+const FOREIGN_OBJECT_CHAIN_FIXTURE: &str = "\
+<!DOCTYPE html>
+<html>
+<body>
+<svg width=\"10\">
+  <foreignObject>
+    <div>
+      <script>
+        function outerFn() {
+          return \"outer\";
+        }
+      </script>
+      <style>
+        .fo-box { color: red; }
+      </style>
+      <svg>
+        <foreignObject>
+          <div>
+            <script>
+              import { render } from \"./deep-render.js\";
+              function deepFn() {
+                return 1;
+              }
+            </script>
+          </div>
+        </foreignObject>
+      </svg>
+    </div>
+  </foreignObject>
+</svg>
+</body>
+</html>
+";
+
+#[test]
+fn foreign_object_chain_emits_hierarchical_virtual_documents() {
+    let defs = extract_elements("page.html", FOREIGN_OBJECT_CHAIN_FIXTURE, Language::Html);
+    // The element/selector rows obey the element invariants; the virtual JS
+    // rows carry `definition_line` (the script-inner-js convention, pinned
+    // explicitly below) and are checked by their exact spans instead.
+    let markup_rows: Vec<DefinitionInfo> = defs
+        .iter()
+        .filter(|d| d.kind == "element" || d.kind == "selector")
+        .cloned()
+        .collect();
+    assert_element_invariants(&markup_rows, "page.html");
+
+    // EXACT (kind, name, container) sequence: host element rows stay
+    // container-less; the first foreignObject's content is the `#fo-1`
+    // document; the nested foreignObject (inside its inline svg) is the
+    // per-file `#fo-2` document whose rows appear at the nesting point.
+    let sequence: Vec<(String, String, Option<String>)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone(), d.container.clone()))
+        .collect();
+    let expected: Vec<(String, String, Option<String>)> = [
+        ("element", "html", None),
+        ("element", "body", None),
+        ("element", "svg", None),
+        ("element", "foreignObject", None),
+        ("element", "div", Some("page.html#fo-1")),
+        ("element", "script", Some("page.html#fo-1")),
+        ("function", "outerFn", Some("page.html#fo-1#script-1")),
+        ("element", "style", Some("page.html#fo-1")),
+        ("selector", ".fo-box", Some("page.html#fo-1#style-1")),
+        ("element", "svg", Some("page.html#fo-1")),
+        ("element", "foreignObject", Some("page.html#fo-1")),
+        ("element", "div", Some("page.html#fo-2")),
+        ("element", "script", Some("page.html#fo-2")),
+        ("function", "deepFn", Some("page.html#fo-2#script-1")),
+    ]
+    .iter()
+    .map(|(k, n, c)| (k.to_string(), n.to_string(), c.map(str::to_string)))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [page.html]: expected the exact foreignObject chain sequence"
+    );
+
+    // Full-file line fidelity at every level: the outer script (file lines
+    // 8-10), the outer style's selector (line 13) and the DEEPEST script
+    // (file lines 20-22 — two rebasing levels composed).
+    let outer = find_virtual(
+        &defs,
+        "page.html",
+        "function",
+        "outerFn",
+        "page.html#fo-1#script-1",
+    );
+    assert_span(outer, "page.html", "function:outerFn", 8, 10);
+    assert_eq!(outer.definition_line, Some(8));
+    let (os, oe) = (
+        outer.byte_start.unwrap() as usize,
+        outer.byte_end.unwrap() as usize,
+    );
+    assert_eq!(
+        &FOREIGN_OBJECT_CHAIN_FIXTURE[os..oe],
+        "function outerFn() {\n          return \"outer\";\n        }",
+        "function:outerFn must slice back to the exact JS source in the host file"
+    );
+
+    let box_sel = find_virtual(
+        &defs,
+        "page.html",
+        "selector",
+        ".fo-box",
+        "page.html#fo-1#style-1",
+    );
+    assert_span(box_sel, "page.html", "selector:.fo-box", 13, 13);
+    let (ss, se) = (
+        box_sel.byte_start.unwrap() as usize,
+        box_sel.byte_end.unwrap() as usize,
+    );
+    assert_eq!(
+        &FOREIGN_OBJECT_CHAIN_FIXTURE[ss..se],
+        ".fo-box { color: red; }",
+        "selector:.fo-box must slice back to the exact CSS source in the host file"
+    );
+
+    let deep = find_virtual(
+        &defs,
+        "page.html",
+        "function",
+        "deepFn",
+        "page.html#fo-2#script-1",
+    );
+    assert_span(deep, "page.html", "function:deepFn", 20, 22);
+    assert_eq!(deep.definition_line, Some(20));
+    let (ds, de) = (
+        deep.byte_start.unwrap() as usize,
+        deep.byte_end.unwrap() as usize,
+    );
+    assert_eq!(
+        &FOREIGN_OBJECT_CHAIN_FIXTURE[ds..de],
+        "function deepFn() {\n                return 1;\n              }",
+        "function:deepFn must slice back to the exact JS source in the host file \
+         (the byte span is global through BOTH nesting levels)"
+    );
+
+    // The deepest script's outbound reference joins the HOST imports with the
+    // full hierarchical `via` name — the blast-radius edge of the chain.
+    let structure = structure_of("page.html", FOREIGN_OBJECT_CHAIN_FIXTURE, Language::Html);
+    let imports = &structure.files[0].imports;
+    assert_eq!(
+        imports.len(),
+        1,
+        "exactly the deep script's import (no host-level href/src in the fixture): {imports:#?}"
+    );
+    assert_eq!(imports[0].module, "./deep-render.js");
+    assert_eq!(
+        imports[0].via.as_deref(),
+        Some("page.html#fo-2#script-1"),
+        "the via name is the deepest document's hierarchical container"
+    );
+    assert!(imports[0].is_from);
+}
+
+/// Depth-cap pin: NINE nested foreignObjects — levels 1..=8 process (their
+/// documents exist), level 9 is refused with exactly ONE structure warning
+/// naming the deepest processed container, and the refused level's content is
+/// not indexed (nothing leaks into host-level numbering).
+#[test]
+fn foreign_object_nesting_beyond_depth_8_is_skipped_with_one_warning() {
+    fn nested_page(levels: usize) -> String {
+        let mut s = String::from("<!DOCTYPE html>\n<html>\n<body>\n");
+        for _ in 0..levels {
+            s.push_str("<svg>\n<foreignObject>\n<div>\n");
+        }
+        s.push_str("<p>core</p>\n");
+        for _ in 0..levels {
+            s.push_str("</div>\n</foreignObject>\n</svg>\n");
+        }
+        s.push_str("</body>\n</html>\n");
+        s
+    }
+    let src = nested_page(9);
+    let structure = structure_of("deep.html", &src, Language::Html);
+    let defs = &structure.files[0].definitions;
+
+    // Levels 1..=8 processed: the depth-8 document exists…
+    assert!(
+        defs.iter().any(|d| d.kind == "element"
+            && d.name == "div"
+            && d.container.as_deref() == Some("deep.html#fo-8")),
+        "level 8 must process: {defs:#?}"
+    );
+    // …level 9 does not (and its `core` content never surfaces).
+    assert!(
+        !defs.iter().any(|d| d
+            .container
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("deep.html#fo-9")),
+        "level 9 must be skipped: {defs:#?}"
+    );
+    assert!(
+        !defs.iter().any(|d| d.name == "p"),
+        "the refused level's content is not indexed (and never leaks to the host): {defs:#?}"
+    );
+
+    // ONE warning on the HOST structure, naming the deepest processed doc.
+    assert_eq!(
+        structure.warnings.len(),
+        1,
+        "exactly one depth-cap warning: {:#?}",
+        structure.warnings
+    );
+    assert!(
+        structure.warnings[0].contains(
+            "embedded document nesting exceeds depth 8; deeper levels skipped: deep.html#fo-8"
+        ),
+        "the pinned depth message naming the container: {:?}",
+        structure.warnings[0]
+    );
+}
+
+/// Malformed nested content: the re-parse carries error nodes → the document
+/// emits NOTHING, ONE warning names it on the host structure, the host never
+/// fails, and the `#fo-N` number is GIVEN BACK — the next good foreignObject
+/// takes `#fo-1` (numbering-continuity pin).
+#[test]
+fn malformed_foreign_object_content_warns_and_consumes_no_number() {
+    let src = "\
+<!DOCTYPE html>
+<html>
+<body>
+<svg>
+  <foreignObject>
+    <div><p>unclosed
+  </foreignObject>
+  <foreignObject>
+    <div id=\"ok\"><p>fine</p></div>
+  </foreignObject>
+</svg>
+</body>
+</html>
+";
+    let structure = structure_of("broken.html", src, Language::Html);
+    assert_eq!(
+        structure.files.len(),
+        1,
+        "a malformed nested document never fails the host"
+    );
+    let defs = &structure.files[0].definitions;
+
+    assert_eq!(
+        structure.warnings.len(),
+        1,
+        "exactly one malformed-content warning: {:#?}",
+        structure.warnings
+    );
+    assert!(
+        structure.warnings[0].contains("broken.html#fo-1")
+            && structure.warnings[0].contains("does not parse as HTML"),
+        "the warning names the would-be document: {:?}",
+        structure.warnings[0]
+    );
+
+    // The FIRST (broken) foreignObject consumed no number: the second one is
+    // #fo-1. Nothing from the broken content emitted (its nameless div/p
+    // would only exist if the host walk had descended).
+    assert!(
+        defs.iter().any(|d| d.kind == "element"
+            && d.name == "div#ok"
+            && d.container.as_deref() == Some("broken.html#fo-1")),
+        "the second foreignObject takes #fo-1: {defs:#?}"
+    );
+    assert!(
+        !defs
+            .iter()
+            .any(|d| d.container.is_none() && (d.name == "div" || d.name == "p")),
+        "the broken content's elements never emit (the document owns its subtree \
+         even when the document is refused): {defs:#?}"
+    );
+    assert!(
+        !defs
+            .iter()
+            .any(|d| d.container.as_deref() == Some("broken.html#fo-2")),
+        "no #fo-2 exists: {defs:#?}"
+    );
+}
+
+/// External references inside a foreignObject stay REFERENCES: a `src`
+/// script and a `data` object contribute their doclink rows to the HOST
+/// imports (host-level, via: None — the reference GRAPH owns cross-file
+/// reachability) and no cross-file parsing happens (no virtual document for
+/// the external script's target).
+#[test]
+fn foreign_object_external_src_and_data_stay_references() {
+    let src = "\
+<!DOCTYPE html>
+<html>
+<body>
+<svg>
+  <foreignObject>
+    <div>
+      <script src=\"ext-app.js\"></script>
+      <object data=\"movie.swf\"></object>
+    </div>
+  </foreignObject>
+</svg>
+</body>
+</html>
+";
+    let structure = structure_of("refs.html", src, Language::Html);
+    let defs = &structure.files[0].definitions;
+
+    // The foreignObject's markup is the #fo-1 document (its element rows
+    // carry the container); the external script emits an element row only —
+    // NO virtual JS document exists for ext-app.js.
+    let sequence: Vec<(String, String, Option<String>)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone(), d.container.clone()))
+        .collect();
+    let expected: Vec<(String, String, Option<String>)> = [
+        ("element", "html", None),
+        ("element", "body", None),
+        ("element", "svg", None),
+        ("element", "foreignObject", None),
+        ("element", "div", Some("refs.html#fo-1")),
+        ("element", "script", Some("refs.html#fo-1")),
+        ("element", "object", Some("refs.html#fo-1")),
+    ]
+    .iter()
+    .map(|(k, n, c)| (k.to_string(), n.to_string(), c.map(str::to_string)))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [refs.html]: external scripts inside a foreignObject \
+         stay element rows"
+    );
+
+    // The references ride the HOST imports at the host level (via: None):
+    // `src` and `data` are doclink attributes, never parsed as documents.
+    let imports = &structure.files[0].imports;
+    let ext = imports
+        .iter()
+        .find(|i| i.module == "ext-app.js")
+        .unwrap_or_else(|| panic!("ext-app.js reference missing: {imports:#?}"));
+    assert_eq!(ext.alias.as_deref(), Some("src"));
+    assert_eq!(ext.via, None, "host-level reference — no via provenance");
+    let movie = imports
+        .iter()
+        .find(|i| i.module == "movie.swf")
+        .unwrap_or_else(|| panic!("movie.swf reference missing: {imports:#?}"));
+    assert_eq!(movie.alias.as_deref(), Some("data"));
+    assert_eq!(movie.via, None);
+    assert!(
+        !imports.iter().any(|i| i.via.is_some()),
+        "no virtual document produced any reference here: {imports:#?}"
+    );
+}

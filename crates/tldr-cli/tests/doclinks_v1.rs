@@ -1435,3 +1435,110 @@ fn importers_finds_text_reference_source() {
         .unwrap()
         .contains("b.txt"));
 }
+
+// =============================================================================
+// (6) VD-2 — foreignObject recursion: blast radius through the nested chain
+// =============================================================================
+
+/// Fixture for the foreignObject chain: `page.html` embeds an inline `<svg>`
+/// whose `<foreignObject>` holds html with an outer script and a NESTED
+/// `<svg>`/`<foreignObject>` whose script imports `./deep-data.json` — the
+/// target is referenced ONLY by the deepest virtual script document.
+fn build_foreign_object_project() -> TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    // Root marker: the impact target is a plain file, so
+    // `explain_project_root` needs a project marker at the root (the same
+    // trick build_config_project uses for `schemas/user.json`).
+    write(
+        root.join("package.json"),
+        r#"{ "name": "fixture", "private": true }"#,
+    );
+    write(
+        root.join("page.html"),
+        r#"<!DOCTYPE html>
+<html>
+<body>
+<svg>
+  <foreignObject>
+    <div>
+      <script>
+        function boot() { return 1; }
+      </script>
+      <svg>
+        <foreignObject>
+          <div>
+            <script>
+              import "./deep-data.json";
+              function deep() { return 2; }
+            </script>
+          </div>
+        </foreignObject>
+      </svg>
+    </div>
+  </foreignObject>
+</svg>
+</body>
+</html>
+"#,
+    );
+    write(root.join("deep-data.json"), r#"{ "kind": "data" }"#);
+    dir
+}
+
+/// The whole chain end to end: `tldr imports page.html` carries the deepest
+/// script's import with its hierarchical `via` provenance
+/// (`page.html#fo-2#script-1`), and `tldr impact <root>/deep-data.json`
+/// walks the reverse-link edge back to page.html — a target referenced only
+/// inside a nested foreignObject document is discoverable from the host.
+#[test]
+fn foreignobject_chain_blast_radius_reaches_the_host() {
+    let dir = build_foreign_object_project();
+    let root = dir.path();
+
+    // (1) imports: the deep reference rides the HOST file's imports with the
+    // hierarchical via name.
+    let (code, json) = run_json(&["imports", "page.html", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+    assert_eq!(json["language"], "html");
+
+    let imports = json["imports"].as_array().unwrap();
+    let deep = imports
+        .iter()
+        .find(|i| i["module"] == "./deep-data.json")
+        .unwrap_or_else(|| panic!("./deep-data.json missing from {imports:?}"));
+    assert_eq!(
+        deep["via"], "page.html#fo-2#script-1",
+        "via = the deepest virtual document's hierarchical container: {deep}"
+    );
+    assert_eq!(deep["is_from"], true);
+    assert!(
+        !imports
+            .iter()
+            .any(|i| i["module"] == "./deep-data.json" && i["via"] != "page.html#fo-2#script-1"),
+        "exactly one row for the deep reference, correctly attributed: {imports:?}"
+    );
+
+    // (2) impact: the target's reverse-link closure contains page.html.
+    let (code, json) = run_json(
+        &[
+            "impact",
+            root.join("deep-data.json").to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0), "impact on the data target must succeed");
+
+    let mut files = Vec::new();
+    collect_files(&json, &mut files);
+    assert!(
+        files.iter().any(|f| f.ends_with("page.html")),
+        "the closure must reach page.html through the foreignObject chain: \
+         total_targets={}, files={files:?}",
+        json["total_targets"]
+    );
+}

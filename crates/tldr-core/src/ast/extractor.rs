@@ -611,6 +611,9 @@ fn extract_file_structure(
     // is unchanged, one full import walk per file is gone.
     let imports = module_info.imports;
     let mut definitions = extract_definitions(&tree, &source, language);
+    // VD-2: the embedded-document recursion's warnings accumulate here and
+    // ride the function's warning channel (empty in the common case).
+    let mut file_warnings: Vec<String> = Vec::new();
 
     // element-extraction-v1 (Phase E): formats carry no function/class
     // symbols, so `extract_definitions` comes back EMPTY for JSON/YAML/TOML —
@@ -634,10 +637,15 @@ fn extract_file_structure(
     // documents of embedded inline scripts (`page.html#script-1`) — see
     // `ast::elements`. A non-UTF-8 file name disables the extraction (a
     // nameless host cannot name a virtual document).
+    // VD-2: the embedded-document recursion's warnings (foreignObject
+    // nesting beyond the depth cap, the virtual-document budget, malformed
+    // nested content) ride the file's warning channel onto
+    // `CodeStructure.warnings`.
     let host_label = path.file_name().and_then(|n| n.to_str());
-    definitions.extend(super::elements::extract_elements(
-        language, &tree, &source, host_label,
-    ));
+    let (element_defs, element_warnings) =
+        super::elements::extract_elements_with_warnings(language, &tree, &source, host_label);
+    definitions.extend(element_defs);
+    file_warnings.extend(element_warnings);
 
     // schema-unification-v1 BUG-21: derive `method_infos` from `definitions`
     // (which already carry line + signature for kind="method" entries) so
@@ -666,7 +674,7 @@ fn extract_file_structure(
             imports,
             definitions,
         },
-        Vec::new(),
+        file_warnings,
     ))
 }
 

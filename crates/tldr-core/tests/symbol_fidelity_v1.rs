@@ -520,6 +520,106 @@ fn html_embedded_style_selectors_carry_virtual_document_provenance() {
 }
 
 // =============================================================================
+// VD-2 — a script nested inside an SVG foreignObject (inline svg in html):
+// the virtual document is `<host>#fo-N#script-M`, spans stay global
+// =============================================================================
+
+/// HTML host with an inline `<svg>` whose `<foreignObject>` carries html with
+/// ONE inline script (JSDoc attached): the function row must carry the
+/// HIERARCHICAL virtual document container `pinned.html#fo-1#script-1`, the
+/// line span/definition line must be FULL-FILE lines (the html tree's rows
+/// plus the foreignObject content's line base), and the byte span must slice
+/// back to the exact JS source inside the host file.
+#[test]
+fn foreignobject_nested_script_symbols_carry_container_and_region() {
+    const FIXTURE: &str = "<!DOCTYPE html>\n\
+                           <html>\n\
+                           <body>\n\
+                           <svg>\n\
+                           \x20 <foreignObject>\n\
+                           \x20   <div>\n\
+                           \x20     <script>\n\
+                           \x20       /** Renders the widget. */\n\
+                           \x20       function renderWidget(el) {\n\
+                           \x20         el.mount();\n\
+                           \x20       }\n\
+                           \x20     </script>\n\
+                           \x20   </div>\n\
+                           \x20 </foreignObject>\n\
+                           </svg>\n\
+                           </body>\n\
+                           </html>\n";
+    // L1 <!DOCTYPE html> | L2 <html> | L3 <body> | L4 <svg> | L5 <foreignObject>
+    // L6 <div> | L7 <script> | L8 /** Renders the widget. */
+    // L9 function renderWidget(el) { | L10 el.mount(); | L11 }
+    // L12 </script> | L13 </div> | L14 </foreignObject> | L15 </svg>
+    // L16 </body> | L17 </html>
+    let defs = extract_definitions("pinned.html", FIXTURE, Language::Html);
+
+    let render = find_def(&defs, "pinned.html", "renderWidget");
+    // Region semantics survive BOTH rebasing levels: the attached JSDoc
+    // widens the LINE span (inner rows 1..4 → FILE lines 8..11 — the span
+    // STARTS at the JSDoc line, the same attached-trivia rule a standalone
+    // .js file follows) and `definition_line` stays the function-keyword
+    // line (FILE 9).
+    assert_span(render, "pinned.html", "renderWidget", 8, 11);
+    assert_eq!(
+        render.definition_line,
+        Some(9),
+        "definition_line must translate onto the file's declaration line"
+    );
+    // Provenance: the HIERARCHICAL virtual document name — the foreignObject
+    // document `#fo-1` owning the script document `#script-1`.
+    assert_eq!(
+        render.container.as_deref(),
+        Some("pinned.html#fo-1#script-1"),
+        "foreignObject-nested script definitions must carry the hierarchical \
+         virtual document name"
+    );
+    assert_signature_starts_with(
+        render,
+        "pinned.html",
+        "renderWidget",
+        "function renderWidget(el) {",
+    );
+    // Byte span global through both levels: exact JS source in the host file.
+    let (bs, be) = (
+        render
+            .byte_start
+            .expect("virtual-script defs carry byte spans") as usize,
+        render
+            .byte_end
+            .expect("virtual-script defs carry byte spans") as usize,
+    );
+    assert_eq!(
+        &FIXTURE[bs..be],
+        "function renderWidget(el) {\n          el.mount();\n        }",
+        "byte span must slice back to the exact JS source in the host file"
+    );
+
+    // Provenance split: host element rows (up to and including the
+    // foreignObject element itself) stay container-less; the markup INSIDE
+    // the foreignObject belongs to the #fo-1 document.
+    let fo_host_row = defs
+        .iter()
+        .find(|d| d.kind == "element" && d.name == "foreignObject")
+        .expect("the foreignObject host element row");
+    assert_eq!(
+        fo_host_row.container, None,
+        "the host foreignObject element row stays container-less"
+    );
+    let fo_div_row = defs
+        .iter()
+        .find(|d| d.kind == "element" && d.name == "div")
+        .expect("the foreignObject's div row");
+    assert_eq!(
+        fo_div_row.container.as_deref(),
+        Some("pinned.html#fo-1"),
+        "the foreignObject's markup is the #fo-1 document"
+    );
+}
+
+// =============================================================================
 // Java — tree-sitter-java 0.23.5, annotations live INSIDE method_declaration (modifiers child)
 // =============================================================================
 
