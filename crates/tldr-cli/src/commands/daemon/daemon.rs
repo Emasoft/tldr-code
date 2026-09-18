@@ -147,15 +147,16 @@ fn file_input_hashes(path: &Path) -> Vec<u64> {
 /// Input hashes recorded at cache-INSERTION time for PROJECT-WIDE entries
 /// (issue #51).
 ///
-/// Call graph, impact, dead-code, architecture, importers and change-impact
-/// results depend on EVERY file in the project, but their handlers used to
-/// register them with an EMPTY dependency list — and an entry with no input
-/// hashes is never added to the cache's dependents index, so `Notify` could
-/// never reach it and the stale result was served forever. Registering the
-/// PROJECT ROOT's hash (the "root-level cache key") gives the notify event a
-/// handle: `handle_notify` invalidates the root hash on every file-change
-/// event, dropping every project-wide entry at once. File-scoped entries are
-/// unaffected — they are registered under their own file's hashes.
+/// Call graph, impact, dead-code, architecture, importers, change-impact,
+/// search, file-tree and context results depend on EVERY file in the project,
+/// but their handlers used to register them with an EMPTY dependency list —
+/// and an entry with no input hashes is never added to the cache's dependents
+/// index, so `Notify` could never reach it and the stale result was served
+/// forever. Registering the PROJECT ROOT's hash (the "root-level cache key")
+/// gives the notify event a handle: `handle_notify` invalidates the root hash
+/// on every file-change event, dropping every project-wide entry at once.
+/// File-scoped entries are unaffected — they are registered under their own
+/// file's hashes.
 ///
 /// Like [`file_input_hashes`], both the canonical and the raw spelling are
 /// hashed; and when the request named an explicit root, the daemon's own
@@ -854,7 +855,12 @@ impl TLDRDaemon {
                 match tldr_search(&pattern, &self.project, None, 2, max, 1000, None) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![]);
+                        // Issue #51 follow-up (W5b): search scans the whole
+                        // project — register the ROOT input hashes so Notify
+                        // can invalidate the slot (pre-fix an empty dep list
+                        // made stale results survive file edits forever).
+                        let deps = project_input_hashes(&self.project, &self.project);
+                        self.cache.insert(key, &val, deps);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -904,7 +910,12 @@ impl TLDRDaemon {
                 match get_file_tree(&root, None, true, None) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![]);
+                        // Issue #51 follow-up (W5b): the tree of `root`
+                        // changes when its files change — register the ROOT
+                        // input hashes (the served root included, so a notify
+                        // for any file in the served project invalidates it).
+                        let deps = project_input_hashes(&self.project, &root);
+                        self.cache.insert(key, &val, deps);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -932,7 +943,12 @@ impl TLDRDaemon {
                 match get_code_structure(&path, language, 0, None) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![]);
+                        // Issue #51 follow-up (W5b): structure is FILE-scoped
+                        // — register the file's input hashes (canonical + raw
+                        // spellings) exactly like the Extract arm, so Notify
+                        // invalidates the slot.
+                        let deps = file_input_hashes(&path);
+                        self.cache.insert(key, &val, deps);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -956,7 +972,11 @@ impl TLDRDaemon {
                 match get_relevant_context(&self.project, &entry, d, lang, true, None) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![]);
+                        // Issue #51 follow-up (W5b): the context traversal
+                        // runs over the whole project call graph — register
+                        // the ROOT input hashes.
+                        let deps = project_input_hashes(&self.project, &self.project);
+                        self.cache.insert(key, &val, deps);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -1474,8 +1494,10 @@ impl TLDRDaemon {
             // 3. structure for this single file — mirrors the
             //    DaemonCommand::Structure handler for the request shape the
             //    CLI sends (`tldr structure <file>` always passes an explicit
-            //    language string). The handler inserts with NO input
-            //    dependencies, so warm must not add any either.
+            //    language string). The handler registers the file's input
+            //    hashes; warm must register the SAME hashes, else a warmed
+            //    structure slot would survive a Notify and serve the pre-edit
+            //    structure forever (issue #51 follow-up, W5b).
             let file_struct_key = structure_query_key(path, lang.as_str(), lang);
             if self
                 .cache
@@ -1485,7 +1507,7 @@ impl TLDRDaemon {
                 match get_code_structure(path, lang, 0, None) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(file_struct_key, &val, vec![]);
+                        self.cache.insert(file_struct_key, &val, file_hash.clone());
                         stats.entries += 1;
                     }
                     Err(e) => stats
@@ -1643,12 +1665,13 @@ impl TLDRDaemon {
         self.invalidate_file_caches(&file);
 
         // Issue #51: PROJECT-WIDE entries (call graph, impact, dead,
-        // architecture, importers, change impact, warm slots) are registered
-        // against the project ROOT's input hashes, not any single file's — a
-        // file change can affect every one of them, so the notify event must
-        // invalidate the root-scoped slots too. Pre-fix these entries were
-        // registered with an empty dependency list, were unreachable from the
-        // dependents index, and were served stale forever.
+        // architecture, importers, change impact, search, tree, context, warm
+        // slots) are registered against the project ROOT's input hashes, not
+        // any single file's — a file change can affect every one of them, so
+        // the notify event must invalidate the root-scoped slots too. Pre-fix
+        // these entries were registered with an empty dependency list, were
+        // unreachable from the dependents index, and were served stale
+        // forever.
         for root_hash in project_input_hashes(&self.project, &self.project) {
             self.cache.invalidate_by_input(root_hash);
         }
@@ -2775,6 +2798,363 @@ mod tests {
         assert!(
             serialized.contains("new_func"),
             "a warmed call-graph slot must not survive a Notify (issue #51): \
+             {serialized}"
+        );
+    }
+
+    // =========================================================================
+    // Issue #51 follow-up (W5b coverage audit): the remaining empty-dep cache
+    // inserts — Search, Tree, Context, Structure and the Warm per-file
+    // structure slot — must invalidate on Notify exactly like the arms fixed
+    // by the original #51 commit.
+    // =========================================================================
+
+    /// Issue #51 follow-up (W5b): the `Search` handler cached its result with
+    /// an EMPTY dependency list, so no Notify event could ever reach the slot
+    /// and a stale search result survived any file edit. The repro shape:
+    /// search a token → rename it in the file → Notify → re-query — the fresh
+    /// result must not surface the pre-edit token.
+    ///
+    /// CONTROL (documented, not pinned): search registers the PROJECT ROOT's
+    /// input hashes (the #51 root-level cache-key shape), because a search
+    /// scans every file in the project — no single-file dependency can
+    /// describe it. At that granularity an edit to ANY file invalidates ALL
+    /// project-wide slots (including search slots for unrelated patterns);
+    /// the cache cannot distinguish an "unrelated" edit, by design. This is
+    /// the conservative-never-stale tradeoff the original #51 fix chose for
+    /// every project-wide arm; the file-scoped no-over-invalidation control
+    /// is pinned separately by
+    /// `test_daemon_notify_canonical_path_control_and_no_over_invalidation`.
+    #[tokio::test]
+    async fn test_daemon_search_cache_invalidated_on_notify() {
+        let temp = TempDir::new().unwrap();
+        let search_a = temp.path().join("search_a.py");
+        std::fs::write(&search_a, "def alphafn():\n    return 1\n").unwrap();
+        // A second file so the project is not single-file and the stale
+        // assertion cannot be satisfied by accident.
+        std::fs::write(
+            temp.path().join("search_b.py"),
+            "def betafn():\n    return 2\n",
+        )
+        .unwrap();
+
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+
+        // 1. Populate the search slot for the alphafn pattern.
+        let first = daemon
+            .handle_command(DaemonCommand::Search {
+                pattern: "alphafn".to_string(),
+                max_results: Some(10),
+            })
+            .await;
+        let first_value = match first {
+            DaemonResponse::Result(value) => value,
+            other => panic!("first Search request must succeed, got {other:?}"),
+        };
+        let serialized_first = serde_json::to_string(&first_value).unwrap();
+        assert!(
+            serialized_first.contains("alphafn"),
+            "fixture precondition: the search must find alphafn, got {serialized_first}"
+        );
+
+        // 2. Edit the file: rename alphafn → gammafn (the token disappears
+        //    from the project entirely).
+        std::fs::write(&search_a, "def gammafn():\n    return 1\n").unwrap();
+
+        // 3. Notify the daemon of the change.
+        daemon
+            .handle_command(DaemonCommand::Notify {
+                file: search_a.clone(),
+            })
+            .await;
+
+        // 4. Re-query the SAME pattern — must be recomputed and must not
+        //    surface the removed token.
+        let second = daemon
+            .handle_command(DaemonCommand::Search {
+                pattern: "alphafn".to_string(),
+                max_results: Some(10),
+            })
+            .await;
+        let second_value = match second {
+            DaemonResponse::Result(value) => value,
+            other => panic!("second Search request must succeed, got {other:?}"),
+        };
+        let serialized_second = serde_json::to_string(&second_value).unwrap();
+        assert!(
+            !serialized_second.contains("alphafn"),
+            "after Notify the re-queried search must not surface the removed \
+             token — a stale cached result was served (issue #51 follow-up, \
+             W5b): {serialized_second}"
+        );
+
+        // 5. The renamed token must now be findable (fresh-compute sanity).
+        let third = daemon
+            .handle_command(DaemonCommand::Search {
+                pattern: "gammafn".to_string(),
+                max_results: Some(10),
+            })
+            .await;
+        let third_value = match third {
+            DaemonResponse::Result(value) => value,
+            other => panic!("third Search request must succeed, got {other:?}"),
+        };
+        let serialized_third = serde_json::to_string(&third_value).unwrap();
+        assert!(
+            serialized_third.contains("gammafn"),
+            "the renamed token must be findable after the edit + Notify, got \
+             {serialized_third}"
+        );
+        assert!(
+            daemon.cache_stats().invalidations >= 1,
+            "the Notify event must have invalidated at least one cache entry"
+        );
+    }
+
+    /// Issue #51 follow-up (W5b): the `Structure` handler is FILE-scoped and
+    /// cached with an EMPTY dependency list. A structure result must reflect
+    /// the file's current definitions after the file is edited + Notify.
+    #[tokio::test]
+    async fn test_daemon_structure_cache_invalidated_on_notify() {
+        let temp = TempDir::new().unwrap();
+        let utils_py = temp.path().join("utils.py");
+        std::fs::write(&utils_py, "def helper():\n    return 'help'\n").unwrap();
+
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+
+        // 1. Populate the structure slot for utils.py.
+        let first = daemon
+            .handle_command(DaemonCommand::Structure {
+                path: utils_py.clone(),
+                lang: Some("python".to_string()),
+            })
+            .await;
+        let first_value = match first {
+            DaemonResponse::Result(value) => value,
+            other => panic!("first Structure request must succeed, got {other:?}"),
+        };
+        let serialized_first = serde_json::to_string(&first_value).unwrap();
+        assert!(
+            serialized_first.contains("helper") && !serialized_first.contains("new_func"),
+            "fixture precondition: structure must know helper only, got {serialized_first}"
+        );
+
+        // 2. Edit the file: add a new function.
+        std::fs::write(
+            &utils_py,
+            "def helper():\n    return 'help'\n\ndef new_func():\n    helper()\n",
+        )
+        .unwrap();
+
+        // 3. Notify.
+        daemon
+            .handle_command(DaemonCommand::Notify {
+                file: utils_py.clone(),
+            })
+            .await;
+
+        // 4. Re-query — must reflect the added function.
+        let second = daemon
+            .handle_command(DaemonCommand::Structure {
+                path: utils_py.clone(),
+                lang: Some("python".to_string()),
+            })
+            .await;
+        let second_value = match second {
+            DaemonResponse::Result(value) => value,
+            other => panic!("second Structure request must succeed, got {other:?}"),
+        };
+        let serialized_second = serde_json::to_string(&second_value).unwrap();
+        assert!(
+            serialized_second.contains("new_func"),
+            "after Notify the re-queried structure must reflect the added \
+             function — a stale cached structure was served (W5b): \
+             {serialized_second}"
+        );
+    }
+
+    /// Issue #51 follow-up (W5b): the `Tree` handler cached the project file
+    /// tree with an EMPTY dependency list. A new file + Notify must appear in
+    /// a re-queried tree.
+    #[tokio::test]
+    async fn test_daemon_tree_cache_invalidated_on_notify() {
+        let temp = TempDir::new().unwrap();
+        let utils_py = temp.path().join("utils.py");
+        std::fs::write(&utils_py, "def helper():\n    return 'help'\n").unwrap();
+
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+
+        // 1. Populate the tree slot.
+        let first = daemon
+            .handle_command(DaemonCommand::Tree { path: None })
+            .await;
+        let first_value = match first {
+            DaemonResponse::Result(value) => value,
+            other => panic!("first Tree request must succeed, got {other:?}"),
+        };
+        let serialized_first = serde_json::to_string(&first_value).unwrap();
+        assert!(
+            serialized_first.contains("utils.py") && !serialized_first.contains("extra.py"),
+            "fixture precondition: tree must know utils.py only, got {serialized_first}"
+        );
+
+        // 2. Add a new file.
+        std::fs::write(temp.path().join("extra.py"), "def extrafn():\n    pass\n").unwrap();
+
+        // 3. Notify (the event names the new file).
+        daemon
+            .handle_command(DaemonCommand::Notify {
+                file: temp.path().join("extra.py"),
+            })
+            .await;
+
+        // 4. Re-query — the new file must appear.
+        let second = daemon
+            .handle_command(DaemonCommand::Tree { path: None })
+            .await;
+        let second_value = match second {
+            DaemonResponse::Result(value) => value,
+            other => panic!("second Tree request must succeed, got {other:?}"),
+        };
+        let serialized_second = serde_json::to_string(&second_value).unwrap();
+        assert!(
+            serialized_second.contains("extra.py"),
+            "after Notify the re-queried tree must include the new file — a \
+             stale cached tree was served (W5b): {serialized_second}"
+        );
+    }
+
+    /// Issue #51 follow-up (W5b): the `Context` handler traverses the
+    /// PROJECT-WIDE call graph but cached with an EMPTY dependency list. A
+    /// new callee added to the traversed function must appear in a
+    /// re-queried context after Notify.
+    #[tokio::test]
+    async fn test_daemon_context_cache_invalidated_on_notify() {
+        let temp = TempDir::new().unwrap();
+        let utils_py = temp.path().join("utils.py");
+        std::fs::write(
+            temp.path().join("main.py"),
+            "from utils import helper\n\ndef main():\n    helper()\n",
+        )
+        .unwrap();
+        std::fs::write(&utils_py, "def helper():\n    return 'help'\n").unwrap();
+
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+
+        // 1. Populate the context slot for helper (depth 1: helper + callees).
+        let first = daemon
+            .handle_command(DaemonCommand::Context {
+                entry: "helper".to_string(),
+                depth: Some(1),
+                language: Some(Language::Python),
+            })
+            .await;
+        let first_value = match first {
+            DaemonResponse::Result(value) => value,
+            other => panic!("first Context request must succeed, got {other:?}"),
+        };
+        let serialized_first = serde_json::to_string(&first_value).unwrap();
+        assert!(
+            serialized_first.contains("helper") && !serialized_first.contains("helper2"),
+            "fixture precondition: context must know helper only, got {serialized_first}"
+        );
+
+        // 2. Edit the file: helper now calls a NEW function helper2.
+        std::fs::write(
+            &utils_py,
+            "def helper():\n    return helper2()\n\ndef helper2():\n    return '2'\n",
+        )
+        .unwrap();
+
+        // 3. Notify.
+        daemon
+            .handle_command(DaemonCommand::Notify {
+                file: utils_py.clone(),
+            })
+            .await;
+
+        // 4. Re-query — the traversal must see the new callee.
+        let second = daemon
+            .handle_command(DaemonCommand::Context {
+                entry: "helper".to_string(),
+                depth: Some(1),
+                language: Some(Language::Python),
+            })
+            .await;
+        let second_value = match second {
+            DaemonResponse::Result(value) => value,
+            other => panic!("second Context request must succeed, got {other:?}"),
+        };
+        let serialized_second = serde_json::to_string(&second_value).unwrap();
+        assert!(
+            serialized_second.contains("helper2"),
+            "after Notify the re-queried context must include the new callee \
+             — a stale cached context was served (W5b): {serialized_second}"
+        );
+    }
+
+    /// Issue #51 follow-up (W5b): the Warm pass filled the per-file
+    /// `structure` slot with an EMPTY dependency list (its comment even said
+    /// "the handler inserts with NO input dependencies, so warm must not add
+    /// any either"). A warmed file-structure slot must die on Notify like
+    /// every other warmed slot — a warm followed by an edit must never serve
+    /// the pre-edit structure.
+    #[tokio::test]
+    async fn test_daemon_warmed_file_structure_slot_invalidated_on_notify() {
+        let temp = TempDir::new().unwrap();
+        // Canonicalize like the warm key-equality test does: warm hashes the
+        // project-joined path and the handler hashes the request path, so the
+        // two must agree on macOS /private symlink spellings.
+        let project = temp.path().canonicalize().unwrap();
+        let example_py = project.join("example.py");
+        std::fs::write(
+            &example_py,
+            "def add(a, b):\n    return a + b\n\ndef multiply(x, y):\n    return x * y\n",
+        )
+        .unwrap();
+
+        let daemon = TLDRDaemon::new(project.clone(), DaemonConfig::default());
+
+        // 1. Warm (fills the per-file structure slot for example.py).
+        let warm = daemon
+            .handle_command(DaemonCommand::Warm { language: None })
+            .await;
+        match &warm {
+            DaemonResponse::Status { status, .. } => {
+                assert_eq!(status, "ok", "Warm must succeed on the fixture project");
+            }
+            other => panic!("Warm must return a Status response, got {other:?}"),
+        }
+
+        // 2. Edit + Notify.
+        std::fs::write(
+            &example_py,
+            "def add(a, b):\n    return a + b\n\ndef multiply(x, y):\n    return x * y\n\ndef subtract(a, b):\n    return a - b\n",
+        )
+        .unwrap();
+        daemon
+            .handle_command(DaemonCommand::Notify {
+                file: example_py.clone(),
+            })
+            .await;
+
+        // 3. A Structure query for the file must MISS the warmed slot and
+        //    recompute — with the pre-fix empty-dep warm insert it was a
+        //    stale HIT without `subtract`.
+        let response = daemon
+            .handle_command(DaemonCommand::Structure {
+                path: example_py.clone(),
+                lang: Some("python".to_string()),
+            })
+            .await;
+        let value = match response {
+            DaemonResponse::Result(value) => value,
+            other => panic!("Structure after notify must succeed, got {other:?}"),
+        };
+        let serialized = serde_json::to_string(&value).unwrap();
+        assert!(
+            serialized.contains("subtract"),
+            "a warmed file-structure slot must not survive a Notify (W5b): \
              {serialized}"
         );
     }

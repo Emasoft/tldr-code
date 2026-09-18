@@ -22,7 +22,7 @@
 //! | Search hit/miss externally observable (not timing) | [new] `search_stats_are_visible_through_the_status_response` (`FullStatus.salsa_stats` over IPC) |
 //! | `tldr search` (enriched/callgraph) uses the daemon | [gap] the CLI enriched search (`commands/search.rs::SmartSearchArgs::run`) computes **client-local** via `enriched_search` and has no daemon route at all — documenting this is the ask ("tests document whether enrichment is daemon-backed, warm-cache-backed, or client-local": it is client-local) |
 //! | Search fallback visible when daemon is down | [gap→pinned at the level that exists] full search has no daemon fallback to expose (client-local by construction); the daemon-adjacent commands DO fail loudly — [new] `daemon_test.rs::test_daemon_query_without_running_daemon_reports_clear_error` |
-//! | Search cache invalidation on file change (#51 root-hash) | [gap] the daemon's `Search` handler inserts its cache entry with an **empty** dependency list (`daemon_impl::daemon.rs`, Search arm), so the #51/#59 notify invalidation never reaches search slots and a stale result survives a file edit. Needs a one-line source fix + follow-up issue — deliberately NOT pinned by a test here |
+//! | Search cache invalidation on file change (#51 root-hash) | FIXED by the #51 follow-up: the `Search` handler now registers the project-root input hashes like every other project-wide arm — [new] `search_invalidation_cycle_reflects_file_edits_over_ipc` (real-IPC search → edit → Notify → re-query cycle, plus the in-process pins `test_daemon_search_cache_invalidated_on_notify` and its Tree/Context/Structure/warmed-file-structure siblings in `daemon_impl::tests`) |
 //!
 //! ## Issue #66 — CLI command routing / daemon reuse
 //!
@@ -521,6 +521,133 @@ async fn repeat_search_hits_cache_and_different_patterns_do_not_cross_contaminat
         "the betafn query must only surface betafn — a cached slot for a \
          different pattern must never leak in, got {other_str}"
     );
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+}
+
+/// Issue #51 follow-up (W5b coverage audit): the full search invalidation
+/// cycle over the real IPC transport — search → edit the file → Notify →
+/// re-query. The pre-fix `Search` handler cached with an EMPTY dependency
+/// list, so Notify could never reach the slot and the stale result survived
+/// the edit forever (the [gap] row in the coverage matrix above documented
+/// exactly this before the fix). Mirrors the #51 test shape
+/// (`test_daemon_calls_cache_invalidated_on_notify`) at the wire level.
+///
+/// CONTROL (documented, not pinned): search registers the PROJECT ROOT's
+/// input hashes — a search scans every file, so no single-file dependency
+/// can describe it. At that granularity ANY file edit drops ALL project-wide
+/// slots for the project (including search slots for unrelated patterns);
+/// the cache cannot distinguish an "unrelated" edit, by design — the same
+/// conservative-never-stale tradeoff every #51 project-wide arm made. The
+/// file-scoped no-over-invalidation control stays pinned by
+/// `test_daemon_notify_canonical_path_control_and_no_over_invalidation`.
+#[tokio::test]
+async fn search_invalidation_cycle_reflects_file_edits_over_ipc() {
+    let temp = project_dir("dc-search-inval-");
+    let project = temp.path().canonicalize().unwrap();
+    // Two files whose contents share no tokens, so a removed token cannot
+    // legitimately appear in any fresh result set.
+    let search_a = project.join("search_a.py");
+    std::fs::write(&search_a, "def alphafn():\n    return 1\n").expect("write search_a.py");
+    std::fs::write(project.join("search_b.py"), "def betafn():\n    return 2\n")
+        .expect("write search_b.py");
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    let search = |pattern: &'static str| {
+        let project = project.clone();
+        async move {
+            send_command(
+                &project,
+                &DaemonCommand::Search {
+                    pattern: pattern.to_string(),
+                    max_results: Some(10),
+                },
+            )
+            .await
+        }
+    };
+
+    // 1. Populate the slot (miss) and prove it is served from cache (hit,
+    //    identical payload) BEFORE the edit.
+    let first = match search("alphafn").await.expect("first search") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("first search must return a Result, got {other:?}"),
+    };
+    let repeat = match search("alphafn").await.expect("repeat search") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("repeat search must return a Result, got {other:?}"),
+    };
+    assert_eq!(
+        serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&repeat).unwrap(),
+        "precondition: the repeat search must be a cache hit"
+    );
+
+    // 2. Edit the file: the token disappears from the project entirely.
+    std::fs::write(&search_a, "def gammafn():\n    return 1\n").expect("edit search_a.py");
+
+    // 3. Notify over IPC.
+    let notify = send_command(
+        &project,
+        &DaemonCommand::Notify {
+            file: search_a.clone(),
+        },
+    )
+    .await
+    .expect("notify round-trip");
+    match notify {
+        DaemonResponse::NotifyResponse { status, .. } => assert_eq!(status, "ok"),
+        other => panic!("expected NotifyResponse, got {other:?}"),
+    }
+
+    // 4. Re-query the SAME pattern — must be recomputed and must not
+    //    surface the removed token (pre-fix: stale cached HIT).
+    let after = match search("alphafn").await.expect("post-notify search") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("post-notify search must return a Result, got {other:?}"),
+    };
+    let after_str = serde_json::to_string(&after).unwrap();
+    assert!(
+        !after_str.contains("alphafn"),
+        "after Notify the re-queried search must not surface the removed \
+         token — a stale cached result was served (issue #51 follow-up): \
+         {after_str}"
+    );
+
+    // 5. The renamed token must be findable (fresh-compute sanity).
+    let renamed = match search("gammafn").await.expect("renamed-token search") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("renamed-token search must return a Result, got {other:?}"),
+    };
+    let renamed_str = serde_json::to_string(&renamed).unwrap();
+    assert!(
+        renamed_str.contains("gammafn") && !renamed_str.contains("alphafn"),
+        "the renamed token must be findable after the edit + Notify, got \
+         {renamed_str}"
+    );
+
+    // 6. The cycle must be externally observable: at least one invalidation
+    //    moved the counter.
+    let status = send_command(&project, &DaemonCommand::Status { session: None })
+        .await
+        .expect("status round-trip");
+    match status {
+        DaemonResponse::FullStatus { salsa_stats, .. } => assert!(
+            salsa_stats.invalidations >= 1,
+            "the Notify must have invalidated at least one cache entry \
+             (observed through the Status wire response), got {}",
+            salsa_stats.invalidations
+        ),
+        other => panic!("expected FullStatus response, got {:?}", other),
+    }
 
     send_command(&project, &DaemonCommand::Shutdown)
         .await
