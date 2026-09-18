@@ -3,6 +3,13 @@
 //! These tests define expected behavior from spec.md and should FAIL initially
 //! since no implementation exists yet. They drive the implementation.
 //!
+//! Issue #68 (W5b): the `#[ignore = "... not yet implemented"]` placeholders
+//! were audited — commands that exist now have ACTIVE tests, stale designs
+//! were deleted or converted, and every remaining `#[ignore]` carries an
+//! accurate, current reason. The full issue-#65–#68 coverage matrix (which
+//! contract lives in which test, and which gaps are documented rather than
+//! pinned) is in the doc comment of `daemon_contract_coverage_test.rs`.
+//!
 //! Test categories:
 //! 1. Unit Tests - Types & Serialization
 //! 2. Daemon Lifecycle Tests
@@ -501,13 +508,23 @@ mod unit_types {
 
 // =============================================================================
 // 2. Daemon Lifecycle Tests (CLI integration)
+//
+// Issue #68: the "not yet implemented" placeholders that used to live here
+// were audited. Commands that exist now have ACTIVE tests below; stale
+// designs were deleted and their contracts re-homed (mapping in the
+// coverage matrix at the top of daemon_contract_coverage_test.rs):
+//   - start-creates-socket / start-creates-pid-file / start-already-running
+//     → folded into `daemon_end_to_end_start_status_query_stop` below
+//   - status-returns-uptime / status-json-output
+//     → in-process FullStatus contract tests in
+//       daemon_contract_coverage_test.rs (`search_stats_are_visible_through_
+//       the_status_response` and friends)
 // =============================================================================
 
 mod daemon_lifecycle {
     use super::*;
 
     #[test]
-    #[ignore = "daemon start command not yet implemented"]
     fn test_daemon_start_help() {
         let mut cmd = tldr_cmd();
         cmd.args(["daemon", "start", "--help"])
@@ -518,70 +535,6 @@ mod daemon_lifecycle {
     }
 
     #[test]
-    #[ignore = "daemon start command not yet implemented"]
-    fn test_daemon_start_creates_socket() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Start daemon in foreground mode with timeout
-        let mut cmd = tldr_assert_cmd();
-        cmd.args(["daemon", "start", "--project", project_path, "--foreground"])
-            .timeout(Duration::from_secs(2));
-
-        let output = cmd.output();
-
-        // Verify socket path is mentioned in output
-        if let Ok(output) = output {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                stdout.contains(".sock") || stdout.contains("socket"),
-                "Expected socket path in output"
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "daemon start command not yet implemented"]
-    fn test_daemon_start_creates_pid_file() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Start daemon
-        let mut cmd = tldr_cmd();
-        cmd.args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("pid").or(predicate::str::contains("PID")));
-
-        // Stop daemon (cleanup)
-        cleanup_daemon(project_path);
-    }
-
-    #[test]
-    #[ignore = "daemon start command not yet implemented"]
-    fn test_daemon_start_already_running_error() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Start first daemon
-        let mut cmd1 = tldr_cmd();
-        cmd1.args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Try to start second daemon - should fail
-        let mut cmd2 = tldr_cmd();
-        cmd2.args(["daemon", "start", "--project", project_path])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("already running"));
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
-
-    #[test]
-    #[ignore = "daemon stop command not yet implemented"]
     fn test_daemon_stop_help() {
         let mut cmd = tldr_cmd();
         cmd.args(["daemon", "stop", "--help"])
@@ -591,29 +544,186 @@ mod daemon_lifecycle {
     }
 
     #[test]
-    #[ignore = "daemon stop command not yet implemented"]
-    fn test_daemon_stop_removes_socket() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Start daemon
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Stop daemon
-        let mut stop_cmd = tldr_cmd();
-        stop_cmd
-            .args(["daemon", "stop", "--project", project_path])
+    fn test_daemon_status_help() {
+        let mut cmd = tldr_cmd();
+        cmd.args(["daemon", "status", "--help"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("stopped"));
+            .stdout(predicate::str::contains("--project"))
+            .stdout(predicate::str::contains("--session"));
+    }
+
+    /// Scope guard: `daemon stop --project <fixture>` on drop (issue-#83
+    /// pattern), so the spawned daemon never outlives the test even when an
+    /// assertion fails (AGENTS.md daemon hygiene).
+    struct DaemonStopGuard {
+        project: PathBuf,
+        registry_dir: PathBuf,
+        active_dir: PathBuf,
+    }
+
+    impl DaemonStopGuard {
+        /// Spawn the daemon for `project` with the registry + discovery
+        /// files redirected into per-test tempdirs (the `TLDR_DAEMON_*
+        /// _DIR` isolation hooks), returning the guard.
+        fn start(project: &PathBuf, registry_dir: &PathBuf, active_dir: &PathBuf) -> Self {
+            let mut start_cmd = tldr_assert_cmd();
+            start_cmd
+                .args(["daemon", "start", "--project"])
+                .arg(project)
+                .env("TLDR_DAEMON_REGISTRY_DIR", registry_dir)
+                .env("TLDR_DAEMON_ACTIVE_DIR", active_dir)
+                .timeout(Duration::from_secs(30))
+                .assert()
+                .success();
+            Self {
+                project: project.clone(),
+                registry_dir: registry_dir.clone(),
+                active_dir: active_dir.clone(),
+            }
+        }
+
+        fn run_cli(&self, args: &[&str]) -> AssertCommand {
+            let mut cmd = tldr_assert_cmd();
+            cmd.args(args)
+                .env("TLDR_DAEMON_REGISTRY_DIR", &self.registry_dir)
+                .env("TLDR_DAEMON_ACTIVE_DIR", &self.active_dir)
+                .timeout(Duration::from_secs(30));
+            cmd
+        }
+
+        /// Run a CLI command and return its stdout (env-isolated).
+        fn run_cli_stdout(&self, args: &[&str]) -> String {
+            let output = self.run_cli(args).output().unwrap();
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        }
+    }
+
+    impl Drop for DaemonStopGuard {
+        fn drop(&mut self) {
+            let _ = tldr_assert_cmd()
+                .args(["daemon", "stop", "--project"])
+                .arg(&self.project)
+                .env("TLDR_DAEMON_REGISTRY_DIR", &self.registry_dir)
+                .env("TLDR_DAEMON_ACTIVE_DIR", &self.active_dir)
+                .timeout(Duration::from_secs(30))
+                .output();
+        }
+    }
+
+    /// The full user-facing lifecycle through the REAL binary, with env
+    /// isolation and a drop stop-guard: start (background, JSON reports
+    /// pid + socket) → status running → double start rejected → query ping
+    /// → query of an unknown command fails loudly → query track round-trip
+    /// → stop → status not_running.
+    ///
+    /// Converts the ignored placeholders `test_daemon_start_creates_pid_file`,
+    /// `test_daemon_start_already_running_error`, `test_daemon_query_ping`,
+    /// `test_daemon_unknown_command` and `test_daemon_track_hook_activity`,
+    /// whose "not yet implemented" reasons expired (issue #68).
+    #[test]
+    fn daemon_end_to_end_start_status_query_stop() {
+        let temp = TempDir::new().unwrap();
+        let project_path = temp.path().to_str().unwrap();
+        let test_file = temp.path().join("test.py");
+        fs::write(&test_file, "def foo(): pass").unwrap();
+
+        let registry_dir = TempDir::new().unwrap();
+        let active_dir = TempDir::new().unwrap();
+
+        // 1. daemon start — background; JSON output reports pid + socket.
+        let guard = DaemonStopGuard::start(
+            &temp.path().to_path_buf(),
+            &registry_dir.path().to_path_buf(),
+            &active_dir.path().to_path_buf(),
+        );
+
+        // 2. daemon status — running.
+        let status_out = guard.run_cli_stdout(&["daemon", "status", "--project", project_path]);
+        assert!(
+            status_out.contains("running") && !status_out.contains("not_running"),
+            "status must report a running daemon after start, got: {status_out}"
+        );
+
+        // 3. double start must fail with an explicit already-running error.
+        let mut second = tldr_assert_cmd();
+        second
+            .args(["daemon", "start", "--project", project_path])
+            .env("TLDR_DAEMON_REGISTRY_DIR", registry_dir.path())
+            .env("TLDR_DAEMON_ACTIVE_DIR", active_dir.path())
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("already running"));
+
+        // 4. query ping round-trip.
+        let ping_out =
+            guard.run_cli_stdout(&["daemon", "query", "ping", "--project", project_path]);
+        assert!(
+            ping_out.contains("pong") || ping_out.contains("ok"),
+            "query ping must round-trip, got: {ping_out}"
+        );
+
+        // 5. an unknown query command must fail loudly, not succeed silently.
+        guard
+            .run_cli(&[
+                "daemon",
+                "query",
+                "nonexistent_command",
+                "--project",
+                project_path,
+            ])
+            .assert()
+            .failure();
+
+        // 6. query track round-trip (hook stats are served by the daemon).
+        let track_out = guard.run_cli_stdout(&[
+            "daemon",
+            "query",
+            "track",
+            "--project",
+            project_path,
+            "--json",
+            r#"{"hook": "e2e-hook", "success": true}"#,
+        ]);
+        assert!(
+            track_out.contains("total_invocations"),
+            "query track must return hook stats, got: {track_out}"
+        );
+
+        // 7. explicit stop.
+        guard
+            .run_cli(&["daemon", "stop", "--project", project_path])
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains("stopped").or(predicate::str::contains("not running")),
+            );
+
+        // 8. status now reports not_running (stable JSON field, not prose).
+        guard
+            .run_cli(&["daemon", "status", "--project", project_path])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("not_running"));
     }
 
     #[test]
-    #[ignore = "daemon stop command not yet implemented"]
+    fn test_daemon_status_not_running() {
+        let temp = TempDir::new().unwrap();
+        let project_path = temp.path().to_str().unwrap();
+
+        let mut cmd = tldr_cmd();
+        cmd.args(["daemon", "status", "--project", project_path])
+            .assert()
+            .success()
+            // Default output format is JSON; `not_running` is the stable
+            // status field (the prose "Daemon not running" only exists in
+            // text mode).
+            .stdout(predicate::str::contains("not_running"));
+    }
+
+    #[test]
     fn test_daemon_stop_not_running() {
         let temp = TempDir::new().unwrap();
         let project_path = temp.path().to_str().unwrap();
@@ -625,101 +735,22 @@ mod daemon_lifecycle {
             .success()
             .stdout(predicate::str::contains("not running"));
     }
-
-    #[test]
-    #[ignore = "daemon status command not yet implemented"]
-    fn test_daemon_status_help() {
-        let mut cmd = tldr_cmd();
-        cmd.args(["daemon", "status", "--help"])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("--project"))
-            .stdout(predicate::str::contains("--session"));
-    }
-
-    #[test]
-    #[ignore = "daemon status command not yet implemented"]
-    fn test_daemon_status_returns_uptime() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Start daemon
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Wait a bit
-        std::thread::sleep(Duration::from_millis(500));
-
-        // Check status
-        let mut status_cmd = tldr_cmd();
-        status_cmd
-            .args(["daemon", "status", "--project", project_path])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("uptime"));
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
-
-    #[test]
-    #[ignore = "daemon status command not yet implemented"]
-    fn test_daemon_status_not_running() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        let mut cmd = tldr_cmd();
-        cmd.args(["daemon", "status", "--project", project_path])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("not running"));
-    }
-
-    #[test]
-    #[ignore = "daemon status command not yet implemented"]
-    fn test_daemon_status_json_output() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Start daemon
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Get status in JSON format (default format is json)
-        let mut status_cmd = tldr_cmd();
-        let output = status_cmd
-            .args(["daemon", "status", "--project", project_path])
-            .output()
-            .unwrap();
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // Verify JSON structure
-        let status: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON output");
-        assert!(status.get("status").is_some());
-        assert!(status.get("uptime").is_some());
-        assert!(status.get("files").is_some());
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
 }
 
 // =============================================================================
 // 3. IPC Protocol Tests
+//
+// Issue #68 audit: the real query/notify round-trip contracts moved to
+// `daemon_end_to_end_start_status_query_stop` (lifecycle module) and to the
+// in-process suite in daemon_contract_coverage_test.rs (notify dirty-file /
+// reindex-threshold contracts are pinned by `test_daemon_handle_notify` and
+// `test_daemon_handle_notify_threshold` in daemon_impl's lib tests).
 // =============================================================================
 
 mod ipc_protocol {
     use super::*;
 
     #[test]
-    #[ignore = "daemon query command not yet implemented"]
     fn test_daemon_query_help() {
         let mut cmd = tldr_cmd();
         cmd.args(["daemon", "query", "--help"])
@@ -730,71 +761,6 @@ mod ipc_protocol {
     }
 
     #[test]
-    #[ignore = "daemon query command not yet implemented"]
-    fn test_daemon_query_ping() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Start daemon
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Send ping query
-        let mut query_cmd = tldr_cmd();
-        query_cmd
-            .args(["daemon", "query", "ping", "--project", project_path])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("pong").or(predicate::str::contains("ok")));
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
-
-    #[test]
-    #[ignore = "daemon query command not yet implemented"]
-    fn test_daemon_query_roundtrip() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Create test file
-        fs::write(temp.path().join("test.py"), "def foo(): pass").unwrap();
-
-        // Start daemon
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Query structure
-        let mut query_cmd = tldr_cmd();
-        let output = query_cmd
-            .args([
-                "daemon",
-                "query",
-                "structure",
-                "--project",
-                project_path,
-                "--json",
-                &format!(r#"{{"path": "{}"}}"#, temp.path().join("test.py").display()),
-            ])
-            .output()
-            .unwrap();
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let result: serde_json::Value = serde_json::from_str(&stdout).expect("Valid JSON response");
-        assert!(result.get("status").is_some());
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
-
-    #[test]
-    #[ignore = "daemon notify command not yet implemented"]
     fn test_daemon_notify_help() {
         let mut cmd = tldr_cmd();
         cmd.args(["daemon", "notify", "--help"])
@@ -804,88 +770,6 @@ mod ipc_protocol {
     }
 
     #[test]
-    #[ignore = "daemon notify command not yet implemented"]
-    fn test_daemon_notify_tracks_dirty_files() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Create test file
-        let test_file = temp.path().join("test.py");
-        fs::write(&test_file, "def foo(): pass").unwrap();
-
-        // Start daemon
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Notify about file change
-        let mut notify_cmd = tldr_cmd();
-        notify_cmd
-            .args([
-                "daemon",
-                "notify",
-                test_file.to_str().unwrap(),
-                "--project",
-                project_path,
-            ])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("dirty_count").or(predicate::str::contains("1/20")));
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
-
-    #[test]
-    #[ignore = "daemon notify command not yet implemented"]
-    fn test_daemon_notify_triggers_reindex_at_threshold() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Start daemon
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Notify about multiple file changes (threshold is 20)
-        for i in 0..21 {
-            let test_file = temp.path().join(format!("test{}.py", i));
-            fs::write(&test_file, format!("def foo{}(): pass", i)).unwrap();
-
-            let mut notify_cmd = tldr_cmd();
-            let output = notify_cmd
-                .args([
-                    "daemon",
-                    "notify",
-                    test_file.to_str().unwrap(),
-                    "--project",
-                    project_path,
-                ])
-                .output()
-                .unwrap();
-
-            // Check if reindex was triggered on the 20th notification
-            if i == 20 {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                assert!(
-                    stdout.contains("reindex_triggered")
-                        || stdout.contains("Reindex")
-                        || stdout.contains("20/20"),
-                    "Expected reindex to be triggered"
-                );
-            }
-        }
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
-
-    #[test]
-    #[ignore = "daemon notify command not yet implemented"]
     fn test_daemon_notify_silent_when_not_running() {
         let temp = TempDir::new().unwrap();
         let test_file = temp.path().join("test.py");
@@ -936,50 +820,15 @@ mod cache_tests {
             );
     }
 
-    #[test]
-    #[ignore = "cache stats command not yet implemented"]
-    fn test_cache_stats_after_queries() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Create test files
-        fs::write(temp.path().join("test.py"), "def foo(): pass").unwrap();
-
-        // Start daemon and make some queries
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Make a few queries to populate cache
-        for _ in 0..5 {
-            let mut query_cmd = tldr_cmd();
-            query_cmd
-                .args([
-                    "daemon",
-                    "query",
-                    "structure",
-                    "--project",
-                    project_path,
-                    "--json",
-                    &format!(r#"{{"path": "{}"}}"#, temp.path().join("test.py").display()),
-                ])
-                .output()
-                .ok();
-        }
-
-        // Check cache stats
-        let mut stats_cmd = tldr_cmd();
-        stats_cmd
-            .args(["cache", "stats", "--project", project_path])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("hits").or(predicate::str::contains("misses")));
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
+    // Issue #68 audit: the ignored `test_cache_stats_after_queries` and
+    // `test_cache_invalidation_on_file_change` placeholders were deleted.
+    // Their stale designs asserted that the CLI `cache stats` / live-daemon
+    // state reflect invalidations immediately, but the counters only reach
+    // disk on shutdown. The real invalidation contracts are pinned
+    // in-process: `test_daemon_calls_cache_invalidated_on_notify`,
+    // `test_daemon_extract_cache_invalidation` (daemon_impl lib tests) and
+    // `notify_invalidation_is_visible_through_the_status_response`
+    // (daemon_contract_coverage_test.rs).
 
     #[test]
     fn test_cache_clear_help() {
@@ -1033,65 +882,11 @@ mod cache_tests {
             .stdout(predicate::str::contains("No cache").or(predicate::str::contains("0")));
     }
 
-    #[test]
-    #[ignore = "cache invalidation not yet implemented"]
-    fn test_cache_invalidation_on_file_change() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-        let test_file = temp.path().join("test.py");
-
-        // Create initial file
-        fs::write(&test_file, "def foo(): pass").unwrap();
-
-        // Start daemon
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Query to populate cache
-        let mut query1 = tldr_cmd();
-        query1
-            .args([
-                "daemon",
-                "query",
-                "structure",
-                "--project",
-                project_path,
-                "--json",
-                &format!(r#"{{"path": "{}"}}"#, test_file.display()),
-            ])
-            .output()
-            .ok();
-
-        // Modify file
-        fs::write(&test_file, "def foo(): return 1\ndef bar(): pass").unwrap();
-
-        // Notify daemon
-        let mut notify_cmd = tldr_cmd();
-        notify_cmd
-            .args([
-                "daemon",
-                "notify",
-                test_file.to_str().unwrap(),
-                "--project",
-                project_path,
-            ])
-            .assert()
-            .success();
-
-        // Check stats for invalidation
-        let mut stats_cmd = tldr_cmd();
-        stats_cmd
-            .args(["cache", "stats", "--project", project_path])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("invalidations"));
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
+    // Issue #68 audit: the ignored `test_cache_invalidation_on_file_change`
+    // placeholder was deleted — the CLI-level design it sketched cannot
+    // observe live-daemon invalidations (counters persist only at
+    // shutdown). The contract lives in-process; see the note above
+    // `test_cache_clear_help`.
 
     #[test]
     fn test_cache_stats_json_output() {
@@ -1119,13 +914,20 @@ mod cache_tests {
 
 // =============================================================================
 // 5. Warm Command Tests
+//
+// Issue #68: all five foreground `warm` placeholders are now ACTIVE — the
+// command exists and the assertions match its current JSON contract.
+// `test_warm_background_spawns_task` was DELETED: `warm --background` now
+// starts a real detached daemon (daemon-warm-v2) and the placeholder's
+// sleep-then-assert design was both flaky and non-hermetic; the
+// daemon-backed warm contract is pinned in-process by
+// `test_daemon_warm_wires_caches` (daemon_impl lib tests).
 // =============================================================================
 
 mod warm_tests {
     use super::*;
 
     #[test]
-    #[ignore = "warm command not yet implemented"]
     fn test_warm_help() {
         let mut cmd = tldr_cmd();
         cmd.args(["warm", "--help"])
@@ -1136,7 +938,6 @@ mod warm_tests {
     }
 
     #[test]
-    #[ignore = "warm command not yet implemented"]
     fn test_warm_foreground_builds_cache() {
         let temp = TempDir::new().unwrap();
 
@@ -1161,37 +962,6 @@ mod warm_tests {
     }
 
     #[test]
-    #[ignore = "warm command not yet implemented"]
-    fn test_warm_background_spawns_task() {
-        let temp = TempDir::new().unwrap();
-        fs::write(temp.path().join("main.py"), "def main(): pass").unwrap();
-
-        let mut cmd = tldr_cmd();
-        cmd.args([
-            "warm",
-            temp.path().to_str().unwrap(),
-            "--background",
-            "--lang",
-            "python",
-        ])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("background"));
-
-        // Wait a bit for background process
-        std::thread::sleep(Duration::from_secs(2));
-
-        // Check if cache was eventually created
-        let cache_file = temp.path().join(".tldr/cache/call_graph.json");
-        // Note: This may be flaky; in real implementation we might check differently
-        assert!(
-            cache_file.exists(),
-            "Background warm should eventually create cache"
-        );
-    }
-
-    #[test]
-    #[ignore = "warm command not yet implemented"]
     fn test_warm_json_output() {
         let temp = TempDir::new().unwrap();
         fs::write(temp.path().join("main.py"), "def main(): pass").unwrap();
@@ -1217,7 +987,6 @@ mod warm_tests {
     }
 
     #[test]
-    #[ignore = "warm command not yet implemented"]
     fn test_warm_auto_detect_languages() {
         let temp = TempDir::new().unwrap();
 
@@ -1233,7 +1002,6 @@ mod warm_tests {
     }
 
     #[test]
-    #[ignore = "warm command not yet implemented"]
     fn test_warm_creates_tldrignore() {
         let temp = TempDir::new().unwrap();
         fs::write(temp.path().join("main.py"), "def main(): pass").unwrap();
@@ -1267,8 +1035,13 @@ mod stats_tests {
     // corrupt or lose the user's real stats/backup. Serialize them.
     static STATS_FILE_LOCK: Mutex<()> = Mutex::new(());
 
+    // Issue #68: `stats` exists, so the help probe is ACTIVE. The four
+    // file-touching tests below keep `#[ignore]` with ACCURATE current
+    // reasons: they read/rewrite the real `~/.tldr/stats.jsonl`, which is
+    // unhermetic (results depend on the invoking user's stats) — they need
+    // a stats-path env isolation hook before they can run in CI.
+
     #[test]
-    #[ignore = "stats command not yet implemented"]
     fn test_stats_help() {
         let mut cmd = tldr_cmd();
         cmd.args(["stats", "--help"])
@@ -1278,7 +1051,8 @@ mod stats_tests {
     }
 
     #[test]
-    #[ignore = "stats command not yet implemented"]
+    #[ignore = "reads the real ~/.tldr/stats.jsonl — assertions depend on the \
+                invoking user's stats; needs a stats-path env isolation hook"]
     fn test_stats_empty() {
         // Use a temporary directory to avoid affecting real stats
         let temp = TempDir::new().unwrap();
@@ -1296,7 +1070,9 @@ mod stats_tests {
     }
 
     #[test]
-    #[ignore = "stats command not yet implemented"]
+    #[ignore = "backups and rewrites the real ~/.tldr/stats.jsonl — unhermetic \
+                under concurrency with real user data; needs a stats-path \
+                env isolation hook"]
     fn test_stats_formats_token_savings() {
         let _guard = STATS_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Create a test stats file
@@ -1332,7 +1108,9 @@ mod stats_tests {
     }
 
     #[test]
-    #[ignore = "stats command not yet implemented"]
+    #[ignore = "backups and rewrites the real ~/.tldr/stats.jsonl — unhermetic \
+                under concurrency with real user data; needs a stats-path \
+                env isolation hook"]
     fn test_stats_json_output() {
         let _guard = STATS_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tldr_dir = home_dir().join(".tldr");
@@ -1372,7 +1150,9 @@ mod stats_tests {
     }
 
     #[test]
-    #[ignore = "stats command not yet implemented"]
+    #[ignore = "backups and rewrites the real ~/.tldr/stats.jsonl — unhermetic \
+                under concurrency with real user data; needs a stats-path \
+                env isolation hook"]
     fn test_stats_text_output() {
         let _guard = STATS_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tldr_dir = home_dir().join(".tldr");
@@ -1410,216 +1190,45 @@ mod stats_tests {
 
 // =============================================================================
 // 7. Edge Case Tests
+//
+// Issue #68 audit of this module:
+//   - `test_daemon_query_without_running_daemon_reports_clear_error`
+//     (was `test_daemon_connection_timeout`) is now ACTIVE: without a
+//     daemon the query fails immediately with an explicit "Daemon not
+//     running" error instead of hanging.
+//   - DELETED `test_stale_pid_file_recovery` / `test_stale_socket_cleanup` /
+//     `test_concurrent_daemon_start_fails` / `test_permission_denied_socket`:
+//     stale designs (dead asserts or platform-specific junk). Their
+//     contracts are covered where they actually live — stale-socket and
+//     double-bind semantics in val006_daemon_startup_race_test.rs, PID
+//     staleness/kill-guard in pid.rs lib tests, concurrent registration in
+//     val003_daemon_registry_test.rs.
+//   - DELETED `test_daemon_unknown_command` (folded into the e2e lifecycle
+//     test), `test_daemon_graceful_shutdown_persists_stats` and
+//     `test_daemon_idle_timeout` (converted to in-process tests in
+//     daemon_contract_coverage_test.rs).
 // =============================================================================
 
 mod edge_cases {
     use super::*;
 
     #[test]
-    #[ignore = "stale PID recovery not yet implemented"]
-    fn test_stale_pid_file_recovery() {
+    fn test_daemon_query_without_running_daemon_reports_clear_error() {
         let temp = TempDir::new().unwrap();
         let project_path = temp.path().to_str().unwrap();
 
-        // Create a stale PID file (process doesn't exist)
-        let _tmp_dir = std::env::temp_dir();
-
-        // Compute the expected PID file path (simplified - actual impl uses MD5)
-        // For test purposes, we'll just create a file that looks stale
-        let _pid_content = "99999999"; // Very unlikely to be a real PID
-
-        // This test verifies the daemon can recover from stale PID files
-        // The actual implementation should:
-        // 1. Try to acquire lock
-        // 2. Check if PID in file is a running process
-        // 3. If not, clean up and proceed
-
-        let mut cmd = tldr_cmd();
-        cmd.args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
-
-    #[test]
-    #[ignore = "stale socket cleanup not yet implemented"]
-    fn test_stale_socket_cleanup() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Create a stale socket file (no process listening)
-        let tmp_dir = std::env::temp_dir();
-        let stale_socket = tmp_dir.join("tldr-stale-test.sock");
-
-        // Create an empty file as a "stale socket"
-        fs::write(&stale_socket, "").ok();
-
-        // Daemon should detect stale socket and clean up
-        let mut cmd = tldr_cmd();
-        cmd.args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Cleanup
-        cleanup_daemon(project_path);
-
-        fs::remove_file(&stale_socket).ok();
-    }
-
-    #[test]
-    #[ignore = "concurrent daemon start not yet implemented"]
-    fn test_concurrent_daemon_start_fails() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Start first daemon
-        let mut cmd1 = tldr_cmd();
-        cmd1.args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Immediately try to start another (race condition test)
-        let mut cmd2 = tldr_cmd();
-        cmd2.args(["daemon", "start", "--project", project_path])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("already running"));
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
-
-    #[test]
-    #[ignore = "permission denied handling not yet implemented"]
-    fn test_permission_denied_socket() {
-        // This test is platform-specific and may need adjustment
-        // It verifies proper error handling when socket creation fails
-
-        #[cfg(unix)]
-        {
-            // Try to create socket in a directory we don't have write access to
-            let mut cmd = tldr_cmd();
-            cmd.args(["daemon", "start", "--project", "/root/nonexistent"])
-                .assert()
-                .failure()
-                .stderr(
-                    predicate::str::contains("Permission denied")
-                        .or(predicate::str::contains("permission")),
-                );
-        }
-    }
-
-    #[test]
-    #[ignore = "connection timeout not yet implemented"]
-    fn test_daemon_connection_timeout() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Query without daemon running should fail gracefully
-        // Using assert_cmd::Command for timeout support
+        // Query without daemon running must fail fast with an explicit,
+        // structured "Daemon not running" error — never hang, never fall
+        // back silently (issue #66 fallback visibility).
         let mut cmd = tldr_assert_cmd();
         cmd.args(["daemon", "query", "ping", "--project", project_path])
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(30))
             .assert()
             .failure()
-            .stderr(
-                predicate::str::contains("not running")
-                    .or(predicate::str::contains("Connection"))
-                    .or(predicate::str::contains("timeout")),
+            .stdout(
+                predicate::str::contains("Daemon not running")
+                    .or(predicate::str::contains("not running")),
             );
-    }
-
-    #[test]
-    #[ignore = "invalid command handling not yet implemented"]
-    fn test_daemon_unknown_command() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Start daemon
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Send unknown command
-        let mut query_cmd = tldr_cmd();
-        query_cmd
-            .args([
-                "daemon",
-                "query",
-                "nonexistent_command",
-                "--project",
-                project_path,
-            ])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("unknown").or(predicate::str::contains("Unknown")));
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
-
-    #[test]
-    #[ignore = "graceful shutdown not yet implemented"]
-    fn test_daemon_graceful_shutdown_persists_stats() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Create test file
-        fs::write(temp.path().join("test.py"), "def foo(): pass").unwrap();
-
-        // Start daemon
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Make some queries to generate stats
-        for _ in 0..3 {
-            let mut query_cmd = tldr_cmd();
-            query_cmd
-                .args(["daemon", "query", "ping", "--project", project_path])
-                .output()
-                .ok();
-        }
-
-        // Stop daemon gracefully
-        let mut stop_cmd = tldr_cmd();
-        stop_cmd
-            .args(["daemon", "stop", "--project", project_path])
-            .assert()
-            .success();
-
-        // Verify stats were persisted
-        let cache_dir = temp.path().join(".tldr/cache");
-        let _stats_file = cache_dir.join("salsa_stats.json");
-
-        // Stats should be written on shutdown
-        // (actual path may vary based on implementation)
-        // This assertion may need adjustment based on actual implementation
-    }
-
-    #[test]
-    #[ignore = "idle timeout not yet implemented"]
-    fn test_daemon_idle_timeout() {
-        // This is a long-running test that verifies idle timeout behavior
-        // In practice, we'd use a short timeout for testing
-
-        let temp = TempDir::new().unwrap();
-        let _project_path = temp.path().to_str().unwrap();
-
-        // Start daemon with a very short idle timeout (would need config support)
-        // For now, this test documents the expected behavior
-
-        // Expected behavior:
-        // 1. Daemon starts
-        // 2. No queries for idle_timeout_secs
-        // 3. Daemon auto-shuts down
-        // 4. Status shows "not running"
     }
 }
 
@@ -1692,87 +1301,15 @@ mod socket_path_tests {
 
 // =============================================================================
 // 9. Hook Stats Tracking Tests
+//
+// Issue #68 audit: `test_daemon_track_hook_activity` was folded into the
+// e2e lifecycle test (step 6, `query track` round-trip) and
+// `test_track_flush_at_threshold` — whose assertion was vacuous (it
+// matched `"flushed": false` too) and checked the wrong invocation index —
+// was converted into the exact-threshold state test
+// `track_flush_persists_stats_exactly_at_the_threshold` in
+// daemon_contract_coverage_test.rs.
 // =============================================================================
-
-mod hook_stats_tests {
-    use super::*;
-
-    #[test]
-    #[ignore = "track command not yet implemented"]
-    fn test_daemon_track_hook_activity() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Start daemon
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Track a hook invocation
-        let mut query_cmd = tldr_cmd();
-        query_cmd
-            .args([
-                "daemon",
-                "query",
-                "track",
-                "--project",
-                project_path,
-                "--json",
-                r#"{"hook": "pre-commit", "success": true, "metrics": {"files_checked": 5}}"#,
-            ])
-            .assert()
-            .success()
-            .stdout(predicate::str::contains("total_invocations"));
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
-
-    #[test]
-    #[ignore = "track flush not yet implemented"]
-    fn test_track_flush_at_threshold() {
-        let temp = TempDir::new().unwrap();
-        let project_path = temp.path().to_str().unwrap();
-
-        // Start daemon
-        let mut start_cmd = tldr_cmd();
-        start_cmd
-            .args(["daemon", "start", "--project", project_path])
-            .assert()
-            .success();
-
-        // Track multiple hook invocations (flush threshold is 5)
-        for i in 0..6 {
-            let mut query_cmd = tldr_cmd();
-            let output = query_cmd
-                .args([
-                    "daemon",
-                    "query",
-                    "track",
-                    "--project",
-                    project_path,
-                    "--json",
-                    r#"{"hook": "test-hook", "success": true}"#,
-                ])
-                .output()
-                .unwrap();
-
-            // Check if flush occurred on 5th invocation
-            if i == 5 {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                assert!(
-                    stdout.contains("flushed") || stdout.contains("true"),
-                    "Expected stats to be flushed"
-                );
-            }
-        }
-
-        // Cleanup
-        cleanup_daemon(project_path);
-    }
-}
 
 // =============================================================================
 // 10. Semantic Search Tests (requires model)
@@ -1782,7 +1319,9 @@ mod semantic_tests {
     use super::*;
 
     #[test]
-    #[ignore = "semantic search not yet implemented"]
+    #[ignore = "requires the feature-gated `semantic` build (cargo test \
+                --features semantic) and a local embedding model; without \
+                the feature the daemon returns a clear feature-gate error"]
     fn test_daemon_semantic_query() {
         let temp = TempDir::new().unwrap();
         let project_path = temp.path().to_str().unwrap();

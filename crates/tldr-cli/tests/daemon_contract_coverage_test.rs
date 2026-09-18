@@ -1,0 +1,775 @@
+//! Daemon contract-coverage suite for issues #65–#68 (test-only ask W5b).
+//!
+//! Everything in this file is an in-process contract test: it binds a real
+//! `IpcListener` on a per-test tempdir and drives `TLDRDaemon::run` on a
+//! spawned task (the issue-#62 `cache clear` precedent). No OS daemon is
+//! spawned, no fixed ports are used, no network is touched, and the task dies
+//! with the test process — daemon hygiene is structural, not best-effort.
+//!
+//! # Coverage matrix (issue → requested contract → test)
+//!
+//! Legend: `[existing]` = test that already covered the contract when this
+//! ask was audited (base `5d7c27c4`); `[new]` = test added here; `[gap]` =
+//! documented feature gap (NOT testable without writing the feature or
+//! pinning a bug as a contract).
+//!
+//! ## Issue #65 — search enrichment cache
+//!
+//! | Requested contract | Where it lives |
+//! |---|---|
+//! | Baseline daemon health (`status` reports running) | [existing] `issue83_daemon_language_test.rs::daemon_serves_rust_language_for_all_five_commands_without_explicit_lang`; [new] `daemon_test.rs::daemon_end_to_end_start_status_query_stop` |
+//! | Repeated search avoids recomputing (daemon `Search` path) | [existing] `daemon_impl::tests::test_daemon_search_caches_result` (hits ≥ 1); [new] `repeat_search_hits_cache_and_different_patterns_do_not_cross_contaminate` (exact miss→hit→fresh-miss deltas + payload identity, via real IPC) |
+//! | Search hit/miss externally observable (not timing) | [new] `search_stats_are_visible_through_the_status_response` (`FullStatus.salsa_stats` over IPC) |
+//! | `tldr search` (enriched/callgraph) uses the daemon | [gap] the CLI enriched search (`commands/search.rs::SmartSearchArgs::run`) computes **client-local** via `enriched_search` and has no daemon route at all — documenting this is the ask ("tests document whether enrichment is daemon-backed, warm-cache-backed, or client-local": it is client-local) |
+//! | Search fallback visible when daemon is down | [gap→pinned at the level that exists] full search has no daemon fallback to expose (client-local by construction); the daemon-adjacent commands DO fail loudly — [new] `daemon_test.rs::test_daemon_query_without_running_daemon_reports_clear_error` |
+//! | Search cache invalidation on file change (#51 root-hash) | [gap] the daemon's `Search` handler inserts its cache entry with an **empty** dependency list (`daemon_impl::daemon.rs`, Search arm), so the #51/#59 notify invalidation never reaches search slots and a stale result survives a file edit. Needs a one-line source fix + follow-up issue — deliberately NOT pinned by a test here |
+//!
+//! ## Issue #66 — CLI command routing / daemon reuse
+//!
+//! | Requested contract | Where it lives |
+//! |---|---|
+//! | CLI commands route through a running daemon | [existing] `issue83_daemon_language_test.rs` (five commands against a REAL daemon); [existing] `daemon_payload_round_trip_test.rs` (the daemon payloads `calls`/`dead` decode — the precondition for reuse) |
+//! | Same-file repeat request hits the cache | [new] `repeat_same_file_extract_hits_cache_while_a_different_file_misses` (exact deltas) |
+//! | Different-file requests don't cross-contaminate | [same new test] file B is a fresh miss and its payload differs from A's |
+//! | Repeated routed commands hit cache | [existing] `daemon_impl::tests::test_daemon_warm_wires_caches` (7 file-scoped commands all hits after warm); [new] the two repeat tests above |
+//! | Source change → cached result invalidated, not stale | [existing] `test_daemon_calls_cache_invalidated_on_notify`, `test_daemon_impact_cache_invalidated_on_notify`, `test_daemon_warmed_call_graph_slot_invalidated_on_notify` (#51) and the four #59 spelling tests (`test_daemon_extract_notify_symlink_path_mismatch`, `test_daemon_extract_notify_relative_path_mismatch`, `test_daemon_notify_deleted_file_invalidates_via_raw_spelling`, `test_daemon_notify_canonical_path_control_and_no_over_invalidation`) |
+//! | Daemon-unavailable fallback is explicit, not silent | [new] `daemon_test.rs::test_daemon_query_without_running_daemon_reports_clear_error`, `test_daemon_status_not_running`, `test_daemon_stop_not_running`, `test_daemon_notify_silent_when_not_running` |
+//! | Daemon hit vs miss distinguishable | [new] `search_stats_are_visible_through_the_status_response` + `repeat_same_file_extract_hits_cache_while_a_different_file_misses` (counters, not timing) |
+//!
+//! ## Issue #67 — logging / observability contract
+//!
+//! | Requested contract | Where it lives |
+//! |---|---|
+//! | Cache hit/miss externally observable for daemon-cached commands | [new] `search_stats_are_visible_through_the_status_response`, `repeat_same_file_extract_hits_cache_while_a_different_file_misses`; [existing] CLI `cache stats` JSON (`test_cache_stats_json_output`) |
+//! | Invalidation externally observable | [existing] `test_daemon_calls_cache_invalidated_on_notify` (asserts `stats().invalidations ≥ 1`); [new] same counter observed through the `Status` wire response |
+//! | Errors are delivered with context, not swallowed; daemon stays live | [new] `error_responses_carry_context_over_ipc_and_daemon_stays_live`; [existing] `test_daemon_extract_nonexistent_file`, `test_daemon_diagnostics_returns_error_with_guidance` |
+//! | Shutdown state observable (explicit stop) | [new] `graceful_shutdown_persists_observability_state_and_releases_the_socket` (converts the ignored `daemon_test.rs::test_daemon_graceful_shutdown_persists_stats` placeholder) |
+//! | Idle shutdown observable in a testable config | [new] `idle_timeout_self_terminates_the_daemon` (converts the ignored `test_daemon_idle_timeout` placeholder) |
+//! | Startup metadata: project/pid/socket persisted | [existing] registry + discovery records (`val003_daemon_registry_test.rs`, `daemon_active.rs` lib tests); [new] e2e start output carries `pid` + `socket` |
+//! | Persistent `.tldr/daemon.log` with per-request traces, slow-request and local-fallback entries; version metadata | [gap] **no persistent log file exists anywhere in the daemon** — the only logging is four `eprintln!` lifecycle events (connection/accept errors, project-gone, idle timeout). Issue #67's premise ("the daemon now writes persistent logs") does not match the code. Needs a structured-logging feature (follow-up), not tests |
+//!
+//! ## Issue #68 — ignored placeholder cleanup (lifecycle)
+//!
+//! Converted to active tests in `daemon_test.rs`: start/stop/status/query/notify/warm/stats
+//! `--help` probes; `status`/`stop` not-running; `notify` without daemon;
+//! query-without-daemon clear error; the five `warm` foreground tests; and one
+//! real-binary end-to-end lifecycle test (`daemon_end_to_end_start_status_query_stop`)
+//! covering start→status→double-start→ping→unknown-cmd→track→stop→status with
+//! `TLDR_DAEMON_REGISTRY_DIR`/`TLDR_DAEMON_ACTIVE_DIR` env isolation and a drop
+//! stop-guard (issue-#83 pattern).
+//!
+//! Converted to in-process tests here: graceful-shutdown persistence (was
+//! `test_daemon_graceful_shutdown_persists_stats`), idle timeout (was
+//! `test_daemon_idle_timeout`), track flush threshold (was
+//! `test_track_flush_at_threshold`, whose old assertion was vacuous), and the
+//! start/stop/query lifecycle core (`ipc_lifecycle_serves_ping_and_shuts_down`).
+//!
+//! Deleted placeholders (stale designs superseded by the above; full mapping in
+//! `daemon_test.rs`): start-creates-socket, start-creates-pid-file,
+//! start-already-running, status-returns-uptime, status-json-output,
+//! query-roundtrip, notify-tracks-dirty-files, notify-reindex-threshold,
+//! cache-stats-after-queries, cache-invalidation-on-file-change, stale-PID,
+//! stale-socket, concurrent-start, permission-denied, unknown-command, track.
+//!
+//! Remaining `#[ignore]`s carry accurate current reasons: the semantic test
+//! needs the feature-gated build, and the three `stats` file tests mutate the
+//! real `~/.tldr/stats.jsonl` (needs a stats-path isolation hook).
+
+#![cfg(unix)]
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use tempfile::TempDir;
+
+use tldr_cli::commands::daemon::{
+    check_socket_alive, send_command, DaemonCommand, DaemonConfig, DaemonResponse, DaemonResult,
+    IpcListener, TLDRDaemon,
+};
+
+/// A deterministic two-file Python project with one call edge (main → helper).
+fn write_python_project(dir: &Path) {
+    std::fs::write(
+        dir.join("main.py"),
+        "from utils import helper\n\n\ndef main():\n    helper()\n",
+    )
+    .expect("write main.py");
+    std::fs::write(dir.join("utils.py"), "def helper():\n    return 'help'\n")
+        .expect("write utils.py");
+}
+
+/// Canonicalized project tempdir: the socket path hashes the canonical
+/// spelling (macOS resolves `/var` → `/private/var`), so daemon and clients
+/// must agree on the same one.
+fn project_dir(prefix: &str) -> TempDir {
+    let temp = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir()
+        .expect("project tempdir");
+    // canonicalize() materializes the same directory at its resolved path;
+    // TempDir keeps ownership of the original, which IS the resolved path on
+    // macOS after canonicalization of a symlink-free /tmp entry.
+    let canonical = temp.path().canonicalize().expect("canonicalize project");
+    // Write a marker through the canonical spelling so it definitely exists.
+    std::fs::write(canonical.join(".project-root"), "daemon-contract-suite").expect("marker");
+    temp
+}
+
+/// Spawn `TLDRDaemon::run` over a freshly bound IPC listener for `project`
+/// and wait (bounded) until the socket is connectable. Mirrors the
+/// issue-#62 in-process precedent: no OS process, nothing to clean up.
+async fn start_in_process_daemon(
+    project: &Path,
+    config: DaemonConfig,
+) -> tokio::task::JoinHandle<DaemonResult<()>> {
+    let listener = IpcListener::bind(project)
+        .await
+        .expect("IPC listener bind on a fresh tempdir must succeed");
+    let daemon = TLDRDaemon::new(project.to_path_buf(), config);
+    let handle = tokio::spawn(async move { Arc::new(daemon).run(listener).await });
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !check_socket_alive(project).await {
+        assert!(
+            Instant::now() < deadline,
+            "in-process daemon socket never became connectable"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    handle
+}
+
+fn default_config() -> DaemonConfig {
+    DaemonConfig::default()
+}
+
+// =============================================================================
+// Issue #68 — lifecycle core, in-process (start = bind+run, stop = Shutdown,
+// query = Ping over the real IPC transport)
+// =============================================================================
+
+/// The daemon serve loop answers a real IPC `Ping`, and after a `Shutdown`
+/// command it exits, releases the socket (no longer connectable) and the
+/// join handle resolves. This is the start/query/stop lifecycle exercised
+/// through the exact `TLDRDaemon::run` path the `tldr-daemon` runner uses.
+#[tokio::test]
+async fn ipc_lifecycle_serves_ping_and_shuts_down() {
+    let temp = project_dir("dc-lifecycle-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    // Query: ping round-trip over the real socket.
+    let pong = send_command(&project, &DaemonCommand::Ping)
+        .await
+        .expect("ping must round-trip while the daemon is running");
+    match pong {
+        DaemonResponse::Status { status, message } => {
+            assert_eq!(status, "ok");
+            assert_eq!(message.as_deref(), Some("pong"));
+        }
+        other => panic!("expected Status response for ping, got {:?}", other),
+    }
+
+    // Stop: the explicit Shutdown command must terminate the loop.
+    let ack = send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown must be acknowledged");
+    match ack {
+        DaemonResponse::Status { status, .. } => assert_eq!(status, "shutting_down"),
+        other => panic!("expected Status response for shutdown, got {:?}", other),
+    }
+
+    let joined = tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon must exit after an explicit Shutdown command");
+    joined
+        .expect("run task must not panic")
+        .expect("run must return Ok on a graceful shutdown");
+
+    assert!(
+        !check_socket_alive(&project).await,
+        "socket must no longer be connectable after shutdown"
+    );
+}
+
+/// Issue #67 / #68: an explicit-stop shutdown persists the observability
+/// state (`salsa_stats.json` with hit/miss/invalidation counters, plus the
+/// full `query_cache.bin`) so the session's cache behaviour survives for
+/// later inspection. Converts the ignored `test_daemon_graceful_shutdown_
+/// persists_stats` placeholder, whose "not yet implemented" reason expired.
+#[tokio::test]
+async fn graceful_shutdown_persists_observability_state_and_releases_the_socket() {
+    let temp = project_dir("dc-shutdown-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    // Generate exactly one observable miss+hit pair before shutting down.
+    for _ in 0..2 {
+        let response = send_command(
+            &project,
+            &DaemonCommand::Search {
+                pattern: "def main".to_string(),
+                max_results: Some(10),
+            },
+        )
+        .await
+        .expect("search round-trip");
+        assert!(
+            matches!(response, DaemonResponse::Result(_)),
+            "search must succeed, got {:?}",
+            response
+        );
+    }
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+
+    let stats_path = project.join(".tldr").join("cache").join("salsa_stats.json");
+    let raw = std::fs::read_to_string(&stats_path).expect(
+        "graceful shutdown must persist salsa_stats.json (the daemon's external \
+         hit/miss/invalidation record)",
+    );
+    let stats: serde_json::Value = serde_json::from_str(&raw).expect("valid stats JSON");
+    assert_eq!(
+        stats["hits"], 1,
+        "second identical search must be a hit: {raw}"
+    );
+    assert_eq!(stats["misses"], 1, "first search must be a miss: {raw}");
+    assert_eq!(
+        stats["invalidations"], 0,
+        "no invalidation happened in this session: {raw}"
+    );
+    assert!(
+        project
+            .join(".tldr")
+            .join("cache")
+            .join("query_cache.bin")
+            .exists(),
+        "the full query cache must also be persisted on shutdown"
+    );
+}
+
+/// Issue #68: the idle-timeout contract, in a testable configuration. With
+/// `idle_timeout_secs: 1` and NO client activity the daemon self-terminates
+/// (no Shutdown command is ever sent). Converts the ignored
+/// `test_daemon_idle_timeout` placeholder, which only documented the
+/// behaviour in comments.
+#[tokio::test]
+async fn idle_timeout_self_terminates_the_daemon() {
+    let temp = project_dir("dc-idle-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+
+    let config = DaemonConfig {
+        idle_timeout_secs: 1,
+        ..DaemonConfig::default()
+    };
+    let handle = start_in_process_daemon(&project, config).await;
+
+    // No client sends anything after readiness. The run loop polls idle
+    // state every ~100ms, so 10s is a generous, non-timing-sensitive bound.
+    let joined = tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon must self-terminate after the idle timeout");
+    joined
+        .expect("run task must not panic")
+        .expect("run must return Ok on an idle self-termination");
+
+    assert!(
+        !check_socket_alive(&project).await,
+        "an idle-shut-down daemon must not accept connections"
+    );
+}
+
+// =============================================================================
+// Issue #67 — counters are externally observable (stable fields, no timing)
+// =============================================================================
+
+/// The `Status` wire response must expose the salsa hit/miss/invalidation
+/// counters (`FullStatus.salsa_stats`) — the external, timing-free signal
+/// issues #65/#66/#67 all rely on to distinguish daemon hit vs miss. Exact
+/// counts pin that each handler performs exactly one cache lookup.
+#[tokio::test]
+async fn search_stats_are_visible_through_the_status_response() {
+    let temp = project_dir("dc-stats-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    // One miss (fresh pattern), one hit (identical repeat), one fresh miss
+    // (different pattern). Exactly three cache lookups, no notify.
+    let run_search = |pattern: &'static str| {
+        let project = project.clone();
+        async move {
+            send_command(
+                &project,
+                &DaemonCommand::Search {
+                    pattern: pattern.to_string(),
+                    max_results: Some(10),
+                },
+            )
+            .await
+        }
+    };
+
+    let first = run_search("def main").await.expect("first search");
+    assert!(matches!(first, DaemonResponse::Result(_)), "got {first:?}");
+    let second = run_search("def main").await.expect("repeat search");
+    assert!(
+        matches!(second, DaemonResponse::Result(_)),
+        "got {second:?}"
+    );
+    let third = run_search("class Nowhere").await.expect("other search");
+    assert!(matches!(third, DaemonResponse::Result(_)), "got {third:?}");
+
+    let status = send_command(&project, &DaemonCommand::Status { session: None })
+        .await
+        .expect("status round-trip");
+    let salsa = match status {
+        DaemonResponse::FullStatus { salsa_stats, .. } => salsa_stats,
+        other => panic!("expected FullStatus response, got {:?}", other),
+    };
+    assert_eq!(
+        (salsa.misses, salsa.hits, salsa.invalidations),
+        (2, 1, 0),
+        "exactly one miss, one repeat hit, one fresh-pattern miss, zero \
+         invalidations — observed through the Status wire response"
+    );
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+}
+
+/// Issue #67: invalidations are visible through the same external counter.
+/// A Notify for a file whose hashes back real cache entries must move
+/// `invalidations` on the `Status` response — the external counterpart of
+/// the in-process #51/#59 invalidation tests.
+#[tokio::test]
+async fn notify_invalidation_is_visible_through_the_status_response() {
+    let temp = project_dir("dc-invalidate-");
+    let project = temp.path().canonicalize().unwrap();
+    let utils = project.join("utils.py");
+    write_python_project(&project);
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    // Populate a file-scoped slot (extract registers this file's input
+    // hashes — the dependency edge invalidation walks).
+    let extract = |file: std::path::PathBuf| {
+        let project = project.clone();
+        async move {
+            send_command(
+                &project,
+                &DaemonCommand::Extract {
+                    file,
+                    session: None,
+                },
+            )
+            .await
+        }
+    };
+    let populated = extract(utils.clone()).await.expect("extract round-trip");
+    assert!(
+        matches!(populated, DaemonResponse::Result(_)),
+        "extract must succeed, got {populated:?}"
+    );
+    let salsa_before = match send_command(&project, &DaemonCommand::Status { session: None })
+        .await
+        .expect("status round-trip")
+    {
+        DaemonResponse::FullStatus { salsa_stats, .. } => salsa_stats,
+        other => panic!("expected FullStatus, got {other:?}"),
+    };
+
+    // File change event for the same file.
+    let notify = send_command(
+        &project,
+        &DaemonCommand::Notify {
+            file: utils.clone(),
+        },
+    )
+    .await
+    .expect("notify round-trip");
+    match notify {
+        DaemonResponse::NotifyResponse {
+            status,
+            dirty_count,
+            ..
+        } => {
+            assert_eq!(status, "ok");
+            assert_eq!(dirty_count, 1);
+        }
+        other => panic!("expected NotifyResponse, got {other:?}"),
+    }
+
+    let salsa_after = match send_command(&project, &DaemonCommand::Status { session: None })
+        .await
+        .expect("status round-trip")
+    {
+        DaemonResponse::FullStatus { salsa_stats, .. } => salsa_stats,
+        other => panic!("expected FullStatus, got {other:?}"),
+    };
+    assert!(
+        salsa_after.invalidations > salsa_before.invalidations,
+        "a notify for a file backing real cache entries must move the \
+         externally visible invalidation counter (before: {}, after: {})",
+        salsa_before.invalidations,
+        salsa_after.invalidations
+    );
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+}
+
+// =============================================================================
+// Issue #65 — daemon `Search` cache contract (miss → hit, slot separation)
+// =============================================================================
+
+/// A repeat search is served from the cache (hit counter moves, payload is
+/// byte-identical) while a different pattern is a fresh miss producing a
+/// different payload — the daemon `Search` reuse contract without any
+/// timing assertion. (The CLI enriched-search path has no daemon route at
+/// all; see the coverage matrix — that gap is documented, not pinned here.)
+#[tokio::test]
+async fn repeat_search_hits_cache_and_different_patterns_do_not_cross_contaminate() {
+    let temp = project_dir("dc-search-");
+    let project = temp.path().canonicalize().unwrap();
+    // Two files whose contents share no tokens, so a match for one pattern
+    // cannot legitimately appear in the other's result set.
+    std::fs::write(
+        project.join("search_a.py"),
+        "def alphafn():\n    return 1\n",
+    )
+    .expect("write search_a.py");
+    std::fs::write(project.join("search_b.py"), "def betafn():\n    return 2\n")
+        .expect("write search_b.py");
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    let search = |pattern: &'static str| {
+        let project = project.clone();
+        async move {
+            send_command(
+                &project,
+                &DaemonCommand::Search {
+                    pattern: pattern.to_string(),
+                    max_results: Some(10),
+                },
+            )
+            .await
+        }
+    };
+
+    let first = match search("alphafn").await.expect("first search") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("first search must return a Result, got {other:?}"),
+    };
+    let repeat = match search("alphafn").await.expect("repeat search") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("repeat search must return a Result, got {other:?}"),
+    };
+    let other = match search("betafn").await.expect("other search") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("other search must return a Result, got {other:?}"),
+    };
+
+    // Repeat is served from the slot: identical payload.
+    assert_eq!(
+        serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&repeat).unwrap(),
+        "the repeat search must be served the cached payload unchanged"
+    );
+    // Different pattern is a genuinely different result — no slot bleeding.
+    assert_ne!(
+        serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&other).unwrap(),
+        "a different pattern must not be served the first pattern's cached \
+         payload"
+    );
+    let first_str = serde_json::to_string(&first).unwrap();
+    let other_str = serde_json::to_string(&other).unwrap();
+    assert!(
+        first_str.contains("alphafn") && !first_str.contains("betafn"),
+        "the alphafn query must only surface alphafn, got {first_str}"
+    );
+    assert!(
+        other_str.contains("betafn") && !other_str.contains("alphafn"),
+        "the betafn query must only surface betafn — a cached slot for a \
+         different pattern must never leak in, got {other_str}"
+    );
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+}
+
+// =============================================================================
+// Issue #66 — same-file reuse vs different-file isolation, via real IPC
+// =============================================================================
+
+/// The file-scoped reuse contract: a repeat request for the SAME file is a
+/// cache hit, while a request for a DIFFERENT file is a fresh miss whose
+/// payload reflects its own content — two files never cross-contaminate.
+/// Counters (exact deltas through the Status response) make this a state
+/// assertion, not a timing one.
+#[tokio::test]
+async fn repeat_same_file_extract_hits_cache_while_a_different_file_misses() {
+    let temp = project_dir("dc-extract-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+    let file_a = project.join("main.py"); // defines main
+    let file_b = project.join("utils.py"); // defines helper
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    let extract = |file: std::path::PathBuf| {
+        let project = project.clone();
+        async move {
+            send_command(
+                &project,
+                &DaemonCommand::Extract {
+                    file,
+                    session: None,
+                },
+            )
+            .await
+        }
+    };
+
+    // 1st request for A: miss. 2nd request for A: hit. 1st request for B:
+    // fresh miss. Exactly three lookups.
+    let a1 = extract(file_a.clone()).await.expect("extract A");
+    let a1 = match a1 {
+        DaemonResponse::Result(v) => v,
+        other => panic!("extract A must succeed, got {other:?}"),
+    };
+    let a2 = extract(file_a.clone()).await.expect("extract A repeat");
+    let a2 = match a2 {
+        DaemonResponse::Result(v) => v,
+        other => panic!("extract A repeat must succeed, got {other:?}"),
+    };
+    let b1 = extract(file_b.clone()).await.expect("extract B");
+    let b1 = match b1 {
+        DaemonResponse::Result(v) => v,
+        other => panic!("extract B must succeed, got {other:?}"),
+    };
+
+    let salsa = match send_command(&project, &DaemonCommand::Status { session: None })
+        .await
+        .expect("status round-trip")
+    {
+        DaemonResponse::FullStatus { salsa_stats, .. } => salsa_stats,
+        other => panic!("expected FullStatus, got {other:?}"),
+    };
+    assert_eq!(
+        (salsa.misses, salsa.hits),
+        (2, 1),
+        "A(miss) + A-repeat(hit) + B(fresh miss) — the same-file repeat must \
+         hit the cache and the different-file request must not"
+    );
+
+    // Payload identity/isolation: the repeat is identical, B differs and
+    // carries B's function, not A's.
+    assert_eq!(
+        serde_json::to_string(&a1).unwrap(),
+        serde_json::to_string(&a2).unwrap(),
+        "the repeated same-file extract must be served the cached payload"
+    );
+    let b_str = serde_json::to_string(&b1).unwrap();
+    assert_ne!(
+        serde_json::to_string(&a1).unwrap(),
+        b_str,
+        "different files must produce different payloads"
+    );
+    assert!(
+        b_str.contains("helper") && !b_str.contains("def main"),
+        "file B's payload must reflect B's content only, got {b_str}"
+    );
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+}
+
+// =============================================================================
+// Issue #67 — errors are delivered with context, not swallowed
+// =============================================================================
+
+/// A request that fails (extract of a nonexistent file) must come back over
+/// the IPC wire as a structured error carrying context (non-empty message,
+/// `status: "error"`), and the daemon must remain live and serving
+/// afterwards — an error is reported, never swallowed into a hung or dead
+/// daemon.
+#[tokio::test]
+async fn error_responses_carry_context_over_ipc_and_daemon_stays_live() {
+    let temp = project_dir("dc-errors-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    let failing = send_command(
+        &project,
+        &DaemonCommand::Extract {
+            file: project.join("does_not_exist.py"),
+            session: None,
+        },
+    )
+    .await
+    .expect("the failing request must still get a response over the wire");
+
+    let error_text = match &failing {
+        DaemonResponse::Error { status, error } => {
+            assert_eq!(status, "error");
+            assert!(
+                !error.is_empty(),
+                "the error response must carry a non-empty context message"
+            );
+            error.clone()
+        }
+        other => panic!("expected a structured Error response, got {other:?}"),
+    };
+    assert!(
+        error_text.contains("does_not_exist"),
+        "the error context must identify the failing request target, got: \
+         {error_text}"
+    );
+
+    // The daemon survived the failure and still serves healthy requests.
+    let alive = send_command(&project, &DaemonCommand::Ping)
+        .await
+        .expect("the daemon must still be serving after a failed request");
+    match alive {
+        DaemonResponse::Status { status, message } => {
+            assert_eq!(status, "ok");
+            assert_eq!(message.as_deref(), Some("pong"));
+        }
+        other => panic!("expected a pong after the error, got {other:?}"),
+    }
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+}
+
+// =============================================================================
+// Issue #68 — hook-stats flush threshold (converts the vacuous
+// `test_track_flush_at_threshold` placeholder into a real state assertion)
+// =============================================================================
+
+/// The 5th tracked hook invocation (`HOOK_FLUSH_THRESHOLD`) must actually
+/// persist the stats files and report `flushed: true`; the 4th must report
+/// `flushed: false`. The old placeholder asserted a string that matched
+/// either way (it also checked the wrong invocation index), so the flush
+/// contract it claimed to cover was unasserted until now.
+#[tokio::test]
+async fn track_flush_persists_stats_exactly_at_the_threshold() {
+    let temp = project_dir("dc-track-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    let track = |n: u64| {
+        let project = project.clone();
+        async move {
+            send_command(
+                &project,
+                &DaemonCommand::Track {
+                    hook: "contract-hook".to_string(),
+                    success: true,
+                    metrics: std::collections::HashMap::from([(
+                        "files_checked".to_string(),
+                        n as f64,
+                    )]),
+                },
+            )
+            .await
+        }
+    };
+
+    let stats_file = project.join(".tldr").join("cache").join("salsa_stats.json");
+    assert!(
+        !stats_file.exists(),
+        "precondition: nothing persisted before the threshold is reached"
+    );
+
+    let mut flushed_flags = Vec::new();
+    for i in 1..=5u64 {
+        let response = track(i).await.expect("track round-trip");
+        match response {
+            DaemonResponse::TrackResponse {
+                hook,
+                total_invocations,
+                flushed,
+                ..
+            } => {
+                assert_eq!(hook, "contract-hook");
+                assert_eq!(total_invocations, i);
+                flushed_flags.push(flushed);
+            }
+            other => panic!("expected TrackResponse, got {other:?}"),
+        }
+    }
+
+    assert_eq!(
+        flushed_flags,
+        vec![false, false, false, false, true],
+        "flush must happen exactly at the 5-invocation threshold"
+    );
+    let raw = std::fs::read_to_string(&stats_file)
+        .expect("the threshold flush must persist salsa_stats.json");
+    let stats: serde_json::Value = serde_json::from_str(&raw).expect("valid stats JSON");
+    assert!(
+        stats.get("hits").is_some() && stats.get("misses").is_some(),
+        "persisted stats must expose the hit/miss counters, got {raw}"
+    );
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+}
