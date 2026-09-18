@@ -318,7 +318,7 @@ fn build_edges(graph: &InheritanceGraph, _project_root: &Path) -> Vec<Inheritanc
                 (BaseResolution::Unresolved, true)
             };
 
-            let edge = if external {
+            let mut edge = if external {
                 if resolution == BaseResolution::Stdlib {
                     InheritanceEdge::stdlib(
                         child_name,
@@ -345,6 +345,14 @@ fn build_edges(graph: &InheritanceGraph, _project_root: &Path) -> Vec<Inheritanc
                     pn.line,
                 )
             };
+
+            // issue-82-inheritance-kinds-v1: preserve the relation kind the
+            // extractor recorded (Extends for class-extension, Implements for
+            // interface implementation, Embeds for Go struct embedding).
+            // Kind-less bases (extractors that do not distinguish kinds)
+            // default to Extends via InheritanceNode::base_kind, matching the
+            // historical behavior.
+            edge.kind = child_node.base_kind(parent_name);
 
             // M5 dedup: (child, parent, parent_file) is the canonical edge
             // identity. Skip if we've already emitted this triple.

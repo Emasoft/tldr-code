@@ -13,7 +13,7 @@ use std::path::Path;
 use tree_sitter::{Node, Tree};
 
 use crate::ast::parser::ParserPool;
-use crate::types::{InheritanceNode, Language};
+use crate::types::{InheritanceKind, InheritanceNode, Language};
 use crate::TldrResult;
 
 /// Extract class and interface definitions from TypeScript source code
@@ -90,19 +90,23 @@ fn extract_class(
         class_node.is_abstract = Some(true);
     }
 
-    // Extract from class_heritage (extends/implements)
+    // Extract from class_heritage (extends/implements).
+    // issue-82-inheritance-kinds-v1: track the relation kind per base so
+    // `implements` interfaces are not collapsed into `extends`.
     let mut bases = Vec::new();
+    let mut base_kinds = Vec::new();
 
     // Find heritage clauses - look for class_heritage node
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == "class_heritage" {
-                extract_heritage_clauses(&child, source, &mut bases);
+                extract_heritage_clauses(&child, source, &mut bases, &mut base_kinds);
             }
         }
     }
 
     class_node.bases = bases;
+    class_node.base_kinds = base_kinds;
 
     Some(class_node)
 }
@@ -124,32 +128,59 @@ fn extract_interface(node: &Node, source: &str, file_path: &Path) -> Option<Inhe
 
     // Extract extends for interfaces
     let mut bases = Vec::new();
+    let mut base_kinds = Vec::new();
 
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             // Interface uses extends_clause for inheritance
             if child.kind() == "extends_type_clause" {
-                extract_type_list(&child, source, &mut bases);
+                extract_type_list(
+                    &child,
+                    source,
+                    &mut bases,
+                    &mut base_kinds,
+                    InheritanceKind::Extends,
+                );
             }
         }
     }
 
     iface_node.bases = bases;
+    iface_node.base_kinds = base_kinds;
 
     Some(iface_node)
 }
 
-fn extract_heritage_clauses(node: &Node, source: &str, bases: &mut Vec<String>) {
+fn extract_heritage_clauses(
+    node: &Node,
+    source: &str,
+    bases: &mut Vec<String>,
+    base_kinds: &mut Vec<InheritanceKind>,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             match child.kind() {
                 "extends_clause" => {
                     // extends SuperClass
-                    extract_type_from_clause(&child, source, bases);
+                    extract_type_from_clause(
+                        &child,
+                        source,
+                        bases,
+                        base_kinds,
+                        InheritanceKind::Extends,
+                    );
                 }
                 "implements_clause" => {
                     // implements Interface1, Interface2
-                    extract_type_list(&child, source, bases);
+                    // issue-82-inheritance-kinds-v1: these are Implements,
+                    // not Extends.
+                    extract_type_list(
+                        &child,
+                        source,
+                        bases,
+                        base_kinds,
+                        InheritanceKind::Implements,
+                    );
                 }
                 _ => {}
             }
@@ -157,21 +188,35 @@ fn extract_heritage_clauses(node: &Node, source: &str, bases: &mut Vec<String>) 
     }
 }
 
-fn extract_type_from_clause(node: &Node, source: &str, bases: &mut Vec<String>) {
+fn extract_type_from_clause(
+    node: &Node,
+    source: &str,
+    bases: &mut Vec<String>,
+    base_kinds: &mut Vec<InheritanceKind>,
+    kind: InheritanceKind,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if let Some(name) = extract_type_name(&child, source) {
                 bases.push(name);
+                base_kinds.push(kind);
             }
         }
     }
 }
 
-fn extract_type_list(node: &Node, source: &str, bases: &mut Vec<String>) {
+fn extract_type_list(
+    node: &Node,
+    source: &str,
+    bases: &mut Vec<String>,
+    base_kinds: &mut Vec<InheritanceKind>,
+    kind: InheritanceKind,
+) {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if let Some(name) = extract_type_name(&child, source) {
                 bases.push(name);
+                base_kinds.push(kind);
             }
         }
     }
@@ -321,5 +366,97 @@ interface Extended extends Base {
         let extended = classes.iter().find(|c| c.name == "Extended").unwrap();
         assert_eq!(extended.interface, Some(true));
         assert!(extended.bases.contains(&"Base".to_string()));
+    }
+
+    // -------------------------------------------------------------------------
+    // Relation kind tests (issue #82): implements vs extends
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_extends_and_implements_base_kinds() {
+        let source = r#"
+class Animal {}
+
+interface Serializable {
+    serialize(): string;
+}
+
+class Cat extends Animal implements Serializable {
+    serialize(): string {
+        return "{}";
+    }
+}
+"#;
+        let classes = parse_and_extract(source);
+        let cat = classes.iter().find(|c| c.name == "Cat").unwrap();
+        assert_eq!(
+            cat.bases,
+            vec!["Animal".to_string(), "Serializable".to_string()]
+        );
+        assert_eq!(
+            cat.base_kinds,
+            vec![InheritanceKind::Extends, InheritanceKind::Implements]
+        );
+        assert_eq!(cat.base_kind("Animal"), InheritanceKind::Extends);
+        assert_eq!(cat.base_kind("Serializable"), InheritanceKind::Implements);
+    }
+
+    #[test]
+    fn test_multiple_implements_base_kinds() {
+        let source = r#"
+interface Serializable {
+    serialize(): string;
+}
+
+interface Walkable {
+    walk(): void;
+}
+
+class Cat extends Animal implements Serializable, Walkable {
+}
+"#;
+        let classes = parse_and_extract(source);
+        let cat = classes.iter().find(|c| c.name == "Cat").unwrap();
+        assert_eq!(
+            cat.base_kinds,
+            vec![
+                InheritanceKind::Extends,
+                InheritanceKind::Implements,
+                InheritanceKind::Implements
+            ]
+        );
+    }
+
+    #[test]
+    fn test_interface_extends_base_kind() {
+        let source = r#"
+interface Base {
+    id: number;
+}
+
+interface Extended extends Base {
+    name: string;
+}
+"#;
+        let classes = parse_and_extract(source);
+        let extended = classes.iter().find(|c| c.name == "Extended").unwrap();
+        assert_eq!(extended.base_kind("Base"), InheritanceKind::Extends);
+        assert_eq!(extended.base_kinds, vec![InheritanceKind::Extends]);
+    }
+
+    #[test]
+    fn test_pure_extends_base_kinds_all_extends() {
+        let source = r#"
+class Animal {}
+
+class Dog extends Animal {
+    speak(): string {
+        return "woof";
+    }
+}
+"#;
+        let classes = parse_and_extract(source);
+        let dog = classes.iter().find(|c| c.name == "Dog").unwrap();
+        assert_eq!(dog.base_kinds, vec![InheritanceKind::Extends]);
     }
 }

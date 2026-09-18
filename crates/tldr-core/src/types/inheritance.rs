@@ -29,6 +29,18 @@ pub struct InheritanceNode {
     pub language: Language,
     /// Base classes/interfaces this class extends
     pub bases: Vec<String>,
+    /// Relation kind for each base in `bases`, by position.
+    ///
+    /// issue-82-inheritance-kinds-v1: `implements` clauses were collapsed
+    /// into `extends` because extractors pushed interface names into this
+    /// kind-less `bases` vec, so every edge defaulted to `Extends`.
+    /// Extractors that distinguish class-extension from interface
+    /// implementation populate `base_kinds` in parallel with `bases`
+    /// (`base_kinds[i]` classifies `bases[i]`). Extractors that do not
+    /// distinguish kinds leave it empty; missing entries default to
+    /// `InheritanceKind::Extends` (see [`InheritanceNode::base_kind`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub base_kinds: Vec<InheritanceKind>,
     /// Whether this is an abstract class (ABC in Python, abstract class in TS)
     /// Note: `abstract` is a reserved keyword in Rust
     #[serde(rename = "abstract")]
@@ -56,6 +68,7 @@ impl InheritanceNode {
             line,
             language,
             bases: Vec::new(),
+            base_kinds: Vec::new(),
             is_abstract: None,
             protocol: None,
             interface: None,
@@ -64,16 +77,39 @@ impl InheritanceNode {
         }
     }
 
-    /// Add a base class
+    /// Add a base class (Extends relation; see `push_base_with_kind` when
+    /// the relation kind is known)
     pub fn with_base(mut self, base: impl Into<String>) -> Self {
         self.bases.push(base.into());
+        self.base_kinds.push(InheritanceKind::Extends);
         self
     }
 
-    /// Add multiple base classes
+    /// Replace the base list (all Extends; callers that know the relation
+    /// kinds should also set `base_kinds`)
     pub fn with_bases(mut self, bases: Vec<String>) -> Self {
+        self.base_kinds = vec![InheritanceKind::Extends; bases.len()];
         self.bases = bases;
         self
+    }
+
+    /// Add a base together with its relation kind, keeping `base_kinds`
+    /// parallel to `bases` (issue #82).
+    pub fn push_base_with_kind(&mut self, base: impl Into<String>, kind: InheritanceKind) {
+        self.bases.push(base.into());
+        self.base_kinds.push(kind);
+    }
+
+    /// Relation kind of `base`: the parallel `base_kinds` entry when the
+    /// extractor populated one, otherwise `Extends` (issue #82: kind-less
+    /// bases must not be reported as anything other than the historical
+    /// default).
+    pub fn base_kind(&self, base: &str) -> InheritanceKind {
+        self.bases
+            .iter()
+            .position(|b| b == base)
+            .and_then(|i| self.base_kinds.get(i).copied())
+            .unwrap_or(InheritanceKind::Extends)
     }
 
     /// Mark as abstract
@@ -452,6 +488,44 @@ mod tests {
         assert_eq!(parsed.name, "UserService");
         assert_eq!(parsed.is_abstract, Some(true));
         assert_eq!(parsed.bases.len(), 2);
+    }
+
+    #[test]
+    fn test_base_kinds_default_to_extends_when_unpopulated() {
+        // issue-82-inheritance-kinds-v1: extractors that do not distinguish
+        // relation kinds leave base_kinds empty; lookups must fall back to
+        // the historical Extends default rather than misreport.
+        let mut node =
+            InheritanceNode::new("Dog", PathBuf::from("dog.ts"), 1, Language::TypeScript);
+        node.bases = vec!["Animal".to_string(), "Serializable".to_string()];
+        assert_eq!(node.base_kinds.len(), 0);
+        assert_eq!(node.base_kind("Animal"), InheritanceKind::Extends);
+        assert_eq!(node.base_kind("Serializable"), InheritanceKind::Extends);
+        assert_eq!(node.base_kind("Unknown"), InheritanceKind::Extends);
+    }
+
+    #[test]
+    fn test_base_kinds_serialization_round_trip() {
+        let mut node =
+            InheritanceNode::new("Cat", PathBuf::from("cat.ts"), 1, Language::TypeScript);
+        node.push_base_with_kind("Animal", InheritanceKind::Extends);
+        node.push_base_with_kind("Serializable", InheritanceKind::Implements);
+
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(json.contains("\"base_kinds\":"));
+        assert!(json.contains("\"implements\""));
+
+        let parsed: InheritanceNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.base_kind("Animal"), InheritanceKind::Extends);
+        assert_eq!(
+            parsed.base_kind("Serializable"),
+            InheritanceKind::Implements
+        );
+
+        // Nodes without kind info keep the old JSON shape (key skipped).
+        let plain = InheritanceNode::new("Dog", PathBuf::from("dog.ts"), 1, Language::TypeScript);
+        let plain_json = serde_json::to_string(&plain).unwrap();
+        assert!(!plain_json.contains("base_kinds"));
     }
 
     #[test]

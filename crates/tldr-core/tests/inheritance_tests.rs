@@ -19,7 +19,7 @@ use tldr_core::inheritance::{
     filter_by_class, format_dot, format_text, get_fuzzy_suggestions, is_stdlib_class, resolve_base,
     InheritanceOptions,
 };
-use tldr_core::types::{InheritanceGraph, InheritanceNode, Language};
+use tldr_core::types::{InheritanceGraph, InheritanceKind, InheritanceNode, Language};
 
 // =============================================================================
 // Test Fixtures
@@ -526,6 +526,173 @@ abstract class Animal {
     let result = extract_inheritance(temp_dir.path(), Some(Language::TypeScript), &options);
 
     assert!(result.is_ok());
+}
+
+// =============================================================================
+// Relation Kind Tests (issue #82): implements must not collapse into extends
+// =============================================================================
+
+#[test]
+fn test_extract_inheritance_typescript_implements_kind_preserved() {
+    let temp_dir = TempDir::new().unwrap();
+    create_test_file(
+        &temp_dir,
+        "test.ts",
+        r#"
+class Animal {}
+
+interface Serializable {
+    serialize(): string;
+}
+
+class Cat extends Animal implements Serializable {
+    serialize(): string {
+        return "{}";
+    }
+}
+"#,
+    );
+
+    let options = InheritanceOptions::default();
+    let report =
+        extract_inheritance(temp_dir.path(), Some(Language::TypeScript), &options).unwrap();
+
+    let to_animal = report
+        .edges
+        .iter()
+        .find(|e| e.child == "Cat" && e.parent == "Animal")
+        .expect("Cat extends Animal edge");
+    assert_eq!(
+        to_animal.kind,
+        InheritanceKind::Extends,
+        "class extension must stay Extends"
+    );
+
+    let to_serializable = report
+        .edges
+        .iter()
+        .find(|e| e.child == "Cat" && e.parent == "Serializable")
+        .expect("Cat implements Serializable edge");
+    assert_eq!(
+        to_serializable.kind,
+        InheritanceKind::Implements,
+        "interface implementation must be Implements, not Extends"
+    );
+
+    // Node-level: base_kinds parallel to bases, per record.
+    let cat = report.nodes.iter().find(|n| n.name == "Cat").unwrap();
+    assert_eq!(
+        cat.bases,
+        vec!["Animal".to_string(), "Serializable".to_string()]
+    );
+    assert_eq!(
+        cat.base_kinds,
+        vec![InheritanceKind::Extends, InheritanceKind::Implements]
+    );
+}
+
+#[test]
+fn test_extract_inheritance_typescript_pure_extends_kinds_unchanged() {
+    // Consumer-level control: a hierarchy with only class-extension keeps
+    // reporting all-Extends edges (no count or kind drift).
+    let temp_dir = TempDir::new().unwrap();
+    create_test_file(
+        &temp_dir,
+        "test.ts",
+        r#"
+class Animal {}
+
+class Dog extends Animal {
+    speak(): string {
+        return "woof";
+    }
+}
+
+class Puppy extends Dog {
+    speak(): string {
+        return "yip";
+    }
+}
+"#,
+    );
+
+    let options = InheritanceOptions::default();
+    let report =
+        extract_inheritance(temp_dir.path(), Some(Language::TypeScript), &options).unwrap();
+
+    assert_eq!(report.edges.len(), 2, "Dog->Animal and Puppy->Dog");
+    for edge in &report.edges {
+        assert_eq!(edge.kind, InheritanceKind::Extends);
+    }
+}
+
+#[test]
+fn test_extract_inheritance_php_implements_kind_preserved() {
+    let temp_dir = TempDir::new().unwrap();
+    create_test_file(
+        &temp_dir,
+        "test.php",
+        r#"<?php
+class Animal {}
+
+interface Serializable {
+    public function serialize();
+}
+
+class Cat extends Animal implements Serializable {
+    public function serialize() { return "{}"; }
+}
+?>"#,
+    );
+
+    let options = InheritanceOptions::default();
+    let report = extract_inheritance(temp_dir.path(), Some(Language::Php), &options).unwrap();
+
+    let to_animal = report
+        .edges
+        .iter()
+        .find(|e| e.child == "Cat" && e.parent == "Animal")
+        .expect("Cat extends Animal edge");
+    assert_eq!(to_animal.kind, InheritanceKind::Extends);
+
+    let to_serializable = report
+        .edges
+        .iter()
+        .find(|e| e.child == "Cat" && e.parent == "Serializable")
+        .expect("Cat implements Serializable edge");
+    assert_eq!(
+        to_serializable.kind,
+        InheritanceKind::Implements,
+        "PHP interface implementation must be Implements, not Extends"
+    );
+
+    let cat = report.nodes.iter().find(|n| n.name == "Cat").unwrap();
+    assert_eq!(
+        cat.base_kinds,
+        vec![InheritanceKind::Extends, InheritanceKind::Implements]
+    );
+}
+
+#[test]
+fn test_extract_inheritance_php_pure_extends_kinds_unchanged() {
+    let temp_dir = TempDir::new().unwrap();
+    create_test_file(
+        &temp_dir,
+        "test.php",
+        r#"<?php
+class Animal {}
+
+class Dog extends Animal {
+    public function bark() {}
+}
+?>"#,
+    );
+
+    let options = InheritanceOptions::default();
+    let report = extract_inheritance(temp_dir.path(), Some(Language::Php), &options).unwrap();
+
+    assert_eq!(report.edges.len(), 1);
+    assert_eq!(report.edges[0].kind, InheritanceKind::Extends);
 }
 
 // =============================================================================
