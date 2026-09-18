@@ -487,6 +487,15 @@ impl<'a> LengauerTarjan<'a> {
 /// dominator of the join point. Each block visited along the way has
 /// the join point in its dominance frontier.
 ///
+/// # Loop headers (issue #86)
+/// A loop header H is a join point with a back edge, so H is one of its own
+/// predecessors. The definition therefore puts H in DF(H): H dominates that
+/// predecessor but does not strictly dominate itself. The walk below starts
+/// at `runner = H` for that back-edge predecessor and inserts `join_point`
+/// before ascending, yielding DF(H) = {H} (plus anything else reachable).
+/// Without this, IDF of a header-only definition (e.g. a `for` loop's
+/// iteration variable) is empty and no phi is placed at the header.
+///
 /// # Complexity
 /// O(E + V) - linear in the size of the CFG
 ///
@@ -560,11 +569,6 @@ pub fn compute_dominance_frontier(
 
                 // Stop if we've reached the idom of the join point
                 if Some(runner) == join_idom {
-                    break;
-                }
-
-                // Stop if runner IS the join point (handles self-loops)
-                if runner == join_point {
                     break;
                 }
 

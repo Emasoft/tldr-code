@@ -240,6 +240,126 @@ mod fixtures {
         }
     }
 
+    /// Create a nested-loop CFG: outer loop containing an inner loop.
+    ///
+    /// ```text
+    ///        0 (entry)
+    ///          |
+    ///        1 (outer header) <------+
+    ///       / \                      |
+    ///  (exit)  2 (inner header) <-+  |
+    ///         / \                 |  |
+    ///    3 (inner body)-----------+  |
+    ///         \                      |
+    ///          4 (outer latch) ------+
+    ///          |
+    ///          5 (exit)
+    /// ```
+    ///
+    /// Edges: 0→1, 1→2 (true), 1→5 (false), 2→3 (true), 2→4 (false),
+    /// 3→2 (inner back edge), 4→1 (outer back edge).
+    ///
+    /// Hand-computed dominance frontiers (Cooper-Harvey-Kennedy):
+    /// - idom: idom(1)=0, idom(2)=1, idom(3)=2, idom(4)=2, idom(5)=1
+    /// - Join points: 1 (preds {0,4}) and 2 (preds {1,3})
+    /// - DF(0) = {}
+    /// - DF(1) = {1}     (1 dominates pred 4; does not strictly dominate itself)
+    /// - DF(2) = {1, 2}  (2 dominates preds 3 and 4; strictly dominates neither 1 nor itself)
+    /// - DF(3) = {2}     (3 dominates pred 3 of 2)
+    /// - DF(4) = {1}     (4 dominates pred 4 of 1)
+    /// - DF(5) = {}
+    pub fn nested_loop_cfg() -> CfgInfo {
+        CfgInfo {
+            function: "nested_loop".to_string(),
+            blocks: vec![
+                CfgBlock {
+                    id: 0,
+                    block_type: BlockType::Entry,
+                    lines: (1, 2),
+                    calls: Vec::new(),
+                },
+                CfgBlock {
+                    id: 1,
+                    block_type: BlockType::LoopHeader,
+                    lines: (3, 4),
+                    calls: Vec::new(),
+                },
+                CfgBlock {
+                    id: 2,
+                    block_type: BlockType::LoopHeader,
+                    lines: (5, 6),
+                    calls: Vec::new(),
+                },
+                CfgBlock {
+                    id: 3,
+                    block_type: BlockType::Body,
+                    lines: (7, 8),
+                    calls: Vec::new(),
+                },
+                CfgBlock {
+                    id: 4,
+                    block_type: BlockType::Body,
+                    lines: (9, 10),
+                    calls: Vec::new(),
+                },
+                CfgBlock {
+                    id: 5,
+                    block_type: BlockType::Exit,
+                    lines: (11, 11),
+                    calls: Vec::new(),
+                },
+            ],
+            edges: vec![
+                CfgEdge {
+                    from: 0,
+                    to: 1,
+                    edge_type: EdgeType::Unconditional,
+                    condition: None,
+                },
+                CfgEdge {
+                    from: 1,
+                    to: 2,
+                    edge_type: EdgeType::True,
+                    condition: Some("i < n".to_string()),
+                },
+                CfgEdge {
+                    from: 1,
+                    to: 5,
+                    edge_type: EdgeType::False,
+                    condition: Some("i < n".to_string()),
+                },
+                CfgEdge {
+                    from: 2,
+                    to: 3,
+                    edge_type: EdgeType::True,
+                    condition: Some("j < m".to_string()),
+                },
+                CfgEdge {
+                    from: 2,
+                    to: 4,
+                    edge_type: EdgeType::False,
+                    condition: Some("j < m".to_string()),
+                },
+                CfgEdge {
+                    from: 3,
+                    to: 2,
+                    edge_type: EdgeType::Unconditional,
+                    condition: None,
+                },
+                CfgEdge {
+                    from: 4,
+                    to: 1,
+                    edge_type: EdgeType::Unconditional,
+                    condition: None,
+                },
+            ],
+            entry_block: 0,
+            exit_blocks: vec![5],
+            cyclomatic_complexity: 4,
+            nested_functions: HashMap::new(),
+        }
+    }
+
     /// Create a complex CFG with nested branches
     ///
     /// ```text
@@ -1053,6 +1173,171 @@ mod dominance_frontier_tests {
         let empty: HashSet<usize> = HashSet::new();
         let idf = df.iterated(&empty);
         assert!(idf.is_empty());
+    }
+
+    /// Issue #86: a loop header must appear in its own dominance frontier.
+    ///
+    /// Hand-computed (Cooper-Harvey-Kennedy) for `loop_cfg`
+    /// (0→1, 1→2, 1→3, 3→1 back edge):
+    /// - Block 1 (header) is a join point (preds {0, 3}).
+    /// - Block 1 dominates pred 3 but does not strictly dominate itself,
+    ///   so 1 ∈ DF(1).
+    /// - Block 3 dominates pred 3 and does not strictly dominate 1,
+    ///   so DF(3) = {1}.
+    /// - Nothing else can reach the header's frontier: DF(0) = DF(2) = {}.
+    #[test]
+    fn test_loop_header_in_own_dominance_frontier() {
+        let cfg = fixtures::loop_cfg();
+        let dom_tree = build_dominator_tree(&cfg).expect("should build dominator tree");
+        let df = compute_dominance_frontier(&cfg, &dom_tree).expect("should compute DF");
+
+        assert_eq!(
+            df.get(1),
+            HashSet::from([1]),
+            "loop header must be in its own dominance frontier (back edge from body), got DF(1)={:?}",
+            df.get(1)
+        );
+        assert_eq!(
+            df.get(3),
+            HashSet::from([1]),
+            "loop body must have exactly the header in its frontier, got DF(3)={:?}",
+            df.get(3)
+        );
+        assert!(
+            df.get(0).is_empty(),
+            "entry must have empty frontier, got DF(0)={:?}",
+            df.get(0)
+        );
+        assert!(
+            df.get(2).is_empty(),
+            "exit must have empty frontier, got DF(2)={:?}",
+            df.get(2)
+        );
+    }
+
+    /// Issue #86: nested-loop frontiers, pinned to hand-computed
+    /// Cooper-Harvey-Kennedy expectations (see `nested_loop_cfg` doc).
+    #[test]
+    fn test_nested_loop_dominance_frontiers() {
+        let cfg = fixtures::nested_loop_cfg();
+        let dom_tree = build_dominator_tree(&cfg).expect("should build dominator tree");
+        let df = compute_dominance_frontier(&cfg, &dom_tree).expect("should compute DF");
+
+        assert_eq!(df.get(0), HashSet::new(), "DF(entry) must be empty");
+        assert_eq!(
+            df.get(1),
+            HashSet::from([1]),
+            "outer header must be in its own frontier, got DF(1)={:?}",
+            df.get(1)
+        );
+        assert_eq!(
+            df.get(2),
+            HashSet::from([1, 2]),
+            "inner header must have outer header + itself in its frontier, got DF(2)={:?}",
+            df.get(2)
+        );
+        assert_eq!(
+            df.get(3),
+            HashSet::from([2]),
+            "inner body must have inner header in its frontier, got DF(3)={:?}",
+            df.get(3)
+        );
+        assert_eq!(
+            df.get(4),
+            HashSet::from([1]),
+            "outer latch must have outer header in its frontier, got DF(4)={:?}",
+            df.get(4)
+        );
+        assert_eq!(df.get(5), HashSet::new(), "DF(exit) must be empty");
+    }
+
+    /// Issue #86: IDF of a header-only definition must include the header.
+    ///
+    /// A variable defined only in a loop header (e.g. a Python `for i in ...`
+    /// iteration variable) needs a phi at the header itself so the back edge
+    /// carries the redefined value. With the bug, IDF({header}) was empty and
+    /// no phi was ever placed.
+    #[test]
+    fn test_idf_of_header_only_definitions() {
+        let cfg = fixtures::nested_loop_cfg();
+        let dom_tree = build_dominator_tree(&cfg).expect("should build dominator tree");
+        let df = compute_dominance_frontier(&cfg, &dom_tree).expect("should compute DF");
+
+        // Def only in outer header (block 1): IDF = DF(1) = {1}
+        let outer_only: HashSet<usize> = HashSet::from([1]);
+        assert_eq!(
+            df.iterated(&outer_only),
+            HashSet::from([1]),
+            "IDF of outer-header-only def must be the outer header"
+        );
+
+        // Def only in inner header (block 2): IDF = DF(2) closure = {1, 2}
+        let inner_only: HashSet<usize> = HashSet::from([2]);
+        assert_eq!(
+            df.iterated(&inner_only),
+            HashSet::from([1, 2]),
+            "IDF of inner-header-only def must contain both headers"
+        );
+
+        // Def only in inner body (block 3): IDF = closure of DF.
+        // DF(3) = {2}, and 2 ∈ DF(2) = {1, 2} (inner header dominates the
+        // outer latch, a predecessor of the outer header), so the closure is
+        // {1, 2}.
+        let body_only: HashSet<usize> = HashSet::from([3]);
+        assert_eq!(
+            df.iterated(&body_only),
+            HashSet::from([1, 2]),
+            "IDF of inner-body-only def must close over both headers"
+        );
+    }
+
+    /// Issue #86 end-to-end: a variable defined only in a loop header gets a
+    /// phi at that header in minimal SSA.
+    #[test]
+    fn test_phi_for_header_only_definition() {
+        let cfg = fixtures::loop_cfg();
+        // `i` defined on the header line (lines 3-4 = block 1), used in the
+        // body (block 3) and after the loop (block 2).
+        let dfg = DfgInfo {
+            function: "loop".to_string(),
+            refs: vec![
+                VarRef {
+                    name: "i".to_string(),
+                    ref_type: RefType::Definition,
+                    line: 3,
+                    column: 5,
+                    context: None,
+                    group_id: None,
+                },
+                VarRef {
+                    name: "i".to_string(),
+                    ref_type: RefType::Use,
+                    line: 6,
+                    column: 12,
+                    context: None,
+                    group_id: None,
+                },
+                VarRef {
+                    name: "i".to_string(),
+                    ref_type: RefType::Use,
+                    line: 8,
+                    column: 11,
+                    context: None,
+                    group_id: None,
+                },
+            ],
+            edges: Vec::new(),
+            variables: vec!["i".to_string()],
+        };
+
+        let ssa = construct_minimal_ssa(&cfg, &dfg).expect("should construct SSA");
+
+        let header = ssa.blocks.iter().find(|b| b.id == 1).unwrap();
+        assert!(
+            header.phi_functions.iter().any(|phi| phi.variable == "i"),
+            "loop header must get a phi for a header-only definition, phis: {:?}",
+            header.phi_functions
+        );
     }
 }
 
