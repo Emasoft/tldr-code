@@ -114,6 +114,52 @@ pub fn live_entries() -> Vec<DaemonRegistryEntry> {
     read_registry().daemons
 }
 
+/// Resolve the project path for a daemon command invoked with the DEFAULT
+/// `--project .` (VAL-013 cross-cwd discovery, shared by `status` and
+/// `stop`; issue #38).
+///
+/// Resolution order — an EXPLICIT `--project` (anything other than the
+/// literal "." default) is always honoured untouched:
+///
+/// 1. Registry has exactly one live daemon → use its project path. This is
+///    what makes cross-cwd discovery work: the daemon registered itself at
+///    start time with a canonicalized absolute path, independent of the
+///    caller's cwd.
+/// 2. Registry empty → fall back to the v0.2.x single-slot
+///    `daemon-active.json` record (migration window) when its PID is alive.
+/// 3. Still nothing → the caller's path (canonicalized; cwd for ".").
+/// 4. Two or more live daemons → error asking for an explicit `--project`
+///    or `tldr daemon list` (same contract as `daemon status`).
+///
+/// Issue #38: `daemon stop` did NOT use this discovery — it hashed the
+/// caller's cwd-derived path, computed the wrong socket path, reported
+/// "Daemon not running" for a live daemon, and then deleted the
+/// `daemon-active.json` discovery record wholesale.
+pub fn resolve_default_project(project_arg: &Path) -> anyhow::Result<PathBuf> {
+    let fallback = || {
+        project_arg.canonicalize().unwrap_or_else(|_| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(project_arg)
+        })
+    };
+    if project_arg != Path::new(".") {
+        return Ok(fallback());
+    }
+    let entries = live_entries();
+    match entries.len() {
+        0 => Ok(match super::daemon_active::read_active() {
+            Some(active) => active.project,
+            None => fallback(),
+        }),
+        1 => Ok(entries.into_iter().next().unwrap().project),
+        n => Err(anyhow::anyhow!(
+            "multiple daemons running ({}); use --project <abs-path> or run 'tldr daemon list'",
+            n
+        )),
+    }
+}
+
 /// Look up a registry entry by canonicalized project path.
 pub fn find_entry(project: &Path) -> Option<DaemonRegistryEntry> {
     let canon = project
@@ -346,6 +392,117 @@ mod tests {
             assert!(
                 live.iter().all(|d| d.pid != dead_pid),
                 "dead PID entry should have been pruned on read"
+            );
+        });
+    }
+
+    // =========================================================================
+    // issue-38-stop-discovery-v1: shared default-project resolution
+    // =========================================================================
+
+    /// Helper: scope BOTH env overrides (registry + legacy active-file dir)
+    /// to the same isolated directory for the duration of `f`.
+    fn with_isolated_discovery<F: FnOnce(&Path)>(f: F) {
+        let _guard = REGISTRY_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tempdir");
+        std::env::set_var("TLDR_DAEMON_REGISTRY_DIR", tmp.path());
+        std::env::set_var("TLDR_DAEMON_ACTIVE_DIR", tmp.path());
+        f(tmp.path());
+        std::env::remove_var("TLDR_DAEMON_REGISTRY_DIR");
+        std::env::remove_var("TLDR_DAEMON_ACTIVE_DIR");
+    }
+
+    /// An explicit `--project` (anything but ".") is honoured untouched:
+    /// the registry is not consulted.
+    #[test]
+    fn resolve_default_project_explicit_path_wins() {
+        with_isolated_discovery(|dir| {
+            let daemon_project = dir.join("daemon-a");
+            std::fs::create_dir_all(&daemon_project).unwrap();
+            add_entry(&daemon_project, std::process::id(), &dir.join("a.sock"))
+                .expect("add");
+            // Explicit path for a DIFFERENT project — even with a live
+            // registry entry, the explicit path must be returned as-is
+            // (canonicalized).
+            let explicit = dir.join("explicit");
+            std::fs::create_dir_all(&explicit).unwrap();
+            let resolved = resolve_default_project(&explicit).expect("resolve");
+            assert_eq!(resolved, explicit.canonicalize().unwrap());
+        });
+    }
+
+    /// Exactly one live registry entry → its project path (the cross-cwd
+    /// discovery `daemon stop` was missing; issue #38). `add_entry`
+    /// canonicalizes the project it stores, so the expectation is the
+    /// canonicalized path (macOS: `/var` → `/private/var`).
+    #[test]
+    fn resolve_default_project_single_registry_entry() {
+        with_isolated_discovery(|dir| {
+            let daemon_project = dir.join("daemon-single");
+            std::fs::create_dir_all(&daemon_project).unwrap();
+            add_entry(&daemon_project, std::process::id(), &dir.join("s.sock"))
+                .expect("add");
+            let resolved =
+                resolve_default_project(Path::new(".")).expect("resolve with one entry");
+            assert_eq!(
+                resolved,
+                daemon_project.canonicalize().unwrap(),
+                "the single live daemon's project must be resolved from any cwd"
+            );
+        });
+    }
+
+    /// No registry entries + no legacy record → the caller's cwd.
+    #[test]
+    fn resolve_default_project_falls_back_to_cwd() {
+        with_isolated_discovery(|_dir| {
+            let cwd = std::env::current_dir().unwrap();
+            let resolved = resolve_default_project(Path::new(".")).expect("resolve fallback");
+            assert_eq!(
+                resolved, cwd,
+                "with no discovery state, the caller's cwd is the project"
+            );
+        });
+    }
+
+    /// No registry entries + a live legacy `daemon-active.json` record →
+    /// the recorded project (v0.2.x migration window).
+    #[test]
+    fn resolve_default_project_falls_back_to_legacy_active_record() {
+        with_isolated_discovery(|dir| {
+            let legacy_project = dir.join("legacy-daemon");
+            std::fs::create_dir_all(&legacy_project).unwrap();
+            super::super::daemon_active::write_active(
+                &legacy_project,
+                std::process::id(),
+                &dir.join("legacy.sock"),
+            )
+            .expect("write legacy record");
+            let resolved =
+                resolve_default_project(Path::new(".")).expect("resolve legacy fallback");
+            assert_eq!(
+                resolved, legacy_project,
+                "a live legacy discovery record must be honoured when the registry is empty"
+            );
+        });
+    }
+
+    /// Two or more live daemons → error asking for an explicit `--project`
+    /// (same contract as `daemon status`).
+    #[test]
+    fn resolve_default_project_multiple_entries_is_an_error() {
+        with_isolated_discovery(|dir| {
+            for name in ["m-daemon-a", "m-daemon-b"] {
+                let project = dir.join(name);
+                std::fs::create_dir_all(&project).unwrap();
+                add_entry(&project, std::process::id(), &dir.join(format!("{name}.sock")))
+                    .expect("add");
+            }
+            let result = resolve_default_project(Path::new("."));
+            let err = result.expect_err("multiple daemons must be ambiguous");
+            assert!(
+                err.to_string().contains("multiple daemons running"),
+                "error must explain the ambiguity, got: {err}"
             );
         });
     }

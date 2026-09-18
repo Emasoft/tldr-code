@@ -15,8 +15,8 @@ use serde::Serialize;
 
 use crate::output::OutputFormat;
 
-use super::daemon_active::remove_active;
-use super::daemon_registry::{live_entries, remove_entry};
+use super::daemon_active::{remove_active, remove_active_for_project};
+use super::daemon_registry::{live_entries, remove_entry, resolve_default_project};
 use super::error::DaemonError;
 use super::ipc::{check_socket_alive, cleanup_socket, send_command};
 use super::pid::{cleanup_stale_pid, compute_pid_path};
@@ -77,12 +77,17 @@ impl DaemonStopArgs {
             return self.run_stop_all(format, quiet).await;
         }
 
-        // Resolve project path to absolute
-        let project = self.project.canonicalize().unwrap_or_else(|_| {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(&self.project)
-        });
+        // Resolve the project path through the SHARED cross-cwd discovery
+        // (issue-38-stop-discovery-v1): `daemon stop` used to hash the
+        // caller's cwd-derived path directly, so a stop from a directory
+        // different from the `daemon start` cwd computed the wrong socket
+        // path, reported "Daemon not running" for a LIVE daemon, and then
+        // deleted the discovery file wholesale (breaking that daemon's
+        // cross-cwd discovery). `resolve_default_project` consults the
+        // multi-daemon registry (and the legacy daemon-active.json record)
+        // exactly like `daemon status` does; an explicit `--project` is
+        // still honoured untouched.
+        let project = resolve_default_project(&self.project)?;
 
         // Check if daemon is running
         if !check_socket_alive(&project).await {
@@ -104,11 +109,13 @@ impl DaemonStopArgs {
             }
 
             // Clean up any stale files (legacy daemon-active.json + v0.3.0
-            // registry entry).
+            // registry entry). The legacy discovery record is removed ONLY
+            // when it belongs to THIS project (issue-38-stop-discovery-v1:
+            // it may record a different, still-running daemon).
             let pid_path = compute_pid_path(&project);
             let _ = cleanup_stale_pid(&pid_path);
             let _ = cleanup_socket(&project);
-            let _ = remove_active();
+            let _ = remove_active_for_project(&project);
             let _ = remove_entry(&project);
 
             return Ok(());
@@ -130,10 +137,15 @@ impl DaemonStopArgs {
                 }
 
                 // Clean up files (legacy daemon-active.json + v0.3.0 entry).
+                // The legacy discovery record is removed ONLY when it
+                // belongs to the project just stopped (issue-38-stop-
+                // discovery-v1): an explicit `--project A` stop must not
+                // delete a discovery record belonging to a different,
+                // still-running daemon B.
                 let _ = cleanup_socket(&project);
                 let pid_path = compute_pid_path(&project);
                 let _ = cleanup_stale_pid(&pid_path);
-                let _ = remove_active();
+                let _ = remove_active_for_project(&project);
                 let _ = remove_entry(&project);
 
                 let output = DaemonStopOutput {
@@ -173,11 +185,12 @@ impl DaemonStopArgs {
                 }
 
                 // Clean up any stale files (legacy daemon-active.json +
-                // v0.3.0 registry entry).
+                // v0.3.0 registry entry). Same project-guarded removal as
+                // above (issue-38-stop-discovery-v1).
                 let _ = cleanup_socket(&project);
                 let pid_path = compute_pid_path(&project);
                 let _ = cleanup_stale_pid(&pid_path);
-                let _ = remove_active();
+                let _ = remove_active_for_project(&project);
                 let _ = remove_entry(&project);
 
                 Ok(())
@@ -249,8 +262,13 @@ impl DaemonStopArgs {
                 }
             }
         }
-        // Defensive: drop any legacy single-slot record.
-        let _ = remove_active();
+        // Defensive: drop any legacy single-slot record — but only when
+        // every known daemon stopped (issue-38-stop-discovery-v1): a
+        // failed stop must not delete a discovery record that may belong
+        // to the daemon that failed to stop.
+        if failed == 0 {
+            let _ = remove_active();
+        }
 
         let summary = if failed == 0 {
             format!("Stopped {} daemon(s)", stopped)

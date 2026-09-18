@@ -40,11 +40,16 @@ pub struct DaemonActive {
 
 /// Path to the active-daemon discovery file.
 ///
-/// Resolves to `<cache_dir>/tldr/daemon-active.json`. Falls back to
-/// `./.cache/tldr/daemon-active.json` if `dirs::cache_dir()` is unavailable
-/// (e.g., in restricted sandboxes); the file is auxiliary state, so this
-/// fallback is benign.
+/// Resolution order:
+/// 1. `TLDR_DAEMON_ACTIVE_DIR` env override (used by tests for isolation;
+///    mirrors `TLDR_DAEMON_REGISTRY_DIR` on the registry file).
+/// 2. `<dirs::cache_dir()>/tldr/daemon-active.json`.
+/// 3. Relative `.cache/tldr/...` fallback if `dirs::cache_dir()` is
+///    unavailable (see issue #34 for why this fallback is being reworked).
 pub fn active_file_path() -> PathBuf {
+    if let Ok(dir) = std::env::var("TLDR_DAEMON_ACTIVE_DIR") {
+        return PathBuf::from(dir).join("daemon-active.json");
+    }
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from(".cache"))
         .join("tldr")
@@ -89,13 +94,23 @@ pub fn write_active(project: &Path, pid: u32, socket: &Path) -> std::io::Result<
 /// without removing the file: we don't want `daemon status` to report a
 /// dead daemon as `running`.
 pub fn read_active() -> Option<DaemonActive> {
-    let path = active_file_path();
-    let content = std::fs::read_to_string(&path).ok()?;
-    let parsed: DaemonActive = serde_json::from_str(&content).ok()?;
+    let parsed = read_active_record()?;
     if !is_pid_alive(parsed.pid) {
         return None;
     }
     Some(parsed)
+}
+
+/// Read the raw active-daemon record WITHOUT the PID-liveness gate.
+///
+/// `daemon stop` needs to compare the recorded project against the project
+/// it just shut down — at that point the recorded PID is already dead, so
+/// the liveness gate in [`read_active`] would make the comparison
+/// impossible. Corrupt files still yield `None` (issue #38).
+pub fn read_active_record() -> Option<DaemonActive> {
+    let path = active_file_path();
+    let content = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
 }
 
 /// Remove the active-daemon record, ignoring `NotFound`.
@@ -108,6 +123,37 @@ pub fn remove_active() -> std::io::Result<()> {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
+    }
+}
+
+/// Remove the active-daemon record ONLY when it belongs to `project`.
+///
+/// Issue #38: `daemon stop` used to delete `daemon-active.json` wholesale —
+/// including in its "Daemon not running" path, where the record could
+/// belong to a DIFFERENT, still-running daemon (started for another
+/// project). Deleting it there orphaned that daemon's cross-cwd discovery.
+/// This helper reads the record (no liveness gate — the project being
+/// stopped is dead by the time cleanup runs) and removes the file only
+/// when the recorded project matches. Returns `true` when a matching
+/// record was found and removed.
+pub fn remove_active_for_project(project: &Path) -> bool {
+    let canon = project
+        .canonicalize()
+        .unwrap_or_else(|_| project.to_path_buf());
+    match read_active_record() {
+        Some(active) => {
+            // Canonicalize the RECORDED path too: v0.2.x-era writers may
+            // have stored a non-canonical spelling, and macOS resolves
+            // `/var` → `/private/var` — a byte comparison of raw strings
+            // would miss the match and leave a stale record behind.
+            let recorded = active.project.canonicalize().unwrap_or_else(|_| active.project.clone());
+            if recorded == canon {
+                remove_active().is_ok()
+            } else {
+                false
+            }
+        }
+        None => false,
     }
 }
 
@@ -146,6 +192,7 @@ fn is_pid_alive(_pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
 
     #[test]
@@ -201,5 +248,109 @@ mod tests {
     #[test]
     fn current_process_is_alive() {
         assert!(is_pid_alive(std::process::id()));
+    }
+
+    // =========================================================================
+    // issue-38-stop-discovery-v1: project-guarded discovery-record removal
+    // =========================================================================
+
+    /// Serialize tests that mutate the process-global TLDR_DAEMON_ACTIVE_DIR
+    /// env var (same rationale as REGISTRY_ENV_LOCK in daemon_registry.rs).
+    static ACTIVE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Helper: scope the discovery-file directory override to an isolated
+    /// tempdir for the duration of `f`, so tests never touch the user's
+    /// real `~/<cache>/tldr/daemon-active.json`.
+    fn with_active_dir<F: FnOnce(&Path)>(f: F) {
+        let _guard = ACTIVE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().expect("tempdir");
+        std::env::set_var("TLDR_DAEMON_ACTIVE_DIR", tmp.path());
+        f(tmp.path());
+        std::env::remove_var("TLDR_DAEMON_ACTIVE_DIR");
+    }
+
+    /// Removing for a DIFFERENT project must leave the record intact —
+    /// this is the "never wholesale" half of issue #38: `daemon stop
+    /// --project B` must not delete the discovery record of a still-running
+    /// daemon for project A.
+    #[test]
+    fn remove_active_for_project_keeps_other_projects_record() {
+        with_active_dir(|dir| {
+            let project_a = dir.join("daemon-a");
+            std::fs::create_dir_all(&project_a).unwrap();
+            write_active(&project_a, std::process::id(), &dir.join("a.sock"))
+                .expect("write record for A");
+
+            let project_b = dir.join("daemon-b");
+            std::fs::create_dir_all(&project_b).unwrap();
+            let removed = remove_active_for_project(&project_b);
+            assert!(
+                !removed,
+                "no record for project B — nothing may be removed"
+            );
+            assert!(
+                active_file_path().exists(),
+                "project A's discovery record must survive a stop of project B"
+            );
+            // And the surviving record still resolves to A.
+            assert_eq!(read_active().expect("record readable").project, project_a);
+        });
+    }
+
+    /// Removing for the OWNING project deletes the record — including when
+    /// the recorded PID is already dead (the normal post-stop state).
+    #[test]
+    fn remove_active_for_project_removes_own_record() {
+        with_active_dir(|dir| {
+            let project = dir.join("daemon-own");
+            std::fs::create_dir_all(&project).unwrap();
+            write_active(&project, std::process::id(), &dir.join("own.sock"))
+                .expect("write record");
+            assert!(active_file_path().exists());
+            assert!(
+                remove_active_for_project(&project),
+                "the record belongs to this project and must be removed"
+            );
+            assert!(
+                !active_file_path().exists(),
+                "the discovery record for the stopped project must be gone"
+            );
+        });
+    }
+
+    /// `read_active_record` returns the raw record even when the recorded
+    /// PID is dead (the liveness gate in `read_active` would hide it) and
+    /// `None` for corrupt content.
+    #[test]
+    fn read_active_record_skips_liveness_gate() {
+        with_active_dir(|dir| {
+            let project = dir.join("daemon-dead-pid");
+            std::fs::create_dir_all(&project).unwrap();
+            // Spawn `true` and reap → definitely-dead PID.
+            let mut child = std::process::Command::new("true").spawn().expect("spawn");
+            let dead_pid = child.id();
+            let _ = child.wait();
+            write_active(&project, dead_pid, &dir.join("d.sock")).expect("write record");
+            assert!(
+                read_active().is_none(),
+                "liveness gate must still reject a dead PID"
+            );
+            let raw = read_active_record().expect("raw record readable");
+            assert_eq!(raw.project, project, "raw record must surface the project");
+
+            // Corrupt content → None (both readers).
+            std::fs::write(active_file_path(), "not json at all").unwrap();
+            assert!(read_active_record().is_none());
+            assert!(read_active().is_none());
+        });
+    }
+
+    /// The discovery-file path honours the `TLDR_DAEMON_ACTIVE_DIR` override
+    /// (test isolation hook, mirroring `TLDR_DAEMON_REGISTRY_DIR`).
+    #[test]
+    fn active_file_path_honors_env_override() {
+        with_active_dir(|dir| {
+            assert_eq!(active_file_path(), dir.join("daemon-active.json"));
+        });
     }
 }

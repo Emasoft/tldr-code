@@ -10,15 +10,14 @@
 //! - Session statistics (if requested)
 //! - Hook activity statistics
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::Args;
 use serde::Serialize;
 
 use crate::output::OutputFormat;
 
-use super::daemon_active::read_active;
-use super::daemon_registry::live_entries;
+use super::daemon_registry::resolve_default_project;
 use super::error::DaemonError;
 use super::ipc::send_command;
 use super::types::{DaemonCommand, DaemonResponse, DaemonStatus, SalsaCacheStats};
@@ -89,39 +88,19 @@ impl DaemonStatusArgs {
         // VAL-003 (v0.3.0): when `--project` is the default (the literal
         // ".", meaning the user did not pass an explicit path), dispatch on
         // the live multi-daemon registry:
+        //   - 1 entry:   use that entry's project path (preserves VAL-013).
         //   - 0 entries: fall back to the legacy daemon-active.json record
         //     (covers the migration window) and ultimately the cwd path.
-        //   - 1 entry:   use that entry's project path (preserves VAL-013).
         //   - 2+ entries: ERROR with a hint to pass `--project` or list.
         //
         // An explicit `--project` (anything other than ".") is ALWAYS
         // honoured — the workaround path is preserved.
-        let project = if self.project == Path::new(".") {
-            let entries = live_entries();
-            match entries.len() {
-                0 => match read_active() {
-                    Some(active) => active.project,
-                    None => self.project.canonicalize().unwrap_or_else(|_| {
-                        std::env::current_dir()
-                            .unwrap_or_else(|_| PathBuf::from("."))
-                            .join(&self.project)
-                    }),
-                },
-                1 => entries.into_iter().next().unwrap().project,
-                n => {
-                    return Err(anyhow::anyhow!(
-                        "multiple daemons running ({}); use --project <abs-path> or run 'tldr daemon list'",
-                        n
-                    ));
-                }
-            }
-        } else {
-            self.project.canonicalize().unwrap_or_else(|_| {
-                std::env::current_dir()
-                    .unwrap_or_else(|_| PathBuf::from("."))
-                    .join(&self.project)
-            })
-        };
+        //
+        // issue-38-stop-discovery-v1: this resolution moved into the shared
+        // `resolve_default_project` helper (daemon_registry.rs) so `daemon
+        // stop` discovers the running daemon through the SAME path instead
+        // of hashing the caller's cwd.
+        let project = resolve_default_project(&self.project)?;
 
         // Send status command
         let cmd = DaemonCommand::Status {
