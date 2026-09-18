@@ -80,10 +80,18 @@ impl DeadArgs {
             Some(self.entry_points.clone())
         };
 
+        // issue-83-daemon-language-v1: thread the detected language into
+        // the daemon request. Without it the daemon resolved `None` to
+        // Python and reported `functions_analyzed: 0` for non-Python
+        // projects (every function missed by a wrong-extension scan).
         if let Some(report) = try_daemon_route::<DeadCodeReport>(
             &self.path,
             "dead",
-            params_for_dead(Some(&self.path), entry_points.as_deref()),
+            params_for_dead(
+                Some(&self.path),
+                entry_points.as_deref(),
+                Some(language.as_str()),
+            ),
         ) {
             // Apply truncation if needed
             let (truncated_report, truncated, total_count, shown_count) =

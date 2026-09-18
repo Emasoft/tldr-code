@@ -203,21 +203,49 @@ pub fn params_with_file_function_line(file: &Path, function: &str, line: u32) ->
 }
 
 /// Build JSON params with function name and optional depth.
-pub fn params_with_func_depth(func: &str, depth: Option<usize>) -> serde_json::Value {
+///
+/// issue-83-daemon-language-v1: `lang` threads the CLI-side detected
+/// language into the daemon `Impact` request. The daemon handler used to
+/// resolve a missing language to `Language::Python`, silently analyzing
+/// non-Python projects as Python; see `resolve_language_from_root`
+/// (commands/daemon/daemon.rs). The JSON key is the canonical `"language"`
+/// (the `DaemonCommand::Impact` field name; the legacy `"lang"` spelling is
+/// still accepted server-side via serde alias, but `"language"` is what the
+/// wire contract documents).
+pub fn params_with_func_depth(
+    func: &str,
+    depth: Option<usize>,
+    lang: Option<&str>,
+) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     obj.insert("func".to_string(), serde_json::json!(func));
     if let Some(d) = depth {
         obj.insert("depth".to_string(), serde_json::json!(d));
     }
+    if let Some(l) = lang {
+        obj.insert("language".to_string(), serde_json::json!(l));
+    }
     serde_json::Value::Object(obj)
 }
 
 /// Build JSON params with module and optional path.
-pub fn params_with_module(module: &str, path: Option<&Path>) -> serde_json::Value {
+///
+/// issue-83-daemon-language-v1: `lang` threads the CLI-side detected
+/// language into the daemon `Importers` request (same rationale as
+/// [`params_with_func_depth`]). The module string itself reaches the daemon
+/// VERBATIM — the doc-target rewrite stays a direct-compute concern.
+pub fn params_with_module(
+    module: &str,
+    path: Option<&Path>,
+    lang: Option<&str>,
+) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     obj.insert("module".to_string(), serde_json::json!(module));
     if let Some(p) = path {
         obj.insert("path".to_string(), serde_json::json!(p));
+    }
+    if let Some(l) = lang {
+        obj.insert("language".to_string(), serde_json::json!(l));
     }
     serde_json::Value::Object(obj)
 }
@@ -233,21 +261,39 @@ pub fn params_with_pattern(pattern: &str, max_results: Option<usize>) -> serde_j
 }
 
 /// Build JSON params with entry point and depth.
-pub fn params_with_entry_depth(entry: &str, depth: Option<usize>) -> serde_json::Value {
+///
+/// issue-83-daemon-language-v1: `lang` threads the CLI-side detected
+/// language into the daemon `Context` request (same rationale as
+/// [`params_with_func_depth`]).
+pub fn params_with_entry_depth(
+    entry: &str,
+    depth: Option<usize>,
+    lang: Option<&str>,
+) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     obj.insert("entry".to_string(), serde_json::json!(entry));
     if let Some(d) = depth {
         obj.insert("depth".to_string(), serde_json::json!(d));
     }
+    if let Some(l) = lang {
+        obj.insert("language".to_string(), serde_json::json!(l));
+    }
     serde_json::Value::Object(obj)
 }
 
 /// Build JSON params with path and lang.
+///
+/// issue-83-daemon-language-v1: the key was renamed `"lang"` →
+/// `"language"`. `"language"` is the canonical field name on BOTH daemon
+/// command shapes that consume this builder (`Structure.lang` is
+/// `#[serde(rename = "language", alias = "lang")]`; `Calls.language` uses
+/// the same spelling), so the emitted params now work against the plain
+/// field name everywhere instead of relying on the alias.
 pub fn params_with_path_lang(path: &Path, lang: Option<&str>) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     obj.insert("path".to_string(), serde_json::json!(path));
     if let Some(l) = lang {
-        obj.insert("lang".to_string(), serde_json::json!(l));
+        obj.insert("language".to_string(), serde_json::json!(l));
     }
     serde_json::Value::Object(obj)
 }
@@ -278,13 +324,24 @@ pub fn params_for_smells(
 }
 
 /// Build JSON params for dead code analysis.
-pub fn params_for_dead(path: Option<&Path>, entry: Option<&[String]>) -> serde_json::Value {
+///
+/// issue-83-daemon-language-v1: `lang` threads the CLI-side detected
+/// language into the daemon `Dead` request (same rationale as
+/// [`params_with_func_depth`]).
+pub fn params_for_dead(
+    path: Option<&Path>,
+    entry: Option<&[String]>,
+    lang: Option<&str>,
+) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     if let Some(p) = path {
         obj.insert("path".to_string(), serde_json::json!(p));
     }
     if let Some(e) = entry {
         obj.insert("entry".to_string(), serde_json::json!(e));
+    }
+    if let Some(l) = lang {
+        obj.insert("language".to_string(), serde_json::json!(l));
     }
     serde_json::Value::Object(obj)
 }
@@ -327,9 +384,53 @@ mod tests {
 
     #[test]
     fn test_params_with_func_depth() {
-        let params = params_with_func_depth("process_data", Some(5));
+        let params = params_with_func_depth("process_data", Some(5), None);
         assert_eq!(params.get("func").unwrap(), "process_data");
         assert_eq!(params.get("depth").unwrap(), 5);
+    }
+
+    /// issue-83-daemon-language-v1: builders that take a language hint must
+    /// emit the canonical `"language"` key, and omit it entirely when no
+    /// hint exists (so the daemon's auto-detect fallback applies).
+    #[test]
+    fn test_language_params_emit_canonical_language_key() {
+        let params = params_with_func_depth("process_data", Some(5), Some("rust"));
+        assert_eq!(params["language"], "rust");
+        assert_eq!(params["func"], "process_data");
+
+        let params = params_with_entry_depth("main", Some(3), Some("rust"));
+        assert_eq!(params["language"], "rust");
+        assert_eq!(params["entry"], "main");
+
+        let params = params_for_dead(Some(Path::new("/proj")), None, Some("rust"));
+        assert_eq!(params["language"], "rust");
+        assert_eq!(params["path"], "/proj");
+
+        let params = params_with_module("util", Some(Path::new("/proj")), Some("rust"));
+        assert_eq!(params["language"], "rust");
+        assert_eq!(params["module"], "util");
+
+        let params = params_with_path_lang(Path::new("/proj"), Some("rust"));
+        assert_eq!(params["language"], "rust");
+        assert_eq!(params["path"], "/proj");
+    }
+
+    #[test]
+    fn test_language_params_omitted_when_none() {
+        let params = params_with_func_depth("process_data", Some(5), None);
+        assert!(params.get("language").is_none());
+
+        let params = params_with_entry_depth("main", Some(3), None);
+        assert!(params.get("language").is_none());
+
+        let params = params_for_dead(Some(Path::new("/proj")), None, None);
+        assert!(params.get("language").is_none());
+
+        let params = params_with_module("util", Some(Path::new("/proj")), None);
+        assert!(params.get("language").is_none());
+
+        let params = params_with_path_lang(Path::new("/proj"), None);
+        assert!(params.get("language").is_none());
     }
 
     #[test]

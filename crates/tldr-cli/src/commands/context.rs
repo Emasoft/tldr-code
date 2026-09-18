@@ -117,11 +117,17 @@ impl ContextArgs {
         // daemon when there is no derived-file disambiguation, since the
         // daemon protocol does not currently propagate the `--file`
         // filter (would silently ignore the disambiguator).
+        //
+        // issue-83-daemon-language-v1: thread the detected language into
+        // the daemon request. The `language` value above is computed from
+        // `--lang` or `Language::from_directory(&project_path)` — without
+        // it the daemon resolved `None` to Python and served Python-typed
+        // analysis (`def main()`) for this Rust project.
         if effective_file.is_none() {
             if let Some(context) = try_daemon_route::<RelevantContext>(
                 &project_path,
                 "context",
-                params_with_entry_depth(&entry, Some(self.depth)),
+                params_with_entry_depth(&entry, Some(self.depth), Some(language.as_str())),
             ) {
                 // Output based on format
                 if writer.is_text() {

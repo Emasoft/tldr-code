@@ -46,16 +46,32 @@ impl ImportersArgs {
             anyhow::bail!("Path not found: {}", self.path.display());
         }
 
-        // Try daemon first for cached result. NB the module string reaches
-        // the daemon VERBATIM — the daemon handler owns its own language
-        // resolution and has no doc-target arm, so the doc rewrite below
-        // (and the A2 per-file language resolution) applies to the
-        // direct-compute path, which is what the doc_target_commands_v1
-        // pins exercise.
+        // issue-83-daemon-language-v1: compute the language BEFORE the
+        // daemon route so `--lang` (and the same per-file / directory
+        // detection the direct path applies) reaches the daemon handler.
+        // Pre-fix the daemon request carried no language and the handler
+        // resolved `None` to Python — a non-Python project got a
+        // 0-importer report scanned with .py extensions only. The module
+        // string still reaches the daemon VERBATIM: the daemon handler has
+        // no doc-target arm, so the module rewrite below remains a
+        // direct-compute concern (doc_target_commands_v1 pins that path).
+        let daemon_language = self
+            .lang
+            .or_else(|| {
+                self.resolve_module_file_language()
+                    .map(|(_, language)| language)
+            })
+            .or_else(|| Language::from_directory(&self.path));
+
+        // Try daemon first for cached result.
         if let Some(mut result) = try_daemon_route::<ImportersReport>(
             &self.path,
             "importers",
-            params_with_module(&self.module, Some(&self.path)),
+            params_with_module(
+                &self.module,
+                Some(&self.path),
+                daemon_language.map(|l| l.as_str()),
+            ),
         ) {
             self.apply_limit(&mut result);
             self.output_result(&writer, &result)?;

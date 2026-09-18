@@ -13,7 +13,7 @@ use tldr_core::callgraph::cross_file_types::CallType;
 use tldr_core::callgraph::{build_project_call_graph_v2, BuildConfig};
 use tldr_core::Language;
 
-use crate::commands::daemon_router::{params_with_path, try_daemon_route};
+use crate::commands::daemon_router::{params_with_path_lang, try_daemon_route};
 use crate::output::{format_calls_dot, DotCallEdge, OutputFormat, OutputWriter};
 
 /// Build and display cross-file call graph
@@ -118,11 +118,17 @@ impl CallsArgs {
         let detected_language = self.lang.or_else(|| Language::from_directory(&self.path));
         let language = detected_language.unwrap_or(Language::Python);
 
-        // Try daemon first for cached result
+        // Try daemon first for cached result.
+        //
+        // issue-83-daemon-language-v1: thread the detected language into
+        // the daemon request so the daemon builds the graph with the same
+        // language the direct-compute path uses. Without it the daemon
+        // resolved `None` to Python and returned an empty (0-edge) graph
+        // for non-Python projects.
         if let Some(output) = try_daemon_route::<CallGraphOutput>(
             &self.path,
             "calls",
-            params_with_path(Some(&self.path)),
+            params_with_path_lang(&self.path, Some(language.as_str())),
         ) {
             // Output based on format
             if writer.is_text() {

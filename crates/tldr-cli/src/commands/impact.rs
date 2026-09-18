@@ -165,11 +165,18 @@ impl ImpactArgs {
             return Ok(());
         }
 
-        // Try daemon first for cached result
+        // Try daemon first for cached result.
+        //
+        // issue-83-daemon-language-v1: thread the detected language into
+        // the daemon request so the daemon builds the call graph with the
+        // same language the direct-compute path uses. Without it the
+        // daemon resolved `None` to Python and returned "Function not
+        // found" for non-Python projects (forcing a silent CLI fallback
+        // or, worse, a successful wrong report).
         if let Some(mut report) = try_daemon_route::<ImpactReport>(
             &analysis_root,
             "impact",
-            params_with_func_depth(&self.function, Some(self.depth)),
+            params_with_func_depth(&self.function, Some(self.depth), Some(language.as_str())),
         ) {
             // impact-reference-sites-v1 (issue #1): daemon-path parity. The
             // daemon's impact handler (daemon.rs `DaemonCommand::Impact`)

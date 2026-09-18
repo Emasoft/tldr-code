@@ -154,8 +154,37 @@ struct PerFileWarmStats {
 /// the language consistently. The default-on-`None` is `Language::Python`
 /// to preserve back-compat with v0.2.x clients that never sent a language
 /// hint.
+///
+/// NOTE (issue #83): this helper is now only correct for requests with NO
+/// project root to detect from (Warm/Search/Tree cache keys). The
+/// project-rooted variants below must use [`resolve_language_from_root`],
+/// whose `None` fallback auto-detects from the project the daemon serves.
 pub(crate) fn resolve_language(language: Option<Language>) -> Language {
     language.unwrap_or(Language::Python)
+}
+
+/// Resolve the effective `Language` for a PROJECT-ROOTED daemon-handler
+/// invocation (issue #83).
+///
+/// The seven root-projected `DaemonCommand` variants (Context, Calls,
+/// Impact, Dead, Arch, Importers, ChangeImpact) document their
+/// `language: Option<Language>` field as "falls back to auto-detection when
+/// `None`" (see `types.rs`), but their handler arms used
+/// [`resolve_language`], which defaults `None` to `Language::Python`. A CLI
+/// (or v0.2.x client) that omitted the hint therefore had a Rust/TS/Go/…
+/// project silently analyzed as Python: wrong signatures (`def main()` on
+/// Rust code), empty call graphs, zero-function dead-code reports and
+/// zero-importer reports — all served as SUCCESSFUL responses, so the CLI's
+/// `try_daemon_route` had no reason to fall back to direct compute.
+///
+/// Resolution order (back-compat preserved):
+/// 1. `Some(lang)` — an explicit client hint always wins.
+/// 2. `None` — auto-detect from the project root, exactly what the
+///    direct-compute path does (`Language::from_directory`).
+/// 3. Detection finds nothing (e.g. empty dir) — `Language::Python`, the
+///    same default `resolve_language` has always produced.
+pub(crate) fn resolve_language_from_root(language: Option<Language>, root: &Path) -> Language {
+    language.unwrap_or_else(|| Language::from_directory(root).unwrap_or(Language::Python))
 }
 
 /// Count the number of file nodes in a FileTree recursively.
@@ -782,7 +811,7 @@ impl TLDRDaemon {
                 language,
             } => {
                 let d = depth.unwrap_or(2);
-                let lang = resolve_language(language);
+                let lang = resolve_language_from_root(language, &self.project);
                 let key = QueryKey::new("context", hash_str_args(&[&entry, &d.to_string()]), lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
@@ -902,7 +931,7 @@ impl TLDRDaemon {
 
             DaemonCommand::Calls { path, language } => {
                 let root = path.unwrap_or_else(|| self.project.clone());
-                let lang = resolve_language(language);
+                let lang = resolve_language_from_root(language, &root);
                 let key = calls_query_key(&root, lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
@@ -926,7 +955,7 @@ impl TLDRDaemon {
                 language,
             } => {
                 let d = depth.unwrap_or(3);
-                let lang = resolve_language(language);
+                let lang = resolve_language_from_root(language, &self.project);
                 let key = QueryKey::new("impact", hash_str_args(&[&func, &d.to_string()]), lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
@@ -959,7 +988,7 @@ impl TLDRDaemon {
                 language,
             } => {
                 let root = path.unwrap_or_else(|| self.project.clone());
-                let lang = resolve_language(language);
+                let lang = resolve_language_from_root(language, &root);
                 let root_str = root.to_string_lossy().to_string();
                 let entry_str = entry.as_ref().map(|v| v.join(",")).unwrap_or_default();
                 let key = QueryKey::new("dead", hash_str_args(&[&root_str, &entry_str]), lang);
@@ -1012,7 +1041,7 @@ impl TLDRDaemon {
 
             DaemonCommand::Arch { path, language } => {
                 let root = path.unwrap_or_else(|| self.project.clone());
-                let lang = resolve_language(language);
+                let lang = resolve_language_from_root(language, &root);
                 let root_str = root.to_string_lossy().to_string();
                 let key = QueryKey::new("arch", hash_str_args(&[&root_str]), lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
@@ -1074,7 +1103,7 @@ impl TLDRDaemon {
                 language,
             } => {
                 let root = path.unwrap_or_else(|| self.project.clone());
-                let lang = resolve_language(language);
+                let lang = resolve_language_from_root(language, &root);
                 let root_str = root.to_string_lossy().to_string();
                 let key = QueryKey::new("importers", hash_str_args(&[&module, &root_str]), lang);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
@@ -1108,7 +1137,7 @@ impl TLDRDaemon {
                 git: _,
                 language,
             } => {
-                let lang = resolve_language(language);
+                let lang = resolve_language_from_root(language, &self.project);
                 let files_str = files
                     .as_ref()
                     .map(|v| {
@@ -2129,6 +2158,276 @@ mod tests {
             }
             DaemonResponse::Error { error, .. } => {
                 panic!("Dead returned error: {}", error);
+            }
+            other => panic!("Expected Result response, got {:?}", other),
+        }
+    }
+
+    // =========================================================================
+    // issue-83-daemon-language-v1: project-rooted handlers must auto-detect
+    // the language from the project when the client sends no hint, instead
+    // of silently analyzing non-Python projects as Python.
+    // =========================================================================
+
+    /// Helper: a temp dir with ONLY Rust sources (no Python files), so a
+    /// wrong-language request cannot accidentally succeed. `main.rs` calls
+    /// a local fn and imports the sibling module via `use crate::utils;`;
+    /// `utils.rs` defines the imported fn.
+    fn create_rust_test_project() -> TempDir {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join("main.rs"),
+            "mod utils;\n\nuse crate::utils::greet;\n\nfn main() {\n    helper();\n    greet();\n}\n\nfn helper() {\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join("utils.rs"),
+            "pub fn greet() {\n    println!(\"greet\");\n}\n",
+        )
+        .unwrap();
+        temp
+    }
+
+    #[test]
+    fn test_resolve_language_from_root_explicit_hint_wins() {
+        // A Python fixture that contains a stray .rs file: the explicit
+        // hint must win over directory auto-detection.
+        let temp = create_rust_test_project();
+        let lang = resolve_language_from_root(Some(Language::Python), temp.path());
+        assert_eq!(lang, Language::Python);
+    }
+
+    #[test]
+    fn test_resolve_language_from_root_auto_detects_from_project() {
+        let temp = create_rust_test_project();
+        // Issue #83: `None` used to resolve to Python for this project.
+        let lang = resolve_language_from_root(None, temp.path());
+        assert_eq!(lang, Language::Rust);
+    }
+
+    #[test]
+    fn test_resolve_language_from_root_undetectable_falls_back_to_python() {
+        // Empty dir: detection finds nothing; the historical Python
+        // default is preserved (v0.2.x back-compat).
+        let temp = TempDir::new().unwrap();
+        let lang = resolve_language_from_root(None, temp.path());
+        assert_eq!(lang, Language::Python);
+    }
+
+    /// Context with no language hint on a rust-only project must produce
+    /// Rust-styled analysis. Pre-fix the daemon served
+    /// `"signature": "def main()"` (Python rendering of Rust source) as a
+    /// SUCCESSFUL response — the CLI could not detect the wrongness.
+    #[tokio::test]
+    async fn test_daemon_context_no_language_hint_uses_project_language() {
+        let temp = create_rust_test_project();
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+
+        let response = daemon
+            .handle_command(DaemonCommand::Context {
+                entry: "main".to_string(),
+                depth: Some(2),
+                language: None,
+            })
+            .await;
+
+        match response {
+            DaemonResponse::Result(val) => {
+                let functions = val
+                    .get("functions")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(
+                    !functions.is_empty(),
+                    "context on a rust project must find functions (issue #83); got {val}"
+                );
+                let signature = functions[0]
+                    .get("signature")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                assert!(
+                    signature.contains("fn main"),
+                    "context signature must be Rust-styled, got {:?} (issue #83: Python \
+                     default produced `def main()`)",
+                    signature
+                );
+                assert!(
+                    !signature.contains("def "),
+                    "context signature must not be Python-styled, got {:?}",
+                    signature
+                );
+            }
+            DaemonResponse::Error { error, .. } => {
+                panic!(
+                    "Context with no hint should auto-detect Rust, got error: {}",
+                    error
+                )
+            }
+            other => panic!("Expected Result response, got {:?}", other),
+        }
+    }
+
+    /// Calls with no language hint on a rust-only project must build the
+    /// Rust call graph (edges main→helper / main→greet). Pre-fix the
+    /// daemon returned a successful `{"edges": []}` (Python scan finds no
+    /// .py files).
+    #[tokio::test]
+    async fn test_daemon_calls_no_language_hint_uses_project_language() {
+        let temp = create_rust_test_project();
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+
+        let response = daemon
+            .handle_command(DaemonCommand::Calls {
+                path: None,
+                language: None,
+            })
+            .await;
+
+        match response {
+            DaemonResponse::Result(val) => {
+                let edges = val
+                    .get("edges")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(
+                    edges.len() >= 2,
+                    "calls on a rust project must find the main→helper and main→greet \
+                     edges, got {} edges (issue #83: Python default produced 0 edges); \
+                     got {val}",
+                    edges.len()
+                );
+            }
+            DaemonResponse::Error { error, .. } => {
+                panic!(
+                    "Calls with no hint should auto-detect Rust, got error: {}",
+                    error
+                )
+            }
+            other => panic!("Expected Result response, got {:?}", other),
+        }
+    }
+
+    /// Impact with no language hint on a rust-only project must resolve
+    /// the queried function in the Rust graph. Pre-fix the daemon built a
+    /// Python-typed graph and returned "Function not found: helper".
+    #[tokio::test]
+    async fn test_daemon_impact_no_language_hint_uses_project_language() {
+        let temp = create_rust_test_project();
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+
+        let response = daemon
+            .handle_command(DaemonCommand::Impact {
+                func: "helper".to_string(),
+                depth: Some(3),
+                language: None,
+            })
+            .await;
+
+        match response {
+            DaemonResponse::Result(val) => {
+                let targets = val
+                    .get("targets")
+                    .and_then(|v| v.as_object())
+                    .cloned()
+                    .unwrap_or_default();
+                assert!(
+                    !targets.is_empty(),
+                    "impact on a rust project must resolve `helper`, got {val} \
+                     (issue #83: Python default produced `Function not found`)"
+                );
+                let (_, tree) = targets.iter().next().unwrap();
+                let caller_count = tree.get("caller_count").and_then(|v| v.as_u64());
+                assert_eq!(
+                    caller_count,
+                    Some(1),
+                    "`helper` is called by `main`; got {tree}"
+                );
+            }
+            DaemonResponse::Error { error, .. } => {
+                panic!(
+                    "Impact with no hint should auto-detect Rust, got error: {} \
+                     (issue #83: Python default produced `Function not found: helper`)",
+                    error
+                )
+            }
+            other => panic!("Expected Result response, got {:?}", other),
+        }
+    }
+
+    /// Dead with no language hint on a rust-only project must analyze the
+    /// project's functions. Pre-fix the daemon returned a successful
+    /// report with `functions_analyzed: 0` (Python extension scan).
+    #[tokio::test]
+    async fn test_daemon_dead_no_language_hint_uses_project_language() {
+        let temp = create_rust_test_project();
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+
+        let response = daemon
+            .handle_command(DaemonCommand::Dead {
+                path: None,
+                entry: None,
+                language: None,
+            })
+            .await;
+
+        match response {
+            DaemonResponse::Result(val) => {
+                let analyzed = val
+                    .get("functions_analyzed")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                assert!(
+                    analyzed >= 3,
+                    "dead on a rust project must analyze main/helper/greet, got \
+                     functions_analyzed={} (issue #83: Python default produced 0); got {val}",
+                    analyzed
+                );
+            }
+            DaemonResponse::Error { error, .. } => {
+                panic!(
+                    "Dead with no hint should auto-detect Rust, got error: {}",
+                    error
+                )
+            }
+            other => panic!("Expected Result response, got {:?}", other),
+        }
+    }
+
+    /// Importers with no language hint on a rust-only project must scan
+    /// Rust imports. Pre-fix the daemon scanned .py extensions only and
+    /// returned `total: 0`.
+    #[tokio::test]
+    async fn test_daemon_importers_no_language_hint_uses_project_language() {
+        let temp = create_rust_test_project();
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+
+        let response = daemon
+            .handle_command(DaemonCommand::Importers {
+                module: "crate::utils".to_string(),
+                path: None,
+                language: None,
+            })
+            .await;
+
+        match response {
+            DaemonResponse::Result(val) => {
+                let total = val.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                assert!(
+                    total >= 1,
+                    "importers of `crate::utils` must find main.rs (it has \
+                     `use crate::utils;`), got total={} (issue #83: Python default \
+                     produced 0); got {val}",
+                    total
+                );
+            }
+            DaemonResponse::Error { error, .. } => {
+                panic!(
+                    "Importers with no hint should auto-detect Rust, got error: {}",
+                    error
+                )
             }
             other => panic!("Expected Result response, got {:?}", other),
         }
