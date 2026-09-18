@@ -737,6 +737,58 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// Issue #51: a project-wide entry registered with an EMPTY dependency
+    /// list is unreachable from invalidation — `invalidate_by_input` for ANY
+    /// input never finds it, so it is served stale forever. Registering the
+    /// project root's hash (what `handle_notify` now invalidates) makes it
+    /// reachable, without touching file-scoped entries that are registered
+    /// under their own file's hashes.
+    #[test]
+    fn test_project_wide_entry_needs_the_root_input_hash_to_be_invalidatable() {
+        let cache = QueryCache::new(100);
+        let root_hash = hash_path(Path::new("/proj"));
+        let file_hash = hash_path(Path::new("/proj/utils.py"));
+
+        // Pre-fix project-wide insert shape: empty dependency list.
+        let stale_prone = QueryKey::new("calls", 1, Language::Python);
+        cache.insert(stale_prone.clone(), &"old graph", vec![]);
+
+        // Post-fix project-wide insert shape: registered under the root hash.
+        let fixed = QueryKey::new("calls", 2, Language::Python);
+        cache.insert(fixed.clone(), &"old graph", vec![root_hash]);
+
+        // File-scoped entry, for contrast.
+        let file_scoped = QueryKey::new("extract", 3, Language::Python);
+        cache.insert(file_scoped.clone(), &"file result", vec![file_hash]);
+
+        // A notify for utils.py invalidates the root-registered entry AND the
+        // file-scoped entry, but can never reach the empty-deps entry.
+        let invalidated = cache.invalidate_by_input(root_hash);
+        assert_eq!(
+            invalidated, 1,
+            "only the root-registered project-wide entry is reachable via the root hash"
+        );
+        assert!(
+            cache.get::<String>(&fixed).is_none(),
+            "the root-registered entry must be invalidated by the notify event"
+        );
+        assert!(
+            cache.get::<String>(&stale_prone).is_some(),
+            "an empty-deps entry is UNREACHABLE from invalidation — this is the \
+             issue #51 staleness mechanism"
+        );
+
+        // The file event still reaches only the file-scoped entry.
+        let invalidated = cache.invalidate_by_input(file_hash);
+        assert_eq!(invalidated, 1);
+        assert!(cache.get::<String>(&file_scoped).is_none());
+        assert!(
+            cache.get::<String>(&stale_prone).is_some(),
+            "the empty-deps entry survives every notify — hence the fix must \
+             register project-wide entries under the root hash"
+        );
+    }
+
     #[test]
     fn test_query_cache_invalidation_stats() {
         let cache = QueryCache::new(100);

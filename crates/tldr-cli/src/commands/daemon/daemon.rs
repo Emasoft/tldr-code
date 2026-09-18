@@ -144,6 +144,36 @@ fn file_input_hashes(path: &Path) -> Vec<u64> {
     hashes
 }
 
+/// Input hashes recorded at cache-INSERTION time for PROJECT-WIDE entries
+/// (issue #51).
+///
+/// Call graph, impact, dead-code, architecture, importers and change-impact
+/// results depend on EVERY file in the project, but their handlers used to
+/// register them with an EMPTY dependency list — and an entry with no input
+/// hashes is never added to the cache's dependents index, so `Notify` could
+/// never reach it and the stale result was served forever. Registering the
+/// PROJECT ROOT's hash (the "root-level cache key") gives the notify event a
+/// handle: `handle_notify` invalidates the root hash on every file-change
+/// event, dropping every project-wide entry at once. File-scoped entries are
+/// unaffected — they are registered under their own file's hashes.
+///
+/// Like [`file_input_hashes`], both the canonical and the raw spelling are
+/// hashed; and when the request named an explicit root, the daemon's own
+/// served root is included too, so a notify for any file in the served
+/// project invalidates the entry no matter which root spelling it was
+/// registered under. Deduplicated; order is irrelevant.
+fn project_input_hashes(served_root: &Path, request_root: &Path) -> Vec<u64> {
+    let mut hashes = vec![
+        super::salsa::hash_path(&canonical_file_spelling(served_root)),
+        super::salsa::hash_path(served_root),
+        super::salsa::hash_path(&canonical_file_spelling(request_root)),
+        super::salsa::hash_path(request_root),
+    ];
+    hashes.sort_unstable();
+    hashes.dedup();
+    hashes
+}
+
 /// Best-effort LEXICAL resolution of `path`: make it absolute against the
 /// process cwd and collapse `.` / `..` components WITHOUT touching the
 /// filesystem — the usual reason [`canonical_file_spelling`] failed is that
@@ -614,7 +644,12 @@ impl TLDRDaemon {
                     match build_project_call_graph(&self.project, lang, None, true) {
                         Ok(result) => {
                             let val = serde_json::to_value(&result).unwrap_or_default();
-                            self.cache.insert(calls_key, &val, vec![]);
+                            // Issue #51: warmed project-wide slots must die on
+                            // Notify like handler-inserted ones, else a warm
+                            // followed by an edit serves the pre-edit graph
+                            // forever.
+                            let deps = project_input_hashes(&self.project, &self.project);
+                            self.cache.insert(calls_key, &val, deps);
                             entries += 1;
                             warmed.push("call_graph");
                         }
@@ -641,7 +676,10 @@ impl TLDRDaemon {
                     match get_code_structure(&self.project, lang, 0, None) {
                         Ok(result) => {
                             let val = serde_json::to_value(&result).unwrap_or_default();
-                            self.cache.insert(struct_key, &val, vec![]);
+                            // Issue #51: same project-wide invalidation
+                            // contract as the call-graph slot above.
+                            let deps = project_input_hashes(&self.project, &self.project);
+                            self.cache.insert(struct_key, &val, deps);
                             entries += 1;
                             warmed.push("structure");
                             project_structure = Some(result);
@@ -663,7 +701,11 @@ impl TLDRDaemon {
                         Ok(result) => {
                             let file_count = count_tree_files(&result);
                             let val = serde_json::to_value(&result).unwrap_or_default();
-                            self.cache.insert(tree_key, &val, vec![]);
+                            // Issue #51: the tree of the SERVED project
+                            // changes when its files change — register the
+                            // ROOT input hashes.
+                            let deps = project_input_hashes(&self.project, &self.project);
+                            self.cache.insert(tree_key, &val, deps);
                             entries += 1;
                             *self.indexed_files.write().await = file_count;
                             warmed.push("file_tree");
@@ -1073,7 +1115,11 @@ impl TLDRDaemon {
                             max,
                         );
                         let val = serde_json::to_value(&output).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![]);
+                        // Issue #51: project-wide entries depend on the whole
+                        // project — register the ROOT input hashes so Notify
+                        // can invalidate them.
+                        let deps = project_input_hashes(&self.project, &root);
+                        self.cache.insert(key, &val, deps);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -1106,7 +1152,10 @@ impl TLDRDaemon {
                 match impact_analysis(&graph, &func, d, None) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![]);
+                        // Issue #51: the impact result depends on the whole
+                        // project graph — register the ROOT input hashes.
+                        let deps = project_input_hashes(&self.project, &self.project);
+                        self.cache.insert(key, &val, deps);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -1163,7 +1212,10 @@ impl TLDRDaemon {
                 match dead_code_analysis(&graph, &all_functions, entry_refs) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![]);
+                        // Issue #51: dead-code analysis is whole-project —
+                        // register the ROOT input hashes.
+                        let deps = project_input_hashes(&self.project, &root);
+                        self.cache.insert(key, &val, deps);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -1193,7 +1245,10 @@ impl TLDRDaemon {
                 match architecture_analysis(&graph) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![]);
+                        // Issue #51: the architecture report covers the whole
+                        // project — register the ROOT input hashes.
+                        let deps = project_input_hashes(&self.project, &root);
+                        self.cache.insert(key, &val, deps);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -1248,7 +1303,10 @@ impl TLDRDaemon {
                 match find_importers(&root, &module, lang) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![]);
+                        // Issue #51: importers scan the whole project —
+                        // register the ROOT input hashes.
+                        let deps = project_input_hashes(&self.project, &root);
+                        self.cache.insert(key, &val, deps);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -1291,7 +1349,10 @@ impl TLDRDaemon {
                 match change_impact(&self.project, changed.as_deref(), lang) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![]);
+                        // Issue #51: change impact is computed over the whole
+                        // project — register the ROOT input hashes.
+                        let deps = project_input_hashes(&self.project, &self.project);
+                        self.cache.insert(key, &val, deps);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -1580,6 +1641,17 @@ impl TLDRDaemon {
         // of the file hashed to a different input hash and the stale cache
         // entry survived.
         self.invalidate_file_caches(&file);
+
+        // Issue #51: PROJECT-WIDE entries (call graph, impact, dead,
+        // architecture, importers, change impact, warm slots) are registered
+        // against the project ROOT's input hashes, not any single file's — a
+        // file change can affect every one of them, so the notify event must
+        // invalidate the root-scoped slots too. Pre-fix these entries were
+        // registered with an empty dependency list, were unreachable from the
+        // dependents index, and were served stale forever.
+        for root_hash in project_input_hashes(&self.project, &self.project) {
+            self.cache.invalidate_by_input(root_hash);
+        }
 
         // Invalidate semantic index so it rebuilds on next query
         #[cfg(feature = "semantic")]
@@ -2493,6 +2565,218 @@ mod tests {
             }
             other => panic!("Expected Result response, got {:?}", other),
         }
+    }
+
+    // =========================================================================
+    // Issue #51: project-wide cache entries must invalidate on Notify
+    // =========================================================================
+
+    /// Issue #51: the exact repro shape from the issue, asserted for the
+    /// CORRECT behavior. Warm the project call graph, modify a file (add a
+    /// function), Notify, re-query — the fresh graph must reflect the new
+    /// function. Pre-fix the Calls entry was cached with an EMPTY dependency
+    /// list, `invalidate_by_input` could never reach it, and the second query
+    /// was a stale cache HIT (the issue's "bug confirmed" test asserted
+    /// exactly that).
+    #[tokio::test]
+    async fn test_daemon_calls_cache_invalidated_on_notify() {
+        let temp = TempDir::new().unwrap();
+        let utils_py = temp.path().join("utils.py");
+        std::fs::write(
+            temp.path().join("main.py"),
+            "from utils import helper\n\ndef main():\n    helper()\n",
+        )
+        .unwrap();
+        std::fs::write(&utils_py, "def helper():\n    return 'help'\n").unwrap();
+
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+
+        // 1. Warm the project call graph.
+        let first = daemon
+            .handle_command(DaemonCommand::Calls {
+                path: None,
+                language: Some(Language::Python),
+                max_items: None,
+            })
+            .await;
+        let first_value = match first {
+            DaemonResponse::Result(value) => value,
+            other => panic!("first Calls request must succeed, got {other:?}"),
+        };
+        let serialized_first = serde_json::to_string(&first_value).unwrap();
+        assert!(
+            !serialized_first.contains("new_func"),
+            "fixture precondition: the fresh graph must not know new_func yet"
+        );
+
+        // 2. Modify a file: add a new function.
+        std::fs::write(
+            &utils_py,
+            "def helper():\n    return 'help'\n\ndef new_func():\n    helper()\n",
+        )
+        .unwrap();
+
+        // 3. Notify the daemon of the change.
+        daemon
+            .handle_command(DaemonCommand::Notify {
+                file: utils_py.clone(),
+            })
+            .await;
+
+        // 4. Re-query — must be recomputed and reflect the new function.
+        let second = daemon
+            .handle_command(DaemonCommand::Calls {
+                path: None,
+                language: Some(Language::Python),
+                max_items: None,
+            })
+            .await;
+        let second_value = match second {
+            DaemonResponse::Result(value) => value,
+            other => panic!("second Calls request must succeed, got {other:?}"),
+        };
+        let serialized_second = serde_json::to_string(&second_value).unwrap();
+        assert!(
+            serialized_second.contains("new_func"),
+            "after Notify the re-queried call graph must reflect the added \
+             function — a stale cached graph was served (issue #51): \
+             {serialized_second}"
+        );
+        assert!(
+            daemon.cache_stats().invalidations >= 1,
+            "the Notify event must have invalidated at least one cache entry"
+        );
+    }
+
+    /// Issue #51: impact results are project-wide; a new caller added to a
+    /// file must appear in a re-queried impact report after Notify.
+    #[tokio::test]
+    async fn test_daemon_impact_cache_invalidated_on_notify() {
+        let temp = TempDir::new().unwrap();
+        let utils_py = temp.path().join("utils.py");
+        std::fs::write(
+            temp.path().join("main.py"),
+            "from utils import helper\n\ndef main():\n    helper()\n",
+        )
+        .unwrap();
+        std::fs::write(&utils_py, "def helper():\n    return 'help'\n").unwrap();
+
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+
+        let first = daemon
+            .handle_command(DaemonCommand::Impact {
+                func: "helper".to_string(),
+                depth: Some(3),
+                language: Some(Language::Python),
+            })
+            .await;
+        let first_value = match first {
+            DaemonResponse::Result(value) => value,
+            other => panic!("first Impact request must succeed, got {other:?}"),
+        };
+        // The targets map is keyed by the file-qualified name
+        // ("utils.py:helper"); the fixture has exactly one target.
+        let targets = first_value["targets"]
+            .as_object()
+            .expect("impact targets is an object");
+        assert_eq!(targets.len(), 1, "fixture queries one target: helper");
+        let helper_tree = targets.values().next().expect("the helper target");
+        assert_eq!(
+            helper_tree["caller_count"], 1,
+            "pre-edit: only main() calls helper; got {first_value}"
+        );
+
+        // Add a second caller of helper in utils.py, then Notify.
+        std::fs::write(
+            &utils_py,
+            "def helper():\n    return 'help'\n\ndef new_func():\n    helper()\n",
+        )
+        .unwrap();
+        daemon
+            .handle_command(DaemonCommand::Notify {
+                file: utils_py.clone(),
+            })
+            .await;
+
+        let second = daemon
+            .handle_command(DaemonCommand::Impact {
+                func: "helper".to_string(),
+                depth: Some(3),
+                language: Some(Language::Python),
+            })
+            .await;
+        let second_value = match second {
+            DaemonResponse::Result(value) => value,
+            other => panic!("second Impact request must succeed, got {other:?}"),
+        };
+        let second_targets = second_value["targets"]
+            .as_object()
+            .expect("impact targets is an object");
+        let second_tree = second_targets.values().next().expect("the helper target");
+        assert_eq!(
+            second_tree["caller_count"], 2,
+            "after Notify the impact report must count the added caller — a \
+             stale cached report was served (issue #51): {second_value}"
+        );
+    }
+
+    /// Issue #51: the Warm handler must fill project-wide slots under the
+    /// SAME invalidation contract as the handlers — a warmed call graph that
+    /// survives a Notify would serve the pre-edit graph forever.
+    #[tokio::test]
+    async fn test_daemon_warmed_call_graph_slot_invalidated_on_notify() {
+        let temp = TempDir::new().unwrap();
+        let utils_py = temp.path().join("utils.py");
+        std::fs::write(
+            temp.path().join("main.py"),
+            "from utils import helper\n\ndef main():\n    helper()\n",
+        )
+        .unwrap();
+        std::fs::write(&utils_py, "def helper():\n    return 'help'\n").unwrap();
+
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), DaemonConfig::default());
+
+        // Warm (fills the call-graph slot among others).
+        let warm = daemon
+            .handle_command(DaemonCommand::Warm { language: None })
+            .await;
+        match &warm {
+            DaemonResponse::Status { status, .. } => {
+                assert_eq!(status, "ok", "Warm must succeed on the fixture project");
+            }
+            other => panic!("Warm must return a Status response, got {other:?}"),
+        }
+
+        // Edit + Notify.
+        std::fs::write(
+            &utils_py,
+            "def helper():\n    return 'help'\n\ndef new_func():\n    helper()\n",
+        )
+        .unwrap();
+        daemon
+            .handle_command(DaemonCommand::Notify {
+                file: utils_py.clone(),
+            })
+            .await;
+
+        // A Calls query must MISS the warmed slot and recompute.
+        let response = daemon
+            .handle_command(DaemonCommand::Calls {
+                path: None,
+                language: Some(Language::Python),
+                max_items: None,
+            })
+            .await;
+        let value = match response {
+            DaemonResponse::Result(value) => value,
+            other => panic!("Calls after notify must succeed, got {other:?}"),
+        };
+        let serialized = serde_json::to_string(&value).unwrap();
+        assert!(
+            serialized.contains("new_func"),
+            "a warmed call-graph slot must not survive a Notify (issue #51): \
+             {serialized}"
+        );
     }
 
     /// Impact with no language hint on a rust-only project must resolve
