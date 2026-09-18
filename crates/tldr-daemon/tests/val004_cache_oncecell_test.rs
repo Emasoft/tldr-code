@@ -38,10 +38,11 @@ async fn call_graph_cache_serves_cached_result_on_second_request() {
                 let counter = Arc::clone(&counter);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
-                    ProjectCallGraph::new()
+                    Ok(ProjectCallGraph::new())
                 }
             })
-            .await;
+            .await
+            .unwrap();
     }
 
     // Second call: cache MUST hit; builder MUST NOT run again.
@@ -52,10 +53,11 @@ async fn call_graph_cache_serves_cached_result_on_second_request() {
                 let counter = Arc::clone(&counter);
                 async move {
                     counter.fetch_add(1, Ordering::SeqCst);
-                    ProjectCallGraph::new()
+                    Ok(ProjectCallGraph::new())
                 }
             })
-            .await;
+            .await
+            .unwrap();
     }
 
     let n = build_count.load(Ordering::SeqCst);
@@ -121,11 +123,13 @@ async fn call_graph_cache_returns_same_arc_instance_on_second_request() {
     );
 
     let g1 = state
-        .get_or_build_call_graph(Language::Python, || async { ProjectCallGraph::new() })
-        .await;
+        .get_or_build_call_graph(Language::Python, || async { Ok(ProjectCallGraph::new()) })
+        .await
+        .unwrap();
     let g2 = state
-        .get_or_build_call_graph(Language::Python, || async { ProjectCallGraph::new() })
-        .await;
+        .get_or_build_call_graph(Language::Python, || async { Ok(ProjectCallGraph::new()) })
+        .await
+        .unwrap();
 
     assert!(
         Arc::ptr_eq(&g1, &g2),

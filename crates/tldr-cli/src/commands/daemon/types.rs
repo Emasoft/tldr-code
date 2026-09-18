@@ -413,6 +413,14 @@ pub enum DaemonCommand {
         /// `None`. Accepts the legacy `lang` key for v0.2.x clients.
         #[serde(default, alias = "lang", skip_serializing_if = "Option::is_none")]
         language: Option<Language>,
+        /// Truncation limit for the returned edge list (`tldr calls
+        /// --max-items`). The daemon builds the SAME output shape direct
+        /// compute does — sorted, truncated, node set derived from the final
+        /// edge list — so the cached payload deserializes into the CLI's
+        /// `CallGraphOutput` (daemon-calls-payload-v1 round-trip fix).
+        /// `None` means the CLI default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_items: Option<usize>,
     },
 
     /// Get impact analysis

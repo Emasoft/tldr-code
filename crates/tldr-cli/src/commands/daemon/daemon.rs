@@ -191,9 +191,17 @@ fn imports_query_key(file: &Path, language: Language) -> QueryKey {
 }
 
 /// Build the `QueryKey` the `Calls` handler constructs for a request rooted
-/// at `root`.
-fn calls_query_key(root: &Path, language: Language) -> QueryKey {
-    QueryKey::new("calls", hash_str_args(&[&root.to_string_lossy()]), language)
+/// at `root` with the request's truncation limit.
+///
+/// daemon-calls-payload-v1: the cached value IS the truncated output, so the
+/// limit is part of the key — a `--max-items 1000` request must not be served
+/// the 200-edge slot a default request warmed.
+fn calls_query_key(root: &Path, language: Language, max_items: usize) -> QueryKey {
+    QueryKey::new(
+        "calls",
+        hash_str_args(&[&root.to_string_lossy(), &max_items.to_string()]),
+        language,
+    )
 }
 
 /// Maximum number of `(file, function)` cfg/dfg slots warmed per source file.
@@ -593,8 +601,13 @@ impl TLDRDaemon {
                 let mut errors = Vec::new();
                 let mut entries = 0usize;
 
-                // 1. Warm call graph
-                let calls_key = calls_query_key(&self.project, lang);
+                // 1. Warm call graph — with the CLI's default truncation
+                // limit, the slot a default `tldr calls` request reads.
+                let calls_key = calls_query_key(
+                    &self.project,
+                    lang,
+                    crate::commands::calls::DEFAULT_CALLS_MAX_ITEMS,
+                );
                 if self.cache.get::<serde_json::Value>(&calls_key).is_some() {
                     warmed.push("call_graph (cached)");
                 } else {
@@ -1017,16 +1030,49 @@ impl TLDRDaemon {
                 }
             }
 
-            DaemonCommand::Calls { path, language } => {
+            DaemonCommand::Calls {
+                path,
+                language,
+                max_items,
+            } => {
                 let root = path.unwrap_or_else(|| self.project.clone());
                 let lang = resolve_language_from_root(language, &root);
-                let key = calls_query_key(&root, lang);
+                let max = max_items.unwrap_or(crate::commands::calls::DEFAULT_CALLS_MAX_ITEMS);
+                let key = calls_query_key(&root, lang, max);
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
-                match build_project_call_graph(&root, lang, None, true) {
-                    Ok(result) => {
-                        let val = serde_json::to_value(&result).unwrap_or_default();
+                // daemon-calls-payload-v1: build with the SAME v2 builder and
+                // config the CLI's direct-compute path uses, then cache and
+                // serve the SAME `CallGraphOutput` shape. Pre-fix this handler
+                // serialized the raw compat `ProjectCallGraph`
+                // (`{"edges": [...]}`) — a payload that never deserialized
+                // into the CLI's `CallGraphOutput`, so `try_daemon_route`
+                // always returned `None` and `tldr calls` silently fell back
+                // to direct compute, leaving the daemon cache useless for the
+                // calls command.
+                let config = tldr_core::callgraph::BuildConfig {
+                    language: lang.as_str().to_string(),
+                    respect_ignore: true,
+                    use_type_resolution: true,
+                    ..Default::default()
+                };
+                match tldr_core::callgraph::build_project_call_graph_v2(&root, config) {
+                    Ok(ir) => {
+                        // why canonicalize for path stripping: the direct path
+                        // strips IR paths against the canonicalized root (see
+                        // `CallsArgs::run`); the daemon must produce the same
+                        // relative spellings.
+                        let canonical_root =
+                            dunce::canonicalize(&root).unwrap_or_else(|_| root.clone());
+                        let output = crate::commands::calls::CallGraphOutput::from_ir(
+                            &ir,
+                            &canonical_root,
+                            &root,
+                            Some(lang),
+                            max,
+                        );
+                        let val = serde_json::to_value(&output).unwrap_or_default();
                         self.cache.insert(key, &val, vec![]);
                         DaemonResponse::Result(val)
                     }
@@ -2170,6 +2216,7 @@ mod tests {
             .handle_command(DaemonCommand::Calls {
                 path: None,
                 language: None,
+                max_items: None,
             })
             .await;
 
@@ -2419,6 +2466,7 @@ mod tests {
             .handle_command(DaemonCommand::Calls {
                 path: None,
                 language: None,
+                max_items: None,
             })
             .await;
 

@@ -15,7 +15,7 @@ use crate::state::DaemonState;
 use tldr_core::{
     architecture_analysis, build_project_call_graph, dead_code_analysis, find_importers,
     impact_analysis, ArchitectureReport, DeadCodeReport, FunctionRef, ImpactReport,
-    ImportersReport, Language, ProjectCallGraph,
+    ImportersReport, Language,
 };
 
 // =============================================================================
@@ -40,26 +40,34 @@ pub async fn calls(
         .parse()
         .map_err(|e: String| HandlerError(axum::http::StatusCode::BAD_REQUEST, e))?;
 
-    // Use cached call graph or build new one (M12)
+    // Use cached call graph or build new one (M12).
+    //
+    // Issue #85: a build failure is returned as HTTP 500 and NOT cached.
+    // The previous fallback (`unwrap_or_else(|_| ProjectCallGraph::new())`)
+    // materialized an empty graph on error — and because the shared cache
+    // stores the builder's return value, that empty graph was then served to
+    // every subsequent valid request for the lifetime of the daemon.
     let project = state.project().clone();
     let graph = state
         .get_or_build_call_graph(language, || async move {
             // Run in blocking context (M10)
             tokio::task::spawn_blocking(move || {
                 build_project_call_graph(&project, language, None, true)
-                    // why: a swallowed build error was cached as an empty graph forever
-                    // (get_or_build_call_graph caches the closure's return value), so a
-                    // parse/IO failure silently looked like "project has no calls" on every
-                    // future request. Log it so the failure is at least observable.
-                    .unwrap_or_else(|e| {
-                        tracing::error!("build_project_call_graph failed: {e}");
-                        ProjectCallGraph::new()
-                    })
             })
             .await
-            .unwrap_or_else(|_| ProjectCallGraph::new())
+            .map_err(|e| {
+                tracing::error!("call graph build task failed: {e}");
+                format!("call graph build task failed: {e}")
+            })
+            .and_then(|built| {
+                built.map_err(|e| {
+                    tracing::error!("build_project_call_graph failed: {e}");
+                    format!("call graph build failed: {e}")
+                })
+            })
         })
-        .await;
+        .await
+        .map_err(|e| HandlerError(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let response = CallsResponse {
         edge_count: graph.edge_count(),
@@ -112,25 +120,30 @@ pub async fn impact(
     let depth = request.depth;
     let target_file = request.file.map(PathBuf::from);
 
-    // Get or build call graph
+    // Get or build call graph.
+    //
+    // Issue #85: a build failure surfaces as HTTP 500 and is NOT cached —
+    // see the `calls` handler for the full rationale.
     let graph = state
         .get_or_build_call_graph(language, || async move {
             let project = project.clone();
             tokio::task::spawn_blocking(move || {
                 build_project_call_graph(&project, language, None, true)
-                    // why: a swallowed build error was cached as an empty graph forever
-                    // (get_or_build_call_graph caches the closure's return value), so a
-                    // parse/IO failure silently looked like "project has no calls" on every
-                    // future request. Log it so the failure is at least observable.
-                    .unwrap_or_else(|e| {
-                        tracing::error!("build_project_call_graph failed: {e}");
-                        ProjectCallGraph::new()
-                    })
             })
             .await
-            .unwrap_or_else(|_| ProjectCallGraph::new())
+            .map_err(|e| {
+                tracing::error!("call graph build task failed: {e}");
+                format!("call graph build task failed: {e}")
+            })
+            .and_then(|built| {
+                built.map_err(|e| {
+                    tracing::error!("build_project_call_graph failed: {e}");
+                    format!("call graph build failed: {e}")
+                })
+            })
         })
-        .await;
+        .await
+        .map_err(|e| HandlerError(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     // Run impact analysis
     let result = impact_analysis(&graph, &func, depth, target_file.as_deref())
@@ -309,25 +322,30 @@ pub async fn arch(
 
     let project = state.project().clone();
 
-    // Get or build call graph
+    // Get or build call graph.
+    //
+    // Issue #85: a build failure surfaces as HTTP 500 and is NOT cached —
+    // see the `calls` handler for the full rationale.
     let graph = state
         .get_or_build_call_graph(language, || async {
             let project = project.clone();
             tokio::task::spawn_blocking(move || {
                 build_project_call_graph(&project, language, None, true)
-                    // why: a swallowed build error was cached as an empty graph forever
-                    // (get_or_build_call_graph caches the closure's return value), so a
-                    // parse/IO failure silently looked like "project has no calls" on every
-                    // future request. Log it so the failure is at least observable.
-                    .unwrap_or_else(|e| {
-                        tracing::error!("build_project_call_graph failed: {e}");
-                        ProjectCallGraph::new()
-                    })
             })
             .await
-            .unwrap_or_else(|_| ProjectCallGraph::new())
+            .map_err(|e| {
+                tracing::error!("call graph build task failed: {e}");
+                format!("call graph build task failed: {e}")
+            })
+            .and_then(|built| {
+                built.map_err(|e| {
+                    tracing::error!("build_project_call_graph failed: {e}");
+                    format!("call graph build failed: {e}")
+                })
+            })
         })
-        .await;
+        .await
+        .map_err(|e| HandlerError(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let result = architecture_analysis(&graph)
         .map_err(|e| HandlerError(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

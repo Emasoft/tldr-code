@@ -152,17 +152,25 @@ impl DaemonState {
         self.error_count.load(Ordering::Relaxed)
     }
 
-    /// Get or build call graph for a language
+    /// Get or build call graph for a language.
     ///
-    /// M12: Uses OnceCell to ensure only one build happens even with concurrent requests
+    /// M12: Uses OnceCell to ensure only one build happens even with
+    /// concurrent requests.
+    ///
+    /// Issue #85: the builder is FALLIBLE and a failed build is NOT cached.
+    /// `get_or_try_init` leaves the cell uninitialized on `Err`, so a
+    /// transient build failure (unreadable directory, parse/IO error, task
+    /// join failure) is retried on the next request instead of being baked
+    /// into the cache as an empty `ProjectCallGraph` that every later valid
+    /// request would be served. Only successful builds occupy a cache slot.
     pub async fn get_or_build_call_graph<F, Fut>(
         &self,
         language: Language,
         builder: F,
-    ) -> Arc<ProjectCallGraph>
+    ) -> Result<Arc<ProjectCallGraph>, String>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = ProjectCallGraph>,
+        Fut: std::future::Future<Output = Result<ProjectCallGraph, String>>,
     {
         // First, get or insert the shared OnceCell for this language.
         // The cell is wrapped in Arc so cloning it shares the underlying cell
@@ -172,7 +180,7 @@ impl DaemonState {
             let read_guard = self.call_graph_cache.read().await;
             if let Some(cell) = read_guard.get(&language) {
                 if let Some(graph) = cell.get() {
-                    return Arc::clone(graph);
+                    return Ok(Arc::clone(graph));
                 }
                 Arc::clone(cell)
             } else {
@@ -188,12 +196,12 @@ impl DaemonState {
         };
 
         // Now initialize the OnceCell (only one caller will actually build).
-        // Because `cell` shares the cell stored in the HashMap, this initialization
-        // is observable by every subsequent reader.
-        Arc::clone(
-            cell.get_or_init(|| async { Arc::new(builder().await) })
-                .await,
-        )
+        // Because `cell` shares the cell stored in the HashMap, this
+        // initialization is observable by every subsequent reader. On `Err`
+        // the cell REMAINS EMPTY, so the failure is never cached.
+        cell.get_or_try_init(|| async { builder().await.map(Arc::new) })
+            .await
+            .map(Arc::clone)
     }
 
     /// Get or build BM25 index for a language
@@ -359,8 +367,9 @@ mod tests {
 
         // Build a call graph
         let _graph = state
-            .get_or_build_call_graph(Language::Python, || async { ProjectCallGraph::new() })
-            .await;
+            .get_or_build_call_graph(Language::Python, || async { Ok(ProjectCallGraph::new()) })
+            .await
+            .unwrap();
 
         // Verify it's cached
         {
@@ -412,13 +421,17 @@ mod tests {
 
         // Build for Python.
         let _py = state
-            .get_or_build_call_graph(Language::Python, || async { ProjectCallGraph::new() })
-            .await;
+            .get_or_build_call_graph(Language::Python, || async { Ok(ProjectCallGraph::new()) })
+            .await
+            .unwrap();
 
         // Build for TypeScript — must take a fresh slot in the cache map.
         let _ts = state
-            .get_or_build_call_graph(Language::TypeScript, || async { ProjectCallGraph::new() })
-            .await;
+            .get_or_build_call_graph(Language::TypeScript, || async {
+                Ok(ProjectCallGraph::new())
+            })
+            .await
+            .unwrap();
 
         let cache = state.call_graph_cache.read().await;
         assert_eq!(
@@ -436,6 +449,124 @@ mod tests {
             cache.contains_key(&Language::TypeScript),
             "TypeScript entry missing from cache — indicates the threaded \
              language was discarded somewhere in the cache lookup path"
+        );
+    }
+
+    /// Issue #85 regression: a FAILED call-graph build must not be cached.
+    ///
+    /// Pre-fix, the HTTP handlers converted a build error into
+    /// `ProjectCallGraph::new()` and `get_or_build_call_graph` cached that
+    /// empty graph — so after ONE transient failure, every subsequent VALID
+    /// request was served the cached empty graph for the life of the daemon.
+    ///
+    /// The sequence here is the issue's repro shape: failure first, then a
+    /// valid build. The second call must run the builder again (the cell
+    /// stayed empty) and return the REAL graph; the third call must be served
+    /// from cache without invoking the builder.
+    #[tokio::test]
+    async fn test_failed_call_graph_build_is_not_cached() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use tldr_core::CallEdge;
+
+        let state = DaemonState::new(
+            PathBuf::from("/tmp/project"),
+            PathBuf::from("/tmp/tldr.sock"),
+        );
+
+        let build_count = Arc::new(AtomicU64::new(0));
+
+        // 1. Build FAILS (the transient error from issue #85's report).
+        let err = state
+            .get_or_build_call_graph(Language::Python, || async {
+                Err("transient build failure".to_string())
+            })
+            .await
+            .expect_err("the failing builder must surface its error");
+        assert_eq!(err, "transient build failure");
+
+        // The cache map may hold the (empty) cell, but the cell itself must
+        // still be uninitialized.
+        {
+            let cache = state.call_graph_cache.read().await;
+            let cell = cache.get(&Language::Python).expect("cell exists");
+            assert!(
+                cell.get().is_none(),
+                "a failed build must not occupy the cache slot"
+            );
+        }
+
+        // 2. Build SUCCEEDS — the real graph must be served, not a cached
+        // empty one.
+        let counter = Arc::clone(&build_count);
+        let real = state
+            .get_or_build_call_graph(Language::Python, move || {
+                let counter = Arc::clone(&counter);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let mut graph = ProjectCallGraph::new();
+                    graph.add_edge(CallEdge {
+                        src_file: PathBuf::from("main.py"),
+                        src_func: "main".to_string(),
+                        dst_file: PathBuf::from("util.py"),
+                        dst_func: "helper".to_string(),
+                    });
+                    Ok(graph)
+                }
+            })
+            .await
+            .expect("the valid build must succeed");
+        assert_eq!(
+            real.edge_count(),
+            1,
+            "the second request must be served the REAL graph (failure was not cached)"
+        );
+
+        // 3. Third call is a cache HIT: the builder must not run again.
+        let counter = Arc::clone(&build_count);
+        let cached = state
+            .get_or_build_call_graph(Language::Python, move || {
+                let counter = Arc::clone(&counter);
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(ProjectCallGraph::new())
+                }
+            })
+            .await
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&real, &cached),
+            "third request must be served the cached Arc from the successful build"
+        );
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            1,
+            "builder must have run exactly once across the success + hit pair"
+        );
+    }
+
+    /// Issue #85 regression: after a failed build, a LATER successful build
+    /// replaces nothing — but a failed retry must also be possible after a
+    /// SUCCESS cached an older graph? No: a cached success is authoritative
+    /// until invalidated. What must hold is that the error path never
+    /// poisons the slot. Assert the error type is transparent (the message
+    /// carries the cause) so HTTP 500s are diagnosable.
+    #[tokio::test]
+    async fn test_call_graph_build_error_message_is_transparent() {
+        let state = DaemonState::new(
+            PathBuf::from("/tmp/project"),
+            PathBuf::from("/tmp/tldr.sock"),
+        );
+
+        let err = state
+            .get_or_build_call_graph(Language::Python, || async {
+                Err("disk on fire".to_string())
+            })
+            .await
+            .expect_err("builder error must propagate");
+        assert!(
+            err.contains("disk on fire"),
+            "error message must carry the underlying cause, got: {err}"
         );
     }
 }

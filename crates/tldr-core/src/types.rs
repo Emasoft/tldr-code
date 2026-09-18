@@ -2793,25 +2793,30 @@ pub struct CallerTree {
 /// `functions_analyzed` (canonical, matches `health.summary.functions_analyzed`
 /// from the M-B2 canonical-function-enumerator-v1 vocabulary) and the legacy
 /// `total_functions` key (deprecated alias) for back-compat.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// Deserialization mirrors that contract — and tolerates the payload the
+/// daemon itself produces, which carries BOTH keys (see the `Serialize` impl
+/// and `DeadCodeReportWire` below). A derived `Deserialize` with a
+/// `#[serde(alias)]` rejects that payload ("duplicate field"), which made
+/// every cached daemon `dead` payload undecodable and pushed `tldr dead` to
+/// its direct-compute fallback on every call.
+#[derive(Debug, Clone)]
 pub struct DeadCodeReport {
     /// Functions that are definitely dead (private and uncalled)
     pub dead_functions: Vec<FunctionRef>,
     /// Public/exported functions that are uncalled (may be intentional API surface)
-    #[serde(default)]
     pub possibly_dead: Vec<FunctionRef>,
     /// Map from file path to names of dead functions in that file
     pub by_file: HashMap<PathBuf, Vec<String>>,
     /// Count of definitely-dead functions
     pub total_dead: usize,
     /// Number of possibly-dead (public but uncalled) functions
-    #[serde(default)]
     pub total_possibly_dead: usize,
     /// Total number of functions in the analyzed codebase.
     ///
-    /// Accepts both `functions_analyzed` (canonical, N13) and
-    /// `total_functions` (legacy) on deserialization.
-    #[serde(alias = "functions_analyzed")]
+    /// Serialized as `functions_analyzed` (canonical, N13) AND as the
+    /// deprecated `total_functions` alias; deserialization accepts either
+    /// spelling, or both at once, preferring the canonical key.
     pub total_functions: usize,
     /// Percentage of definitely-dead functions (excludes possibly_dead)
     pub dead_percentage: f64,
@@ -2820,12 +2825,10 @@ pub struct DeadCodeReport {
     /// TRDD-O66FM8TN: dead-code detection is whole-program — a function whose
     /// only caller lives in a dropped file is reported as dead — so a reduced
     /// input set must be visible in the report, not silently absorbed.
-    /// `#[serde(default)]` keeps cached daemon payloads deserializable.
-    #[serde(default)]
+    /// Defaults to 0 for payloads written before the field existed.
     pub files_skipped: usize,
     /// One `Skipped <path>: <reason>` line per dropped file
     /// (see `tldr_core::fs::skipped_file_warning`).
-    #[serde(default)]
     pub warnings: Vec<String>,
 }
 
@@ -2855,6 +2858,63 @@ impl serde::Serialize for DeadCodeReport {
         s.serialize_field("files_skipped", &self.files_skipped)?;
         s.serialize_field("warnings", &self.warnings)?;
         s.end()
+    }
+}
+
+/// Wire shape used to deserialize `DeadCodeReport` (daemon round-trip fix).
+///
+/// The daemon serializes the report with BOTH the canonical
+/// `functions_analyzed` key and the deprecated `total_functions` alias — the
+/// `Serialize` impl directly above. A derived `Deserialize` expresses that
+/// alias as `#[serde(alias)]` on one field, and serde rejects a payload
+/// carrying a field AND its alias ("duplicate field `total_functions`"). The
+/// two spellings are therefore distinct OPTIONAL fields here, merged by the
+/// `Deserialize` impl below: canonical wins, the legacy alias is the
+/// fallback, and a payload with both (the daemon's own cached shape)
+/// deserializes cleanly.
+#[derive(serde::Deserialize)]
+#[serde(rename = "DeadCodeReport")]
+struct DeadCodeReportWire {
+    dead_functions: Vec<FunctionRef>,
+    #[serde(default)]
+    possibly_dead: Vec<FunctionRef>,
+    by_file: HashMap<PathBuf, Vec<String>>,
+    total_dead: usize,
+    #[serde(default)]
+    total_possibly_dead: usize,
+    /// Canonical key (N13).
+    #[serde(default)]
+    functions_analyzed: Option<usize>,
+    /// Deprecated alias (N13) — accepted alongside the canonical key.
+    #[serde(default)]
+    total_functions: Option<usize>,
+    dead_percentage: f64,
+    #[serde(default)]
+    files_skipped: usize,
+    #[serde(default)]
+    warnings: Vec<String>,
+}
+
+impl<'de> serde::Deserialize<'de> for DeadCodeReport {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = DeadCodeReportWire::deserialize(deserializer)?;
+        Ok(DeadCodeReport {
+            dead_functions: wire.dead_functions,
+            possibly_dead: wire.possibly_dead,
+            by_file: wire.by_file,
+            total_dead: wire.total_dead,
+            total_possibly_dead: wire.total_possibly_dead,
+            total_functions: wire
+                .functions_analyzed
+                .or(wire.total_functions)
+                .unwrap_or(0),
+            dead_percentage: wire.dead_percentage,
+            files_skipped: wire.files_skipped,
+            warnings: wire.warnings,
+        })
     }
 }
 
