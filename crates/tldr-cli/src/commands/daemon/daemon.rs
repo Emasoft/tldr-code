@@ -102,6 +102,84 @@ fn dfg_query_key(file: &Path, function: &str, language: Language) -> QueryKey {
     )
 }
 
+// =============================================================================
+// File-identity canonicalization for cache invalidation (issue #59)
+// =============================================================================
+
+/// Canonical spelling of a file path for CACHE BOOKKEEPING (the input hashes
+/// recorded at cache-insertion time and the hashes looked up at
+/// invalidation time) — issue #59.
+///
+/// `salsa::hash_path` hashes the path's REPRESENTATION, so two spellings of
+/// the same physical file (symlinked directories, `..` components, absolute
+/// vs relative forms — editor hooks and monorepo tooling produce these
+/// constantly) hash differently and cache entries indexed under one spelling
+/// are invisible to invalidation events arriving under another. Both sides
+/// must therefore hash the SAME canonical spelling: `dunce::canonicalize`
+/// resolves symlinks and `..` without Windows' `\\?\` UNC mangling, and is
+/// already the resolver `extract_file`'s traversal check uses, so a spelling
+/// that can be extracted can always be canonicalized here.
+///
+/// When canonicalization FAILS (the typical notify case: the file has just
+/// been deleted, so nothing on disk resolves), the raw spelling is returned
+/// and the invalidation walk pairs it with the best-effort lexical
+/// resolution from [`lexical_best_effort_spelling`].
+fn canonical_file_spelling(path: &Path) -> PathBuf {
+    dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Input hashes recorded at cache-INSERTION time for `path` (issue #59): one
+/// for the canonical spelling (matching a notify event that can be
+/// canonicalized) and one for the raw request spelling (matching a notify
+/// event that CANNOT be canonicalized — the deleted-file case — and entries
+/// persisted under the pre-fix raw-hash format). Deduplicated; order is
+/// irrelevant.
+fn file_input_hashes(path: &Path) -> Vec<u64> {
+    let mut hashes = vec![
+        super::salsa::hash_path(&canonical_file_spelling(path)),
+        super::salsa::hash_path(path),
+    ];
+    hashes.sort_unstable();
+    hashes.dedup();
+    hashes
+}
+
+/// Best-effort LEXICAL resolution of `path`: make it absolute against the
+/// process cwd and collapse `.` / `..` components WITHOUT touching the
+/// filesystem — the usual reason [`canonical_file_spelling`] failed is that
+/// the file no longer exists, so the real resolver cannot be used.
+///
+/// Symlinks are deliberately left unresolved; this spelling only catches
+/// entries indexed under a relative / `..` spelling of the same logical
+/// path. Leading `..` components that would escape the root are dropped.
+fn lexical_best_effort_spelling(path: &Path) -> PathBuf {
+    use std::path::Component;
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(p) => resolved.push(p.as_os_str()),
+            Component::RootDir => {
+                resolved.push(std::path::MAIN_SEPARATOR.to_string());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(seg) => resolved.push(seg),
+        }
+    }
+    resolved
+}
+
 /// Build the `QueryKey` the `Imports` handler constructs for a request on
 /// `file`.
 fn imports_query_key(file: &Path, language: Language) -> QueryKey {
@@ -741,11 +819,15 @@ impl TLDRDaemon {
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
-                let file_hash = super::salsa::hash_path(&file);
+                // Issue #59: record input hashes for the CANONICAL spelling
+                // (the resolver the notify invalidation walk uses) AND the
+                // raw request spelling — a notify arriving under any
+                // spelling of the same file must find the entry.
+                let file_hash = file_input_hashes(&file);
                 match extract_file(&file, Some(&self.project)) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![file_hash]);
+                        self.cache.insert(key, &val, file_hash);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -843,11 +925,13 @@ impl TLDRDaemon {
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
-                let file_hash = super::salsa::hash_path(&file);
+                // Issue #59: input hashes for canonical + raw spellings
+                // (see the Extract handler).
+                let file_hash = file_input_hashes(&file);
                 match get_cfg_context(&file.to_string_lossy(), &function, language) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![file_hash]);
+                        self.cache.insert(key, &val, file_hash);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -871,11 +955,13 @@ impl TLDRDaemon {
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
-                let file_hash = super::salsa::hash_path(&file);
+                // Issue #59: input hashes for canonical + raw spellings
+                // (see the Extract handler).
+                let file_hash = file_input_hashes(&file);
                 match get_dfg_context(&file.to_string_lossy(), &function, language) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![file_hash]);
+                        self.cache.insert(key, &val, file_hash);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -908,7 +994,9 @@ impl TLDRDaemon {
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
-                let file_hash = super::salsa::hash_path(&file);
+                // Issue #59: input hashes for canonical + raw spellings
+                // (see the Extract handler).
+                let file_hash = file_input_hashes(&file);
                 match get_slice(
                     &file_str,
                     &function,
@@ -919,7 +1007,7 @@ impl TLDRDaemon {
                 ) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![file_hash]);
+                        self.cache.insert(key, &val, file_hash);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -1083,11 +1171,13 @@ impl TLDRDaemon {
                 if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
                     return DaemonResponse::Result(cached);
                 }
-                let file_hash = super::salsa::hash_path(&file);
+                // Issue #59: input hashes for canonical + raw spellings
+                // (see the Extract handler).
+                let file_hash = file_input_hashes(&file);
                 match get_imports(&file, language) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(key, &val, vec![file_hash]);
+                        self.cache.insert(key, &val, file_hash);
                         DaemonResponse::Result(val)
                     }
                     Err(e) => DaemonResponse::Error {
@@ -1238,7 +1328,11 @@ impl TLDRDaemon {
                     continue;
                 }
             };
-            let file_hash = super::salsa::hash_path(path);
+            // Issue #59: record input hashes for the CANONICAL spelling —
+            // the same resolver the handlers and the notify invalidation
+            // walk use — plus the raw spelling, so warm-filled slots are
+            // invalidated by events arriving under any spelling of the file.
+            let file_hash = file_input_hashes(path);
 
             // 1. extract — mirrors the DaemonCommand::Extract handler.
             let extract_key = extract_query_key(path, file_lang);
@@ -1246,7 +1340,7 @@ impl TLDRDaemon {
                 match extract_file(path, Some(&self.project)) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(extract_key, &val, vec![file_hash]);
+                        self.cache.insert(extract_key, &val, file_hash.clone());
                         stats.entries += 1;
                     }
                     Err(e) => stats
@@ -1261,7 +1355,7 @@ impl TLDRDaemon {
                 match get_imports(path, file_lang) {
                     Ok(result) => {
                         let val = serde_json::to_value(&result).unwrap_or_default();
-                        self.cache.insert(imports_key, &val, vec![file_hash]);
+                        self.cache.insert(imports_key, &val, file_hash.clone());
                         stats.entries += 1;
                     }
                     Err(e) => stats
@@ -1332,7 +1426,7 @@ impl TLDRDaemon {
                     }
                     match result {
                         Ok(val) => {
-                            self.cache.insert(key, &val, vec![file_hash]);
+                            self.cache.insert(key, &val, file_hash.clone());
                             stats.entries += 1;
                         }
                         Err(e) => stats.errors.push(format!(
@@ -1385,6 +1479,45 @@ impl TLDRDaemon {
         }
     }
 
+    /// Invalidate every cache entry whose input hash was recorded under ANY
+    /// spelling of `file` (issue #59).
+    ///
+    /// Cache entries are indexed by `hash_path` of a path SPELLING. The
+    /// notify CLI client canonicalizes the changed path before sending, but
+    /// extract/warm requests may legitimately have used a different spelling
+    /// of the same physical file (symlinked directories, `..` components, a
+    /// relative form). Invalidation therefore walks every spelling an entry
+    /// could be indexed under:
+    ///
+    /// 1. the canonical spelling — the same `dunce::canonicalize` resolver
+    ///    the cache-insertion sites use for their input hashes;
+    /// 2. the RAW spelling as received — covers entries persisted by an
+    ///    older daemon (raw-hash format) and direct-IPC senders that skip
+    ///    the CLI client;
+    /// 3. the lexical best-effort resolution — covers relative / `..`
+    ///    spellings when true canonicalization fails (deleted file).
+    ///
+    /// Every listed spelling RESOLVES TO THE SAME PHYSICAL FILE as the event
+    /// path, so extra spellings never over-invalidate; hashes with no
+    /// dependents are constant-time no-ops. Canonicalization failing is not
+    /// fatal: rules 2 and 3 carry the invalidation on their own.
+    fn invalidate_file_caches(&self, file: &Path) -> usize {
+        let mut spellings = vec![
+            canonical_file_spelling(file),
+            file.to_path_buf(),
+            lexical_best_effort_spelling(file),
+        ];
+        spellings.sort();
+        spellings.dedup();
+        let mut invalidated = 0;
+        for spelling in &spellings {
+            invalidated += self
+                .cache
+                .invalidate_by_input(super::salsa::hash_path(spelling));
+        }
+        invalidated
+    }
+
     /// Handle the Notify command (file change notification).
     async fn handle_notify(&self, file: PathBuf) -> DaemonResponse {
         // Add file to dirty set
@@ -1394,9 +1527,13 @@ impl TLDRDaemon {
             dirty.len()
         };
 
-        // Invalidate cache entries for this file
-        let file_hash = super::salsa::hash_path(&file);
-        self.cache.invalidate_by_input(file_hash);
+        // Invalidate cache entries for this file. Issue #59: the event path
+        // is normalized through the same canonicalization the insertion
+        // sites use for their input hashes (with raw + best-effort fallback
+        // spellings) — pre-fix, an event arriving under a different spelling
+        // of the file hashed to a different input hash and the stale cache
+        // entry survived.
+        self.invalidate_file_caches(&file);
 
         // Invalidate semantic index so it rebuilds on next query
         #[cfg(feature = "semantic")]
@@ -2497,6 +2634,284 @@ mod tests {
         assert!(
             stats.invalidations >= 1,
             "File notify should have caused invalidation"
+        );
+    }
+
+    // =========================================================================
+    // issue-59-notify-invalidation-v1: non-canonical event path spellings
+    // =========================================================================
+
+    /// Assert `val` (an Extract result) names function `name`.
+    fn extract_result_names_function(val: &serde_json::Value, name: &str) -> bool {
+        val.get("functions")
+            .and_then(|f| f.as_array())
+            .map(|funcs| {
+                funcs
+                    .iter()
+                    .any(|f| f.get("name").and_then(|n| n.as_str()) == Some(name))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Issue #59: a cache entry created through a SYMLINKED spelling of a
+    /// file must be invalidated when the file changes. The notify CLI client
+    /// canonicalizes the changed path before sending (symlinks resolved), so
+    /// the event arrives under a DIFFERENT spelling than the extract request
+    /// used. Pre-fix, `hash_path` hashed the path representation, the
+    /// invalidation lookup missed, and the stale entry survived the notify.
+    #[tokio::test]
+    async fn test_daemon_extract_notify_symlink_path_mismatch() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let temp = TempDir::new().unwrap();
+            let real_dir = temp.path().join("real");
+            std::fs::create_dir(&real_dir).unwrap();
+            let real_file = real_dir.join("main.py");
+            std::fs::write(&real_file, "def f1():\n    pass\n").unwrap();
+
+            // Monorepo-style alias: a symlink INSIDE the project tree
+            // pointing at the real directory.
+            let link = temp.path().join("link");
+            symlink(&real_dir, &link).unwrap();
+            let symlink_file = link.join("main.py");
+
+            let config = DaemonConfig::default();
+            let daemon = TLDRDaemon::new(temp.path().to_path_buf(), config);
+
+            // Extract through the SYMLINK spelling.
+            let r1 = daemon
+                .handle_command(DaemonCommand::Extract {
+                    file: symlink_file.clone(),
+                    session: None,
+                })
+                .await;
+            assert!(
+                matches!(r1, DaemonResponse::Result(_)),
+                "extract via symlink spelling must succeed, got {:?}",
+                r1
+            );
+
+            // Change the physical file.
+            std::fs::write(&real_file, "def f1():\n    pass\n\ndef f2():\n    pass\n").unwrap();
+
+            // Notify through the CANONICAL spelling (what the notify CLI
+            // client sends after its own canonicalization).
+            let canonical_file = real_file.canonicalize().unwrap();
+            daemon
+                .handle_command(DaemonCommand::Notify {
+                    file: canonical_file,
+                })
+                .await;
+
+            let stats = daemon.cache_stats();
+            assert!(
+                stats.invalidations >= 1,
+                "issue #59: symlink-spelled cache entry must be invalidated by a \
+                 canonical-path notify; got invalidations={}",
+                stats.invalidations
+            );
+
+            // The next query through the symlink spelling reflects the change.
+            let r2 = daemon
+                .handle_command(DaemonCommand::Extract {
+                    file: symlink_file,
+                    session: None,
+                })
+                .await;
+            match r2 {
+                DaemonResponse::Result(val) => assert!(
+                    extract_result_names_function(&val, "f2"),
+                    "issue #59: extract after notify must reflect the change, got {}",
+                    val
+                ),
+                other => panic!("Expected Result response, got {:?}", other),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            // Symlink fixtures are unix-only; the canonical control test
+            // below covers the shared code path on other platforms.
+        }
+    }
+
+    /// Issue #59: `..`-component spellings (the relative-form class of the
+    /// issue) must invalidate too — extract through a `..`-laden spelling,
+    /// notify through the canonical spelling, next query reflects the change.
+    #[tokio::test]
+    async fn test_daemon_extract_notify_relative_path_mismatch() {
+        let temp = TempDir::new().unwrap();
+        let real_file = temp.path().join("main.py");
+        std::fs::write(&real_file, "def f1():\n    pass\n").unwrap();
+        // The intermediate directory must exist for `..` to resolve.
+        std::fs::create_dir(temp.path().join("sub")).unwrap();
+        let dotted_file = temp.path().join("sub").join("..").join("main.py");
+
+        let config = DaemonConfig::default();
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), config);
+
+        // Extract through the `..` spelling.
+        let r1 = daemon
+            .handle_command(DaemonCommand::Extract {
+                file: dotted_file.clone(),
+                session: None,
+            })
+            .await;
+        assert!(
+            matches!(r1, DaemonResponse::Result(_)),
+            "extract via '..' spelling must succeed, got {:?}",
+            r1
+        );
+
+        // Change the physical file, notify through the canonical spelling.
+        std::fs::write(&real_file, "def f1():\n    pass\n\ndef f2():\n    pass\n").unwrap();
+        let canonical_file = real_file.canonicalize().unwrap();
+        daemon
+            .handle_command(DaemonCommand::Notify {
+                file: canonical_file,
+            })
+            .await;
+
+        let stats = daemon.cache_stats();
+        assert!(
+            stats.invalidations >= 1,
+            "issue #59: '..'-spelled cache entry must be invalidated by a \
+             canonical-path notify; got invalidations={}",
+            stats.invalidations
+        );
+
+        // Next query through the `..` spelling reflects the change.
+        let r2 = daemon
+            .handle_command(DaemonCommand::Extract {
+                file: dotted_file,
+                session: None,
+            })
+            .await;
+        match r2 {
+            DaemonResponse::Result(val) => assert!(
+                extract_result_names_function(&val, "f2"),
+                "issue #59: extract after notify must reflect the change, got {}",
+                val
+            ),
+            other => panic!("Expected Result response, got {:?}", other),
+        }
+    }
+
+    /// Issue #59 fallback: the most common notify — a DELETED file — cannot
+    /// be canonicalized (nothing on disk resolves). The RAW spelling the
+    /// event carries must carry the invalidation on its own; the entry was
+    /// indexed under that same spelling when it was still the canonical one.
+    #[tokio::test]
+    async fn test_daemon_notify_deleted_file_invalidates_via_raw_spelling() {
+        let temp = TempDir::new().unwrap();
+        let file = temp.path().join("main.py");
+        std::fs::write(&file, "def f1():\n    pass\n").unwrap();
+
+        let config = DaemonConfig::default();
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), config);
+
+        let r1 = daemon
+            .handle_command(DaemonCommand::Extract {
+                file: file.clone(),
+                session: None,
+            })
+            .await;
+        assert!(
+            matches!(r1, DaemonResponse::Result(_)),
+            "extract must succeed, got {:?}",
+            r1
+        );
+
+        // Delete the file, THEN notify the now-unresolvable path:
+        // canonicalization fails, so the raw-spelling fallback must fire.
+        std::fs::remove_file(&file).unwrap();
+        daemon
+            .handle_command(DaemonCommand::Notify { file: file.clone() })
+            .await;
+
+        let stats = daemon.cache_stats();
+        assert!(
+            stats.invalidations >= 1,
+            "issue #59: deleted-file notify must still invalidate via the raw \
+             spelling fallback; got invalidations={}",
+            stats.invalidations
+        );
+    }
+
+    /// Canonical-path control (issue #59): same spelling on both sides keeps
+    /// invalidating exactly as before — AND the invalidation walk must not
+    /// over-invalidate: a notify for file A leaves file B's cache slot
+    /// servable from cache.
+    #[tokio::test]
+    async fn test_daemon_notify_canonical_path_control_and_no_over_invalidation() {
+        let temp = create_test_project();
+        let config = DaemonConfig::default();
+        let daemon = TLDRDaemon::new(temp.path().to_path_buf(), config);
+
+        let file_a = temp.path().join("main.py");
+        let file_b = temp.path().join("other.py");
+        std::fs::write(&file_b, "def g1():\n    pass\n").unwrap();
+
+        // Populate both entries (canonical spelling on both sides).
+        let r1 = daemon
+            .handle_command(DaemonCommand::Extract {
+                file: file_a.clone(),
+                session: None,
+            })
+            .await;
+        assert!(matches!(r1, DaemonResponse::Result(_)));
+        let r2 = daemon
+            .handle_command(DaemonCommand::Extract {
+                file: file_b.clone(),
+                session: None,
+            })
+            .await;
+        assert!(matches!(r2, DaemonResponse::Result(_)));
+
+        // Notify file A only.
+        daemon
+            .handle_command(DaemonCommand::Notify {
+                file: file_a.clone(),
+            })
+            .await;
+
+        // A must be invalidated (control: canonical-path invalidation
+        // unchanged by the #59 normalization).
+        let stats = daemon.cache_stats();
+        assert!(
+            stats.invalidations >= 1,
+            "canonical-path notify must still invalidate; got invalidations={}",
+            stats.invalidations
+        );
+
+        // B must NOT have been over-invalidated: its next query is a HIT.
+        let before = daemon.cache_stats();
+        let rb = daemon
+            .handle_command(DaemonCommand::Extract {
+                file: file_b,
+                session: None,
+            })
+            .await;
+        let after = daemon.cache_stats();
+        assert!(matches!(rb, DaemonResponse::Result(_)));
+        assert_eq!(
+            after.hits - before.hits,
+            1,
+            "issue #59: a notify for file A must not over-invalidate file B's slot"
+        );
+        // ...and A's next query is a miss (it was invalidated above).
+        let ra = daemon
+            .handle_command(DaemonCommand::Extract {
+                file: file_a,
+                session: None,
+            })
+            .await;
+        assert!(matches!(ra, DaemonResponse::Result(_)));
+        let final_stats = daemon.cache_stats();
+        assert!(
+            final_stats.misses > after.misses,
+            "file A's post-notify query must be a cache miss (entry was invalidated)"
         );
     }
 
