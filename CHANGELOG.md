@@ -4,6 +4,24 @@
 
 ### Fixed
 
+- **`tldr cache clear` no longer leaves the cache "magically restored" when a daemon is
+  running** (cache-clear-shutdown-race-v1, `commands/daemon/cache_clear.rs`, issue #62).
+  `cache clear` sent `Shutdown` fire-and-forget and deleted the cache files immediately, but
+  the daemon ACKs `Shutdown` BEFORE its event loop breaks — its shutdown path then called
+  `persist_stats()`, which re-creates `.tldr/cache/` and re-writes `salsa_stats.json` +
+  `query_cache.bin` AFTER the delete, so the user asked for an empty cache and got a
+  re-populated one. `cache clear` now performs the same graceful shutdown `daemon stop` does:
+  send `Shutdown`, then poll `check_socket_alive()` (bounded 5s budget) and only delete once
+  the daemon has actually exited — the wait covers the full `run()` teardown including the
+  late persist, because the socket stops connecting only when the daemon's listener is
+  dropped, after `persist_stats()`. It also cleans up the stopped daemon's records (socket
+  file, PID file, legacy discovery record, registry entry), exactly like `daemon stop`.
+  **Semantics change (documented in `--help`): when a daemon is running for the project,
+  `cache clear` stops it and LEAVES IT STOPPED — restart with `tldr daemon start`.** When no
+  daemon is running, behaviour is unchanged and the no-daemon path stays zero-latency (the
+  wait only happens when the shutdown was actually delivered). Pinned by unit tests in
+  `cache_clear.rs` (clear-with-running-daemon leaves the cache dir empty and the daemon
+  joined; clear-without-daemon removes files and they never reappear).
 - **`tldr importers` rewrites an ABSOLUTE doc-file module string to its project-root-relative
   spelling** (doc-target-importers-v1 absolute-path ergonomics). When the module string names an
   EXISTING file that resolves to a DOC language, it is now rewritten to the file's

@@ -458,7 +458,8 @@ pub enum CacheCommand {
     /// Show cache statistics
     Stats(CacheStatsArgs),
 
-    /// Clear cache files
+    /// Clear cache files (gracefully stops the project's daemon first — the
+    /// daemon is left stopped; restart with `tldr daemon start`)
     Clear(CacheClearArgs),
 }
 

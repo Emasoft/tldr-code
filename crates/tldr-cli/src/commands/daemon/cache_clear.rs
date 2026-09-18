@@ -3,9 +3,16 @@
 //! CLI command: `tldr cache clear [--project PATH]`
 //!
 //! Clears the cache for a TLDR project:
-//! 1. If daemon is running, stops it first (or sends Clear command)
+//! 1. If daemon is running, gracefully stops it and waits for it to exit
+//!    (issue #62). The daemon is LEFT STOPPED — restart it with
+//!    `tldr daemon start`.
 //! 2. Deletes cache files in `.tldr/cache/`
 //! 3. Reports cleared size
+//!
+//! The wait-for-exit matters: the daemon's shutdown path persists
+//! `.tldr/cache/salsa_stats.json` + `query_cache.bin`, so deleting before the
+//! daemon is gone lets its shutdown persist recreate the files right after
+//! the clear (the cache appeared "magically restored").
 //!
 //! Files removed:
 //! - salsa_cache.bin (Salsa query cache)
@@ -16,14 +23,18 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::Args;
 use serde::Serialize;
 
 use crate::output::OutputFormat;
 
+use super::daemon_active::remove_active_for_project;
+use super::daemon_registry::remove_entry;
 use super::error::DaemonResult;
-use super::ipc::send_command;
+use super::ipc::{check_socket_alive, cleanup_socket, send_command};
+use super::pid::{cleanup_stale_pid, compute_pid_path};
 use super::types::DaemonCommand;
 
 // =============================================================================
@@ -79,9 +90,10 @@ impl CacheClearArgs {
                 .join(&self.project)
         });
 
-        // Try to stop daemon first if it's running
-        // This ensures the daemon doesn't continue writing to cache files
-        self.try_stop_daemon(&project).await;
+        // Gracefully stop the daemon first if it's running — and WAIT for it
+        // to actually exit before deleting anything (issue #62). The daemon
+        // is left stopped; restart it with `tldr daemon start`.
+        self.stop_daemon_and_wait(&project).await;
 
         // Clear cache files
         let (files_removed, bytes_freed) = self.clear_cache_files(&project)?;
@@ -107,11 +119,52 @@ impl CacheClearArgs {
         self.print_output(&output, format, quiet)
     }
 
-    /// Try to stop the daemon if it's running.
-    async fn try_stop_daemon(&self, project: &Path) {
+    /// Gracefully stop the daemon for `project` and wait for it to actually
+    /// exit before returning (issue #62).
+    ///
+    /// Semantics: if a daemon is running for this project, `cache clear`
+    /// stops it first and LEAVES IT STOPPED — restart with
+    /// `tldr daemon start --project <path>`.
+    ///
+    /// why: the daemon's shutdown path calls `persist_stats()`, which writes
+    /// `.tldr/cache/salsa_stats.json` + `query_cache.bin` (recreating the
+    /// directory if needed). The previous fire-and-forget `Shutdown` returned
+    /// as soon as the daemon ACKed — but the daemon ACKs BEFORE its event
+    /// loop breaks and the persist runs — so the immediately-following
+    /// `clear_cache_files()` deleted the files and the daemon's late persist
+    /// recreated them: the cache appeared "magically restored" (issue #62).
+    ///
+    /// This mirrors the proven `daemon stop` pattern: send `Shutdown`, then
+    /// poll `check_socket_alive()` with a bounded 5s budget and only proceed
+    /// once the daemon is actually gone. The wait happens ONLY when the
+    /// shutdown command was really delivered, so the common no-daemon path
+    /// stays zero-latency. If the daemon ignores the shutdown within the
+    /// budget, clear proceeds best-effort (same residual behaviour as
+    /// `daemon stop`).
+    async fn stop_daemon_and_wait(&self, project: &Path) {
         let cmd = DaemonCommand::Shutdown;
-        // Ignore errors - daemon might not be running
-        let _ = send_command(project, &cmd).await;
+        // Ignore connection errors - daemon might not be running.
+        if send_command(project, &cmd).await.is_ok() {
+            // Wait for the daemon to actually stop (5 seconds max).
+            let mut retries = 0;
+            while retries < 50 {
+                if !check_socket_alive(project).await {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                retries += 1;
+            }
+
+            // Clean up the stopped daemon's records (socket file, PID file,
+            // legacy discovery record + v0.3.0 registry entry) — the same
+            // project-guarded removal `daemon stop` performs, so `daemon
+            // status`/`list` don't report a daemon that is no longer there.
+            let _ = cleanup_socket(project);
+            let pid_path = compute_pid_path(project);
+            let _ = cleanup_stale_pid(&pid_path);
+            let _ = remove_active_for_project(project);
+            let _ = remove_entry(project);
+        }
     }
 
     /// Clear all cache files in the project's .tldr/cache/ directory.
@@ -204,7 +257,115 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use tempfile::TempDir;
+
+    /// Start an in-process daemon for `project` on a freshly bound IPC
+    /// listener and wait until its socket is connectable (Ready).
+    ///
+    /// Returns the daemon's `run()` join handle; the daemon exits after a
+    /// `Shutdown` command. This exercises the exact same `TLDRDaemon::run`
+    /// code path the `tldr-daemon` foreground runner uses, without spawning
+    /// an OS process (no daemon left behind if the test fails — the task dies
+    /// with the test process).
+    async fn start_in_process_daemon(project: &Path) -> tokio::task::JoinHandle<DaemonResult<()>> {
+        use crate::commands::daemon::daemon_impl::TLDRDaemon;
+        use crate::commands::daemon::ipc::{check_socket_alive, IpcListener};
+        use crate::commands::daemon::types::DaemonConfig;
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let listener = IpcListener::bind(project).await.unwrap();
+        let daemon = TLDRDaemon::new(project.to_path_buf(), DaemonConfig::default());
+        let handle = tokio::spawn(async move { Arc::new(daemon).run(listener).await });
+
+        // The socket is connectable as soon as the listener is bound; wait
+        // for the daemon to observe it (bounded) so the shutdown round-trip
+        // below is deterministic.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !check_socket_alive(project).await {
+            assert!(
+                Instant::now() < deadline,
+                "in-process daemon socket never became connectable"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        handle
+    }
+
+    /// Issue #62: `cache clear` with a RUNNING daemon must leave the cache
+    /// directory empty. The daemon's shutdown path calls `persist_stats()`,
+    /// which writes `.tldr/cache/salsa_stats.json` + `query_cache.bin` and
+    /// recreates the directory; if clear deletes the files before that
+    /// persist runs, the daemon recreates them and the cache appears
+    /// "magically restored". The fix: clear performs a graceful daemon
+    /// shutdown (waiting for exit) BEFORE deleting.
+    #[tokio::test]
+    async fn test_cache_clear_with_running_daemon_leaves_cache_empty() {
+        let temp = TempDir::new().unwrap();
+        // Canonicalize exactly like run_async does so the socket path hash
+        // matches between daemon and client (macOS /var → /private/var).
+        let project = temp.path().canonicalize().unwrap();
+        let cache_dir = project.join(".tldr").join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::write(cache_dir.join("salsa_stats.json"), "{}").unwrap();
+
+        let daemon_task = start_in_process_daemon(&project).await;
+
+        let args = CacheClearArgs {
+            project: project.clone(),
+        };
+        args.run_async(OutputFormat::Json, true).await.unwrap();
+
+        // The daemon must have exited (shutdown was requested by clear).
+        let joined = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;
+        assert!(joined.is_ok(), "daemon did not shut down after cache clear");
+
+        // THE REGRESSION: no file may exist in the cache directory after the
+        // clear. A daemon-side late `persist_stats()` re-creating
+        // salsa_stats.json / query_cache.bin fails this assertion.
+        let leftovers: Vec<std::path::PathBuf> = fs::read_dir(&cache_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "cache files were recreated after clear: {:?}",
+            leftovers
+        );
+    }
+
+    /// Issue #62 (control): `cache clear` WITHOUT a daemon must keep its
+    /// existing behaviour — files are deleted and never reappear.
+    #[tokio::test]
+    async fn test_cache_clear_without_daemon_files_removed_and_not_recreated() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().canonicalize().unwrap();
+        let cache_dir = project.join(".tldr").join("cache");
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::write(cache_dir.join("salsa_stats.json"), "{}").unwrap();
+        fs::write(cache_dir.join("query_cache.bin"), "payload").unwrap();
+
+        let args = CacheClearArgs {
+            project: project.clone(),
+        };
+        args.run_async(OutputFormat::Json, true).await.unwrap();
+
+        // Give any hypothetical late writer time to interfere.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let leftovers: Vec<std::path::PathBuf> = fs::read_dir(&cache_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "cache files survived clear with no daemon: {:?}",
+            leftovers
+        );
+    }
 
     #[test]
     fn test_cache_clear_args_default() {
