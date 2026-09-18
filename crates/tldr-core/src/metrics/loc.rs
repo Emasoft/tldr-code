@@ -771,6 +771,11 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
         let mut counts: HashMap<Language, usize> = HashMap::new();
         let mut detect = ignore::WalkBuilder::new(path);
         detect.follow_links(false).hidden(true);
+        // Note: this detection walk is deliberately NOT sorted (contrast with
+        // the main walk below): it only accumulates per-language counts, and a
+        // sum is invariant to visit order. Sorting would add cost with no
+        // determinism gain. The actual order-dependence here was the SELECTOR
+        // below — see the issue #74 comment there.
         for entry in detect.build().flatten() {
             let p = entry.path();
             if !p.is_file() {
@@ -780,13 +785,30 @@ pub fn analyze_directory(path: &Path, options: &LocOptions) -> Result<LocReport,
                 *counts.entry(lang).or_insert(0) += 1;
             }
         }
-        counts.into_iter().max_by_key(|(_, n)| *n).map(|(l, _)| l)
+        // issue #74 (determinism sweep): `HashMap` iteration order is
+        // randomized per process and `max_by_key` returns the LAST maximum on
+        // ties, so two languages with equal file counts flipped the hint (and
+        // with it the build/dist skip behavior in `should_skip_path_with_lang`)
+        // between runs. Rank deterministically: highest count first, ties
+        // broken by language name.
+        let mut ranked: Vec<(Language, usize)> = counts.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.as_str().cmp(b.0.as_str())));
+        ranked.into_iter().next().map(|(l, _)| l)
     });
 
     // Build walker with options
     let mut builder = ignore::WalkBuilder::new(path);
     builder.follow_links(false); // CM-1: Don't follow symlinks
     builder.hidden(!options.include_hidden);
+    // issue #74 (determinism sweep): `ignore` yields entries in OS readdir
+    // order (creation order on APFS, hash order on ext4). `by_file` rows and
+    // the `warnings` vec keep walk order, and the `max_files` cap truncates
+    // mid-walk — so without an explicit sort the row order, warning order,
+    // and WHICH files survive the cap were all filesystem dependent.
+    // `sort_by_file_path` (comparator form in ignore 0.4.x) pins the
+    // traversal deterministically; the rayon fan-out below preserves input
+    // order, so the merge stays stable.
+    builder.sort_by_file_path(|a, b| a.cmp(b));
 
     // Handle gitignore
     if options.gitignore {

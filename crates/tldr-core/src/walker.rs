@@ -236,7 +236,23 @@ impl ProjectWalker {
             .git_global(self.respect_gitignore)
             .git_exclude(self.respect_gitignore)
             .parents(self.respect_gitignore)
-            .follow_links(false); // CRITICAL: avoid pnpm symlink loops
+            .follow_links(false) // CRITICAL: avoid pnpm symlink loops
+            // issue #74 (determinism sweep, metrics/file_utils.rs:232 region):
+            // the `ignore` crate yields directory entries in OS readdir order,
+            // which is filesystem-dependent (creation order on APFS, hash order
+            // on ext4 htree). Without an explicit sort, every command that
+            // consumes `ProjectWalker` (dead, smells, patterns, deps,
+            // references, hubs, clones, health, contracts, ...) inherits that
+            // order — and any order-sensitive consumer downstream (truncation
+            // caps, first-wins insertions, output row order) becomes
+            // run-to-run and platform dependent. Sorting makes the traversal
+            // a deterministic depth-first walk over per-directory
+            // lexically-sorted entries. Cost is O(n log n) over the yielded
+            // entries — negligible next to the I/O.
+            // ignore 0.4.x API: `sort_by_file_path` takes a comparator over
+            // full entry paths (sibling entries within a directory), not a
+            // bool. Lexicographic path order = deterministic DFS.
+            .sort_by_file_path(|a, b| a.cmp(b));
 
         if let Some(depth) = self.max_depth {
             builder.max_depth(Some(depth));
@@ -352,7 +368,15 @@ fn root_is_js_ts_dominated(dir: &Path) -> bool {
         .git_global(true)
         .git_exclude(true)
         .parents(true)
-        .follow_links(false);
+        .follow_links(false)
+        // issue #74 ripple: with >256 eligible files the CAP below makes the
+        // js_ts/other counts depend on WHICH files the walk visits first, so
+        // an OS-readdir-ordered walk could flip the auto JS/TS detection
+        // (and with it the build/dist skip behavior) between platforms or
+        // directory mutations. Sorting pins the inspected window to the
+        // lexicographically-first files. See ProjectWalker::iter for the
+        // full rationale.
+        .sort_by_file_path(|a, b| a.cmp(b));
     for entry in walker.build().flatten() {
         if inspected >= CAP {
             break;

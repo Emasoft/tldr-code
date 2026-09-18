@@ -84,6 +84,16 @@ pub fn walk_source_files(
     let mut builder = ignore::WalkBuilder::new(path);
     builder.follow_links(false); // CM-1: Don't follow symlinks
     builder.hidden(!options.include_hidden);
+    // issue #74 (determinism sweep): the `ignore` crate yields entries in OS
+    // readdir order (creation order on APFS, hash order on ext4). Consumers
+    // of `walk_source_files` (cognitive, halstead, ...) push these paths
+    // straight into per-file output rows, and the `max_files` cap below
+    // truncates mid-walk — so without an explicit sort both the row order
+    // and WHICH files survive the cap were filesystem dependent.
+    // `sort_by_file_path` (comparator form in ignore 0.4.x) pins the
+    // traversal to a deterministic depth-first walk over lexically-sorted
+    // per-directory entries.
+    builder.sort_by_file_path(|a, b| a.cmp(b));
 
     if options.gitignore {
         builder.git_ignore(true);

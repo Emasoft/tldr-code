@@ -219,6 +219,14 @@ impl ModuleIndex {
                 let file_name = entry.file_name().to_string_lossy();
                 !should_skip_directory(&file_name)
             })
+            // issue #74 (determinism sweep): the collected `files` vec feeds
+            // `index_file` in walk order, and `module_to_file` resolves
+            // module-name collisions first-wins (two files mapping to the
+            // same module name — e.g. `src/foo.py` vs `lib/foo.py`). Without
+            // an explicit sort, WHICH file won was readdir order —
+            // filesystem dependent. Sorting makes the winner the
+            // lexicographically-first path on every platform.
+            .sort_by_file_path(|a, b| a.cmp(b))
             .build();
 
         // First pass: collect all relevant files
@@ -1051,6 +1059,12 @@ fn detect_python_src_root(root: &Path) -> Option<PathBuf> {
         return None;
     }
     // Look for at least one .py file under src/ to confirm layout.
+    //
+    // issue #74 audit: deliberately NOT sorted (contrast with
+    // `build_with_workspace_roots` above). This is a pure existence check —
+    // the boolean result is invariant to visit order, so an OS-readdir-ordered
+    // walk cannot leak into any output. Sorting would add per-directory cost
+    // for zero determinism gain on large `src/` trees.
     let walker = WalkBuilder::new(&candidate)
         .hidden(true)
         .git_ignore(true)

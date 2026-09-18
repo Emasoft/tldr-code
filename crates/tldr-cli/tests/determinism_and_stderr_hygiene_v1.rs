@@ -698,3 +698,220 @@ fn references_limit_truncation_is_deterministic_and_keeps_canonical_prefix() {
          (silent data loss, issue #74)"
     );
 }
+
+// =============================================================================
+// issue #74 (walker determinism ripple): directory walk order is sorted
+// =============================================================================
+
+/// Build a multi-file Python project whose CREATION ORDER is the exact
+/// reverse of lexical order (`f_09.py` is created before `f_08.py`, `dir_c/`
+/// before `dir_a/`). On filesystems where readdir order tracks creation
+/// order (or any FS where it is not name-sorted), an unsorted walk yields a
+/// non-lexical traversal, so this fixture maximizes the visibility of any
+/// future regression away from `sort_by_file_path`. 22 files across 3
+/// subdirectories; `helper_big` is defined in two files and called from two
+/// more so `references` spans the whole tree.
+fn make_reverse_creation_python_fixture() -> TempDir {
+    let dir = TempDir::new().expect("tempdir");
+    let mut names: Vec<String> = (0..10).map(|i| format!("f_{i:02}.py")).collect();
+    for (d, letter) in [("dir_a", "a"), ("dir_b", "b"), ("dir_c", "c")] {
+        for i in 0..4 {
+            names.push(format!("{d}/{letter}_{i:02}.py"));
+        }
+    }
+    names.sort();
+    // Create in REVERSE lexical order — creation order != walk-expectation.
+    for rel in names.iter().rev() {
+        let mut body = format!(
+            "def unique_{}(x):\n    total = 0\n    for i in range(x):\n        total += i\n    return total\n",
+            rel.replace(['/', '.'], "__")
+        );
+        match rel.as_str() {
+            "f_00.py" | "dir_a/a_00.py" => body.push_str(
+                "\ndef helper_big(items, threshold):\n    acc = 0\n    for it in items:\n        acc += it * threshold\n    return acc\n",
+            ),
+            "f_05.py" | "dir_c/c_01.py" => {
+                body.push_str("\ndef caller_here(x):\n    return helper_big([1, 2, 3], x)\n")
+            }
+            _ => {}
+        }
+        write(&dir.path().join(rel), &body);
+    }
+    dir
+}
+
+/// Sorted names of every fixture file — the exact expected `by_file` order
+/// after the walker determinism fix. Directory names (`dir_*`) sort before
+/// the root-level `f_*` files, and no file name is a prefix of a directory
+/// name (or vice versa), so the sorted depth-first walk order equals the
+/// globally sorted relative-path order for this fixture.
+fn fixture_sorted_names() -> Vec<String> {
+    let mut names: Vec<String> = (0..10).map(|i| format!("f_{i:02}.py")).collect();
+    for (d, letter) in [("dir_a", "a"), ("dir_b", "b"), ("dir_c", "c")] {
+        for i in 0..4 {
+            names.push(format!("{d}/{letter}_{i:02}.py"));
+        }
+    }
+    names.sort();
+    names
+}
+
+/// The issue-#74 walker fix: every directory walk must be a deterministic
+/// depth-first traversal over lexically-sorted entries (`ignore`'s
+/// `sort_by_file_path`). `tldr loc --by-file` surfaces walk order directly —
+/// `by_file` rows keep walk order (PERF-2 merge) and the `max_files` cap
+/// truncates mid-walk — so this pins BOTH properties: byte-stability across
+/// repeated runs AND exact lexicographic path order (not merely consistency).
+/// LocReport has no timing fields, so full stdout bytes are comparable.
+#[test]
+fn loc_by_file_walk_order_is_sorted_and_byte_stable() {
+    let dir = make_reverse_creation_python_fixture();
+    let path = dir.path();
+
+    let run = || -> String {
+        let output = tldr_cmd()
+            .arg("loc")
+            .arg(path)
+            .arg("--by-file")
+            .arg("--format")
+            .arg("json")
+            .arg("--quiet")
+            .output()
+            .expect("invoke tldr loc");
+        assert!(
+            output.status.success(),
+            "tldr loc failed: stderr=\n{}\nstdout=\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout),
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    let s1 = run();
+    let s2 = run();
+    let s3 = run();
+    assert_eq!(s1, s2, "loc run #1 vs #2 differs (walk order, issue #74)");
+    assert_eq!(s2, s3, "loc run #2 vs #3 differs (walk order, issue #74)");
+
+    let report: Value = serde_json::from_str(&s1).expect("loc stdout must be JSON");
+    let by_file = report
+        .get("by_file")
+        .and_then(|v| v.as_array())
+        .expect("loc.by_file array");
+    let got: Vec<String> = by_file
+        .iter()
+        .map(|e| {
+            e.get("path")
+                .and_then(|p| p.as_str())
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect();
+
+    let expected = fixture_sorted_names();
+    assert_eq!(
+        got, expected,
+        "loc --by_file rows must follow the sorted directory walk (issue #74 \
+         walker determinism ripple): the `ignore` walker must be built with \
+         sort_by_file_path"
+    );
+}
+
+/// `tldr structure` and `tldr references` must be byte-stable across repeated
+/// runs on the reverse-creation-order fixture. `references` collects its
+/// candidate files through `ProjectWalker`; `structure` covers every fixture
+/// file, so a walk-order regression (or any run-to-run ordering leak in the
+/// walked commands) breaks the byte-equality below.
+#[test]
+fn references_and_structure_are_byte_stable_on_walked_fixture() {
+    let dir = make_reverse_creation_python_fixture();
+    let path = dir.path();
+
+    let structure = || -> String {
+        let output = tldr_cmd()
+            .arg("structure")
+            .arg(path)
+            .arg("--format")
+            .arg("json")
+            .arg("--quiet")
+            .output()
+            .expect("invoke tldr structure");
+        assert!(
+            output.status.success(),
+            "tldr structure failed: stderr=\n{}\nstdout=\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout),
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let c1 = structure();
+    let c2 = structure();
+    let c3 = structure();
+    assert_eq!(
+        c1, c2,
+        "structure run #1 vs #2 differs (walk order, issue #74)"
+    );
+    assert_eq!(
+        c2, c3,
+        "structure run #2 vs #3 differs (walk order, issue #74)"
+    );
+    let s: Value = serde_json::from_str(&c1).expect("structure JSON");
+    let files = s
+        .get("files")
+        .and_then(|v| v.as_array())
+        .expect("structure.files array");
+    assert_eq!(
+        files.len(),
+        22,
+        "structure must cover every fixture file; got {}",
+        files.len()
+    );
+
+    let references = || -> String {
+        let output = tldr_cmd()
+            .arg("references")
+            .arg("helper_big")
+            .arg(path)
+            .arg("--format")
+            .arg("json")
+            .arg("--quiet")
+            .output()
+            .expect("invoke tldr references");
+        assert!(
+            output.status.success(),
+            "tldr references failed: stderr=\n{}\nstdout=\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout),
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    // references carries a wall-clock `stats.search_time_ms`; strip it so
+    // byte-equality captures content only (same convention as the BUG-2/3
+    // pins above).
+    let strip_timing = |raw: &str| -> String {
+        let mut v: Value = serde_json::from_str(raw).expect("references JSON");
+        if let Some(stats) = v.get_mut("stats").and_then(|s| s.as_object_mut()) {
+            stats.remove("search_time_ms");
+        }
+        serde_json::to_string(&v).unwrap()
+    };
+    let r1 = strip_timing(&references());
+    let r2 = strip_timing(&references());
+    let r3 = strip_timing(&references());
+    assert_eq!(
+        r1, r2,
+        "references run #1 vs #2 differs (walk order, issue #74)"
+    );
+    assert_eq!(
+        r2, r3,
+        "references run #2 vs #3 differs (walk order, issue #74)"
+    );
+    let r: Value = serde_json::from_str(&r1).unwrap();
+    assert_eq!(
+        r.get("total_references").and_then(|v| v.as_u64()),
+        Some(4),
+        "fixture must yield 4 references (2 definitions + 2 call sites); \
+         got {:?}",
+        r.get("total_references")
+    );
+}
