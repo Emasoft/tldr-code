@@ -2471,11 +2471,53 @@ fn extract_luau_functions(node: &Node, source: &str, functions: &mut Vec<String>
 /// This walks the tree-sitter AST recursively and classifies nodes as function-like
 /// or class-like, mirroring the logic in `search/enriched.rs::classify_node`.
 fn extract_definitions(tree: &Tree, source: &str, language: Language) -> Vec<DefinitionInfo> {
-    let mut definitions = Vec::new();
-    let root = tree.root_node();
-    collect_definitions(root, source, language, &mut definitions);
-    disambiguate_call_names(&mut definitions);
-    definitions
+    extract_definition_entries(tree, source, language)
+        .into_iter()
+        .map(|entry| entry.info)
+        .collect()
+}
+
+/// A canonical [`DefinitionInfo`] paired with the tree-sitter node it was
+/// extracted from.
+///
+/// The unified definition walk (`collect_definition_entries`) is the single
+/// source of truth for WHAT is defined in a file — it recurses through every
+/// wrapper (TS/JS `export_statement`, OCaml/Scala package/module nesting,
+/// Ruby nested classes, C/C++ ERROR misparse wrappers) and classifies each
+/// node via [`classify_definition_node`]. Consumers that need
+/// language-specific enrichment beyond the `DefinitionInfo` fields (doc
+/// strings, per-class method lists, visibility modifiers, …) borrow the node
+/// to run their own extractors against the SAME definition set, instead of
+/// keeping a second, weaker walker alive (tldr-cli `interface` did exactly
+/// that and dropped export-wrapped / nested classes — issue #78).
+pub struct DefinitionEntry<'tree> {
+    /// The canonical definition record (name, kind, spans, signature).
+    pub info: DefinitionInfo,
+    /// The tree-sitter node the record was extracted from.
+    pub node: Node<'tree>,
+}
+
+/// Run the unified definition walk over a pre-parsed tree, returning each
+/// definition paired with its node.
+///
+/// Single-file, in-memory entry point over the exact machinery
+/// [`get_code_structure`] uses (same walk, same classification, same
+/// region semantics) — see [`DefinitionEntry`] for why the node rides along.
+pub fn extract_definition_entries<'tree>(
+    tree: &'tree Tree,
+    source: &str,
+    language: Language,
+) -> Vec<DefinitionEntry<'tree>> {
+    let mut entries: Vec<DefinitionEntry> = Vec::new();
+    collect_definition_entries(tree.root_node(), source, language, &mut entries);
+    // One numbering implementation for `kind == "call"` names: apply it to
+    // the infos and copy back (zip is order-stable and only names move).
+    let mut infos: Vec<DefinitionInfo> = entries.iter().map(|e| e.info.clone()).collect();
+    disambiguate_call_names(&mut infos);
+    for (entry, info) in entries.iter_mut().zip(infos) {
+        entry.info = info;
+    }
+    entries
 }
 
 /// Make `kind: "call"` names unique within a file by appending `#2`, `#3`, … in source order.
@@ -2500,12 +2542,12 @@ pub(crate) fn disambiguate_call_names(definitions: &mut [DefinitionInfo]) {
     }
 }
 
-/// Recursively collect definition nodes from a tree-sitter AST.
-fn collect_definitions(
-    node: Node,
+/// Recursively collect definition entries from a tree-sitter AST.
+fn collect_definition_entries<'tree>(
+    node: Node<'tree>,
     source: &str,
     language: Language,
-    definitions: &mut Vec<DefinitionInfo>,
+    entries: &mut Vec<DefinitionEntry<'tree>>,
 ) {
     let kind = node.kind();
 
@@ -2513,7 +2555,10 @@ fn collect_definitions(
     // Handle them specially before the generic path.
     if language == Language::Elixir && kind == "call" {
         if let Some(def_info) = try_elixir_call_definition(node, source) {
-            definitions.push(def_info);
+            entries.push(DefinitionEntry {
+                info: def_info,
+                node,
+            });
         }
     }
 
@@ -2526,7 +2571,10 @@ fn collect_definitions(
     // what an agent reads to decide which lines to open. Named from the enclosing call so the
     // region is addressable; see `try_callback_call_definition`.
     if let Some(def_info) = try_callback_call_definition(node, source, language) {
-        definitions.push(def_info);
+        entries.push(DefinitionEntry {
+            info: def_info,
+            node,
+        });
     }
 
     // Constants: detect const/static/UPPER_CASE assignments across languages.
@@ -2538,7 +2586,10 @@ fn collect_definitions(
     // it twice with different `kind` values.
     let mut emitted_as_constant = false;
     if let Some(const_def) = try_constant_definition(node, source, language) {
-        definitions.push(const_def);
+        entries.push(DefinitionEntry {
+            info: const_def,
+            node,
+        });
         emitted_as_constant = true;
     }
 
@@ -2596,17 +2647,20 @@ fn collect_definitions(
                 }
             };
 
-            definitions.push(DefinitionInfo {
-                name,
-                kind: entry_kind.to_string(),
-                line_start,
-                line_end,
-                definition_line: Some(definition_line),
-                // element-extraction-v1: byte spans are format-element-only
-                // for now (`ast::elements`); code languages keep None.
-                byte_start: None,
-                byte_end: None,
-                signature,
+            entries.push(DefinitionEntry {
+                info: DefinitionInfo {
+                    name,
+                    kind: entry_kind.to_string(),
+                    line_start,
+                    line_end,
+                    definition_line: Some(definition_line),
+                    // element-extraction-v1: byte spans are format-element-only
+                    // for now (`ast::elements`); code languages keep None.
+                    byte_start: None,
+                    byte_end: None,
+                    signature,
+                },
+                node,
             });
         }
     }
@@ -2617,14 +2671,19 @@ fn collect_definitions(
     // `private static final FOO = ...`).
     if !emitted_as_constant {
         if let Some(field_defs) = try_field_definition(node, source, language) {
-            definitions.extend(field_defs);
+            for field_def in field_defs {
+                entries.push(DefinitionEntry {
+                    info: field_def,
+                    node,
+                });
+            }
         }
     }
 
     // Recurse into children
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_definitions(child, source, language, definitions);
+        collect_definition_entries(child, source, language, entries);
     }
 }
 
@@ -3527,7 +3586,7 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
                 // trivia — a contiguous `comment` sibling or a contiguous
                 // `@doc "…"` call sibling above the def call. This path only
                 // runs for `Language::Elixir` (dispatch in
-                // `collect_definitions`), so the language is fixed.
+                // `collect_definition_entries`), so the language is fixed.
                 let (start_row, end_row) = compute_region_span(node, source, Language::Elixir);
                 let line_start = start_row as u32 + 1;
                 let line_end = end_row as u32 + 1;

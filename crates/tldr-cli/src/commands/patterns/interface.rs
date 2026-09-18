@@ -22,17 +22,18 @@
 //! tldr interface src/ --format text
 //! ```
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use clap::Args;
 use tldr_core::walker::walk_project;
-use tree_sitter::Node;
+use tree_sitter::{Node, Tree};
 
 use super::error::{PatternsError, PatternsResult};
 use super::types::{ClassInfo, FunctionInfo, InterfaceInfo, MethodInfo};
 use super::validation::{read_file_safe, validate_directory_path, validate_file_path};
 use crate::output::OutputFormat;
-use tldr_core::ast::ParserPool;
+use tldr_core::ast::{extract_definition_entries, DefinitionEntry, ParserPool};
 use tldr_core::types::Language;
 
 // =============================================================================
@@ -55,18 +56,21 @@ pub struct InterfaceArgs {
 // Language-Aware Node Kind Configuration
 // =============================================================================
 
-/// Node kinds that represent function definitions for a given language.
+/// Node kinds that represent top-level function declarations for a language.
+///
+/// Consumed against the unified definition walk (`extract_definition_entries`),
+/// which has already routed methods to their owning class (`kind == "method"`)
+/// — so body/expression-position callables (TS/JS `method_definition` inside
+/// object literals, `arrow_function`) are deliberately NOT here: they are not
+/// top-level public API and were never reachable by the previous root-level
+/// walker either.
 fn function_node_kinds(lang: Language) -> &'static [&'static str] {
     match lang {
         Language::Python => &["function_definition"],
         Language::Rust => &["function_item"],
         Language::Go => &["function_declaration", "method_declaration"],
         Language::Java => &["method_declaration", "constructor_declaration"],
-        Language::TypeScript | Language::JavaScript => &[
-            "function_declaration",
-            "method_definition",
-            "arrow_function",
-        ],
+        Language::TypeScript | Language::JavaScript => &["function_declaration"],
         Language::C | Language::Cpp => &["function_definition"],
         Language::Ruby => &["method", "singleton_method"],
         Language::CSharp => &["method_declaration", "constructor_declaration"],
@@ -111,10 +115,17 @@ fn class_node_kinds(lang: Language) -> &'static [&'static str] {
             "interface_declaration",
             "enum_declaration",
         ],
+        // `class` is the EXPRESSION-position class node of the
+        // typescript grammar (`return class Foo {}` / `const C = class {}`)
+        // — the same kind Ruby uses for its class declarations. Without it,
+        // classes nested inside function bodies were dropped (issue #78
+        // repro case 3) and their methods leaked into `functions[]` as
+        // ownerless entries.
         Language::TypeScript | Language::JavaScript => &[
             "class_declaration",
+            "abstract_class_declaration",
+            "class",
             "interface_declaration",
-            "type_alias_declaration",
         ],
         Language::C => &["struct_specifier"],
         Language::Cpp => &["struct_specifier", "class_specifier"],
@@ -1630,20 +1641,12 @@ pub fn extract_interface_with_lang(
         None
     };
 
-    // Determine node kinds for this language
-    let func_kinds = function_node_kinds(lang);
-    let class_kinds = class_node_kinds(lang);
-    let decorator_kinds = decorator_node_kinds(lang);
-
-    // Extract public functions and classes
-    let (functions, classes) = collect_top_level_definitions(
-        root,
-        source_bytes,
-        lang,
-        func_kinds,
-        class_kinds,
-        decorator_kinds,
-    );
+    // Extract public functions and classes from the UNIFIED definition walk
+    // (`tldr_core::ast::extract_definition_entries` — the `tldr structure`
+    // extractor: `classify_definition_node` + symbol-fidelity region
+    // semantics), mapped onto this command's JSON contract. Language kind
+    // tables are consulted inside against the walk's paired nodes.
+    let (functions, classes) = collect_top_level_definitions(&tree, source, lang);
 
     // schema-cleanup-v1 BUG-22: populate `all_exports` as a non-null
     // array. Prefer the explicit `__all__` (Python only); otherwise
@@ -1670,98 +1673,128 @@ pub fn extract_interface_with_lang(
     })
 }
 
-/// Container node kinds whose children should be treated as top-level for
-/// the purpose of public-interface extraction.
+/// Collect the public-interface functions and classes of a file from the
+/// UNIFIED extraction.
 ///
-/// Real-world repos commonly wrap top-level classes/functions in:
-/// * C++: `namespace foo { ... }`, `extern "C" { ... }`, `#if/#elif` preproc
-/// * C#: `namespace Foo { ... }` and `namespace Foo;` (file-scoped)
-/// * C/C++: preproc conditional branches gating typedefs and inline functions
+/// The discovery set is the canonical definition walk in
+/// `tldr_core::ast::extract_definition_entries` — the same pass `tldr
+/// structure` reports (`classify_definition_node` + symbol-fidelity region
+/// semantics). It recurses through every wrapper the previous bespoke
+/// container-whitelist walker (`is_interface_container` / `visit_top_level`
+/// / `deep_collect`, real-repo-fixes-v1 P9.BUG-R2/R5/R6/R7) missed:
+/// TS/JS `export_statement` (`export default class Foo` — issue
+/// IT3-typescript-02), Scala package/object nesting (IT3-scala-01), Ruby
+/// nested classes/modules (IT3-ruby-03), C/C++ ERROR misparse wrappers and
+/// preprocessor branches — and it needs no container whitelist because the
+/// unified walk recurses everywhere.
 ///
-/// Without recursion, `tldr interface` reported zero classes for cpp/csharp
-/// even though `tldr extract` listed them — real-repo-fixes-v1 (P9.BUG-R2/R5).
-fn is_interface_container(kind: &str) -> bool {
-    matches!(
-        kind,
-        "namespace_definition"
-            | "namespace_declaration"
-            | "file_scoped_namespace_declaration"
-            | "linkage_specification"
-            | "preproc_if"
-            | "preproc_ifdef"
-            | "preproc_else"
-            | "preproc_elif"
-            | "preproc_elifdef"
-            | "declaration_list"
-            // tree-sitter-cpp commonly produces ERROR / function_definition
-            // wrappers in real-world headers (e.g. tinyxml2.h) when macro
-            // names like `TINYXML2_LIB` confuse the parser. Recurse into
-            // these so embedded class_specifier nodes still surface.
-            | "ERROR"
-            | "compound_statement"
-            // C# wraps the whole file content under various namespace forms
-            // and global_statement/file_scoped_namespace bodies.
-            | "global_statement"
-    )
-}
-
-/// Languages where misparses are common enough that we should walk the full
-/// AST looking for class/function nodes, not just direct children of root.
+/// Mapping onto this command's JSON contract (shape unchanged — pinned by
+/// tests and `tests/bench_cli_multilang.rs`):
+/// * `kind == "function"` → `functions[]`, filtered by the language
+///   visibility rule (`is_node_public`) and the not-nested-inside-another-
+///   definition rule (`has_class_or_function_ancestor` — nested helpers are
+///   not public API; the old walker expressed this by never descending into
+///   definition bodies).
+/// * `kind == "method"` → attached to its nearest class-kind ancestor, which
+///   is enriched with `extract_class_info` (methods, bases, private count).
+///   Receiver methods with no lexically enclosing type (Go
+///   `func (r *T) Foo()`) surface in `functions[]`, exactly as the old
+///   walker reported them.
+/// * `kind ∈ {class, struct, enum, trait, interface, module}` → `classes[]`
+///   wherever they appear — nesting and export wrappers no longer hide them.
 ///
-/// For these languages `tldr extract` already does a deep walk; matching that
-/// behaviour for `tldr interface` keeps the two commands consistent.
-/// real-repo-fixes-v1 (P9.BUG-R2/R5/R6/R7).
-fn needs_deep_walk(lang: Language) -> bool {
-    matches!(
-        lang,
-        Language::Cpp | Language::C | Language::CSharp | Language::Kotlin | Language::Swift
-    )
-}
-
-/// Collect top-level function and class definitions from the AST root.
-///
-/// Recurses one level into language-appropriate container nodes (PHP
-/// declaration list; C++/C# namespaces; cpp preprocessor branches) so that
-/// public types defined inside `namespace { ... }` or `#if ... #endif`
-/// blocks are surfaced — without this, real cpp/csharp codebases report zero
-/// classes (P9.BUG-R2/R5).
+/// Enrichment (signature/docstring/is_async/bases/per-class methods) stays
+/// in this file's language-specific extractors, so values for
+/// already-reported items are unchanged; the unified walk's name fills in
+/// where the local extractor has no name path (C++ qualified/destructor
+/// names — issue IT3-cpp-04).
 fn collect_top_level_definitions(
-    root: Node,
-    source: &[u8],
+    tree: &Tree,
+    source: &str,
     lang: Language,
-    func_kinds: &[&str],
-    class_kinds: &[&str],
-    decorator_kinds: &[&str],
 ) -> (Vec<FunctionInfo>, Vec<ClassInfo>) {
-    let mut functions = Vec::new();
-    let mut classes = Vec::new();
-    if needs_deep_walk(lang) {
-        // Walk the whole AST, collecting top-level (non-method) functions
-        // and class-like nodes wherever they appear. Mirrors `tldr extract`'s
-        // behaviour for languages where misparses or namespace wrapping are
-        // common in real-world code.
-        deep_collect(
-            root,
-            source,
-            lang,
-            func_kinds,
-            class_kinds,
-            &mut functions,
-            &mut classes,
-            0,
-        );
-    } else {
-        visit_top_level(
-            root,
-            source,
-            lang,
-            func_kinds,
-            class_kinds,
-            decorator_kinds,
-            &mut functions,
-            &mut classes,
-            0,
-        );
+    let source_bytes = source.as_bytes();
+    let func_kinds = function_node_kinds(lang);
+    let class_kinds = class_node_kinds(lang);
+    let method_kinds = method_node_kinds(lang);
+
+    let mut functions: Vec<FunctionInfo> = Vec::new();
+    let mut classes: Vec<ClassInfo> = Vec::new();
+    // Node ids of classes already enriched — a class-kind definition and the
+    // methods pointing at the same node must produce ONE ClassInfo.
+    let mut seen_class_nodes: HashSet<usize> = HashSet::new();
+
+    for entry in extract_definition_entries(tree, source, lang) {
+        let node = entry.node;
+        match entry.info.kind.as_str() {
+            "function" => {
+                if lang == Language::Elixir {
+                    // BUG-AGG-9: visibility is keyword-based (`def`/`defmacro`
+                    // export, `defp`/`defmacrop` do not) — `is_node_public`
+                    // has no Elixir arm, so dispatch on the call target.
+                    if is_public_elixir_def(node, source_bytes) {
+                        functions.push(function_info_from(&entry, source_bytes, lang));
+                    }
+                } else if func_kinds.contains(&node.kind())
+                    && is_node_public(node, source_bytes, lang)
+                    && !has_class_or_function_ancestor(node, class_kinds, func_kinds)
+                {
+                    functions.push(function_info_from(&entry, source_bytes, lang));
+                }
+            }
+            "method" => {
+                if lang == Language::Elixir {
+                    // elixir-method-infos-v1: defs inside a
+                    // `defmodule … do … end` arrive as kind "method"; this
+                    // command's contract exports them as top-level functions
+                    // (the `defmodule` itself is the class entry).
+                    if is_public_elixir_def(node, source_bytes) {
+                        functions.push(function_info_from(&entry, source_bytes, lang));
+                    }
+                    continue;
+                }
+                match nearest_class_ancestor(node, class_kinds) {
+                    // Method of an enriched class — or of a Rust `impl`
+                    // block, which is not itself a unified definition and
+                    // becomes its own ClassInfo so `merge_rust_impl_entries`
+                    // can fold it into the struct/enum/trait entry
+                    // (P14.AGG14-10).
+                    Some(owner) => ensure_class_entry(
+                        owner,
+                        None,
+                        source_bytes,
+                        lang,
+                        &mut seen_class_nodes,
+                        &mut classes,
+                    ),
+                    // Receiver method with no lexically enclosing type (Go
+                    // `func (r *T) Foo()`): a top-level public callable,
+                    // exactly like the pre-refactor walker reported it.
+                    None => {
+                        if (func_kinds.contains(&node.kind())
+                            || method_kinds.contains(&node.kind()))
+                            && is_node_public(node, source_bytes, lang)
+                        {
+                            functions.push(function_info_from(&entry, source_bytes, lang));
+                        }
+                    }
+                }
+            }
+            "class" | "struct" | "enum" | "trait" | "interface" | "module" => {
+                if let Some(anchor) = class_anchor_node(node, class_kinds) {
+                    ensure_class_entry(
+                        anchor,
+                        Some(entry.info.name.clone()),
+                        source_bytes,
+                        lang,
+                        &mut seen_class_nodes,
+                        &mut classes,
+                    );
+                }
+            }
+            // constants, fields, calls, format elements: not API surface.
+            _ => {}
+        }
     }
 
     // language-specific-bugs-v1 (P14.AGG14-10): post-process Rust class
@@ -1789,6 +1822,103 @@ fn collect_top_level_definitions(
     }
 
     (functions, classes)
+}
+
+/// Enrich a function entry with this command's language-specific extractor.
+/// The unified walk's name fills in where the local extractor has none —
+/// C++ qualified (`ns::Foo::bar`) and destructor (`~Foo`) names, which
+/// `extract_c_declarator_name` cannot reach (issue IT3-cpp-04).
+fn function_info_from(entry: &DefinitionEntry, source: &[u8], lang: Language) -> FunctionInfo {
+    let mut info = extract_function_info(entry.node, source, lang);
+    if info.name.is_empty() {
+        info.name = entry.info.name.clone();
+    }
+    info
+}
+
+/// Nearest ancestor (excluding `node` itself) whose kind is a class-like
+/// definition for this language.
+fn nearest_class_ancestor<'a>(node: Node<'a>, class_kinds: &[&str]) -> Option<Node<'a>> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if class_kinds.contains(&parent.kind()) {
+            return Some(parent);
+        }
+        current = parent.parent();
+    }
+    None
+}
+
+/// True when `node` is lexically nested inside another class-like or
+/// function-like definition. Such helpers are not public API — the old
+/// walker expressed the same rule by never descending into definition
+/// bodies. (Elixir never reaches this check: its `def`/`defp` keyword
+/// dispatch runs first, because `defmodule` bodies ARE exported.)
+fn has_class_or_function_ancestor(node: Node, class_kinds: &[&str], func_kinds: &[&str]) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if class_kinds.contains(&parent.kind()) || func_kinds.contains(&parent.kind()) {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+/// Node to enrich for a class-kind definition — usually the definition node
+/// itself. Go is the exception: the unified walk classifies the inner
+/// `type_spec`, while this command reports the wrapping `type_declaration`
+/// (grouped `type ( … )` blocks collapse onto one entry via
+/// `seen_class_nodes`, as before).
+fn class_anchor_node<'a>(node: Node<'a>, class_kinds: &[&str]) -> Option<Node<'a>> {
+    if class_kinds.contains(&node.kind()) {
+        return Some(node);
+    }
+    node.parent()
+        .filter(|parent| class_kinds.contains(&parent.kind()))
+}
+
+/// Build and push the ClassInfo for a class-kind node exactly once (dedup by
+/// node id), applying the language visibility rule. `fallback_name` is the
+/// unified walk's name, used when the local extractor has no name path.
+fn ensure_class_entry(
+    node: Node,
+    fallback_name: Option<String>,
+    source: &[u8],
+    lang: Language,
+    seen: &mut HashSet<usize>,
+    classes: &mut Vec<ClassInfo>,
+) {
+    if !seen.insert(node.id()) {
+        return;
+    }
+    if !is_node_public(node, source, lang) {
+        return;
+    }
+    let mut info = extract_class_info(node, source, lang);
+    if info.name.is_empty() {
+        info.name = fallback_name.unwrap_or_default();
+    }
+    if info.name.is_empty() {
+        // Anonymous / misparsed wrapper (e.g. a bodyless C specifier that
+        // the unified walk already filtered, or a nameless misparse) —
+        // nothing addressable to report.
+        return;
+    }
+    classes.push(info);
+}
+
+/// Elixir: does this `call` node carry a public definition keyword?
+/// BUG-AGG-9: `def`/`defmacro` export; `defp`/`defmacrop` (and any other
+/// call) do not. Visibility is keyword-based, not name-based.
+fn is_public_elixir_def(node: Node, source: &[u8]) -> bool {
+    if node.kind() != "call" {
+        return false;
+    }
+    matches!(
+        node.child(0).map(|target| node_text(target, source)),
+        Some("def") | Some("defmacro")
+    )
 }
 
 /// language-specific-bugs-v1 (P14.AGG14-17): flatten every public method
@@ -1926,223 +2056,6 @@ fn strip_generics(name: &str) -> String {
         name[..idx].trim().to_string()
     } else {
         name.trim().to_string()
-    }
-}
-
-/// Walk the entire AST of a file, collecting class-like nodes and any
-/// function definitions that are NOT methods inside a class.
-///
-/// Used for cpp/c/csharp/kotlin/swift where:
-/// * cpp headers often have macro-prefixed `class TINYXML2_LIB Foo` that
-///   confuse tree-sitter into emitting ERROR / function_definition wrappers
-///   around the namespace body, so plain root-children iteration misses them.
-/// * csharp wraps everything under one or more `namespace_declaration` /
-///   `file_scoped_namespace_declaration` nodes.
-/// * kotlin/swift normally have classes at the file root, but extension-only
-///   files (Span+Extras.swift) and nested object_declaration trees benefit
-///   from a full walk.
-#[allow(clippy::too_many_arguments)]
-fn deep_collect(
-    node: Node,
-    source: &[u8],
-    lang: Language,
-    func_kinds: &[&str],
-    class_kinds: &[&str],
-    functions: &mut Vec<FunctionInfo>,
-    classes: &mut Vec<ClassInfo>,
-    depth: usize,
-) {
-    // review-followup-v1 (Concern 4): defense-in-depth bound matching
-    // `visit_top_level`'s `MAX_CONTAINER_DEPTH = 8`. Tree-sitter limits
-    // real-code nesting in practice, but a corrupt or adversarial AST
-    // could still produce deep recursion; cap it here for consistency.
-    const MAX_DEEP_WALK_DEPTH: usize = 8;
-    if depth > MAX_DEEP_WALK_DEPTH {
-        return;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let kind = child.kind();
-        if class_kinds.contains(&kind) {
-            // Avoid double-counting nested classes when an enclosing class
-            // already collected its inner methods/types via extract_class_info.
-            // Top-level rule: a class node is "top-level" iff it isn't itself
-            // contained in another class-kind ancestor.
-            if !is_inside_class_ancestor(child, class_kinds) && is_node_public(child, source, lang)
-            {
-                let info = extract_class_info(child, source, lang);
-                // Skip empty/anonymous misparses where extract returned no name.
-                if !info.name.is_empty() {
-                    classes.push(info);
-                }
-            }
-            // Still recurse into the body — nested classes that are themselves
-            // public should also surface (mirrors tree-walk behaviour of
-            // `tldr extract` for cpp / csharp).
-            deep_collect(
-                child,
-                source,
-                lang,
-                func_kinds,
-                class_kinds,
-                functions,
-                classes,
-                depth + 1,
-            );
-            continue;
-        }
-        if func_kinds.contains(&kind)
-            && !is_inside_class_ancestor(child, class_kinds)
-            && is_node_public(child, source, lang)
-        {
-            functions.push(extract_function_info(child, source, lang));
-        }
-        deep_collect(
-            child,
-            source,
-            lang,
-            func_kinds,
-            class_kinds,
-            functions,
-            classes,
-            depth + 1,
-        );
-    }
-}
-
-/// Check whether a node is contained within a class/struct/interface ancestor.
-/// Used to distinguish top-level functions from methods.
-fn is_inside_class_ancestor(node: Node, class_kinds: &[&str]) -> bool {
-    let mut current = node.parent();
-    while let Some(parent) = current {
-        if class_kinds.contains(&parent.kind()) {
-            return true;
-        }
-        current = parent.parent();
-    }
-    false
-}
-
-#[allow(clippy::too_many_arguments)]
-fn visit_top_level(
-    node: Node,
-    source: &[u8],
-    lang: Language,
-    func_kinds: &[&str],
-    class_kinds: &[&str],
-    decorator_kinds: &[&str],
-    functions: &mut Vec<FunctionInfo>,
-    classes: &mut Vec<ClassInfo>,
-    depth: usize,
-) {
-    // Bound recursion conservatively — we only ever need to descend through
-    // a handful of namespace/preproc levels in real-world code.
-    const MAX_CONTAINER_DEPTH: usize = 8;
-    if depth > MAX_CONTAINER_DEPTH {
-        return;
-    }
-
-    let mut cursor = node.walk();
-
-    for child in node.children(&mut cursor) {
-        let kind = child.kind();
-
-        // Elixir-specific dispatch: `call` nodes match BOTH func_kinds and
-        // class_kinds, so the original logic always took the function
-        // branch and `defmodule` calls were dropped. BUG-AGG-9 (P11):
-        // restructure so we route on the call target name.
-        //
-        // - `def` / `defmacro` -> public function
-        // - `defp` / `defmacrop` -> private, skip
-        // - `defmodule` -> recurse into its `do_block` so nested public
-        //   `def`s surface as top-level exports (matches `tldr extract`'s
-        //   walk; mirrors how the Plug.Conn module exposes its public
-        //   API even though every function lives one level deep).
-        if lang == Language::Elixir && kind == "call" {
-            let target_text = child.child(0).map(|t| node_text(t, source)).unwrap_or("");
-            match target_text {
-                "def" | "defmacro" => {
-                    functions.push(extract_function_info(child, source, lang));
-                }
-                "defp" | "defmacrop" => {
-                    // private, skip
-                }
-                "defmodule" => {
-                    // Recurse into the module body. Module body is a `do_block`
-                    // child of the call node.
-                    let mut mod_cursor = child.walk();
-                    for mod_child in child.children(&mut mod_cursor) {
-                        if mod_child.kind() == "do_block" {
-                            visit_top_level(
-                                mod_child,
-                                source,
-                                lang,
-                                func_kinds,
-                                class_kinds,
-                                decorator_kinds,
-                                functions,
-                                classes,
-                                depth + 1,
-                            );
-                        }
-                    }
-                }
-                _ => {}
-            }
-            continue;
-        }
-
-        if func_kinds.contains(&kind) {
-            if is_node_public(child, source, lang) {
-                functions.push(extract_function_info(child, source, lang));
-            }
-        } else if class_kinds.contains(&kind) {
-            if is_node_public(child, source, lang) {
-                classes.push(extract_class_info(child, source, lang));
-            }
-        } else if decorator_kinds.contains(&kind) {
-            // Handle decorated definitions (Python)
-            if let Some(def) = find_definition_in_decorated(child, func_kinds) {
-                if is_node_public(def, source, lang) {
-                    functions.push(extract_function_info(def, source, lang));
-                }
-            } else if let Some(class_def) = find_definition_in_decorated(child, class_kinds) {
-                if is_node_public(class_def, source, lang) {
-                    classes.push(extract_class_info(class_def, source, lang));
-                }
-            }
-        } else if is_interface_container(kind) {
-            // Recurse into namespace / preproc / linkage containers so that
-            // classes defined inside `namespace foo { ... }` (cpp/csharp) or
-            // gated by `#if ... #endif` (cpp) surface as top-level exports.
-            visit_top_level(
-                child,
-                source,
-                lang,
-                func_kinds,
-                class_kinds,
-                decorator_kinds,
-                functions,
-                classes,
-                depth + 1,
-            );
-        } else if lang == Language::Php {
-            // PHP wraps everything in a program > php_tag + declaration list.
-            // Recurse one level for these.
-            let mut inner_cursor = child.walk();
-            for inner_child in child.children(&mut inner_cursor) {
-                let inner_kind = inner_child.kind();
-                if func_kinds.contains(&inner_kind) {
-                    if is_node_public(inner_child, source, lang) {
-                        functions.push(extract_function_info(inner_child, source, lang));
-                    }
-                } else if class_kinds.contains(&inner_kind)
-                    && is_node_public(inner_child, source, lang)
-                {
-                    classes.push(extract_class_info(inner_child, source, lang));
-                }
-            }
-        }
     }
 }
 
@@ -2893,6 +2806,186 @@ end
             assert_eq!(cls.methods[0].name, "find_user");
             assert_eq!(cls.private_method_count, 1);
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Unified-extractor regression (issue #78): export-wrapped, nested and
+    // expression-position definitions must surface in the interface output.
+    // The bespoke container-whitelist walker dropped every one of these.
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_interface_ts_export_wrapped_definitions() {
+        let source = r#"
+export default class Foo {
+  greet(): string {
+    return "hi";
+  }
+}
+
+export class Bar {
+  ping(): number {
+    return 1;
+  }
+}
+
+interface Widget {
+  draw(): void;
+}
+
+export interface ExportedWidget {
+  measure(): number;
+}
+"#;
+        let info = extract_interface(Path::new("test.ts"), source).unwrap();
+
+        let names: Vec<&str> = info.classes.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.contains(&"Foo"),
+            "export default class Foo must be reported, got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"Bar"),
+            "export class Bar must be reported (issue #78 IT3-typescript-02), got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"Widget"),
+            "bare interface Widget must be reported, got {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"ExportedWidget"),
+            "export interface ExportedWidget must be reported, got {:?}",
+            names
+        );
+
+        let foo = info
+            .classes
+            .iter()
+            .find(|c| c.name == "Foo")
+            .expect("Foo present");
+        assert_eq!(foo.methods.len(), 1);
+        assert_eq!(foo.methods[0].name, "greet");
+
+        // Methods stay inside their classes — no ownerless duplicates in
+        // the flat functions[] array.
+        assert!(info
+            .functions
+            .iter()
+            .all(|f| f.name != "greet" && f.name != "ping"));
+    }
+
+    #[test]
+    fn test_extract_interface_ts_nested_class_in_function() {
+        let source = r#"
+function makeNested() {
+  return class NestedInFunction {
+    hop(): void {}
+  };
+}
+"#;
+        let info = extract_interface(Path::new("test.ts"), source).unwrap();
+
+        let nested = info
+            .classes
+            .iter()
+            .find(|c| c.name == "NestedInFunction")
+            .expect(
+                "expression-position class inside a function body must be reported (issue #78)",
+            );
+        assert_eq!(nested.methods.len(), 1);
+        assert_eq!(nested.methods[0].name, "hop");
+        // The nested class's method must not leak into functions[].
+        assert!(info.functions.iter().all(|f| f.name != "hop"));
+    }
+
+    #[test]
+    fn test_extract_interface_ruby_nested_class_in_module() {
+        let source = r#"
+module Outer
+  class Nested
+    def find(id)
+      id
+    end
+  end
+end
+"#;
+        let info = extract_interface(Path::new("test.rb"), source).unwrap();
+
+        let nested =
+            info.classes.iter().find(|c| c.name == "Nested").expect(
+                "class nested inside a Ruby module must be reported (issue #78 IT3-ruby-03)",
+            );
+        assert_eq!(nested.methods.len(), 1);
+        assert_eq!(nested.methods[0].name, "find");
+    }
+
+    #[test]
+    fn test_extract_interface_scala_package_nested_class() {
+        let source = r#"
+package models
+
+class PackageNested {
+  def value(): Int = 1
+}
+"#;
+        let info = extract_interface(Path::new("test.scala"), source).unwrap();
+
+        let nested = info
+            .classes
+            .iter()
+            .find(|c| c.name == "PackageNested")
+            .expect(
+            "class nested inside a Scala package clause must be reported (issue #78 IT3-scala-01)",
+        );
+        assert_eq!(nested.methods.len(), 1);
+        assert_eq!(nested.methods[0].name, "value");
+    }
+
+    #[test]
+    fn test_extract_interface_cpp_qualified_and_destructor_names() {
+        let source = r#"
+namespace app {
+class Widget {
+ public:
+  Widget();
+  ~Widget();
+  void draw() const;
+};
+Widget::Widget() {}
+Widget::~Widget() {}
+void Widget::draw() const {}
+}
+"#;
+        let info = extract_interface(Path::new("test.cpp"), source).unwrap();
+
+        assert!(
+            info.classes.iter().any(|c| c.name == "Widget"),
+            "class inside a C++ namespace must be reported, got {:?}",
+            info.classes.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        // Out-of-line member definitions previously surfaced with EMPTY
+        // names (`extract_c_declarator_name` only handles identifier /
+        // field_identifier). The unified walk's name must fill in.
+        // (issue #78 IT3-cpp-04)
+        let fn_names: Vec<&str> = info.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            fn_names.contains(&"~Widget"),
+            "out-of-line destructor must be named, got {:?}",
+            fn_names
+        );
+        assert!(
+            fn_names.contains(&"draw"),
+            "out-of-line qualified member definition must be named, got {:?}",
+            fn_names
+        );
+        assert!(
+            fn_names.iter().all(|n| !n.is_empty()),
+            "no empty function names expected, got {:?}",
+            fn_names
+        );
     }
 
     // -------------------------------------------------------------------------
