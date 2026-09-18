@@ -977,6 +977,200 @@ def foo():
         assert_eq!(lines, vec![2, 3, 4, 5, 6, 8]);
         assert!(!lines.contains(&7), "`const y = 7` feeds nothing here");
     }
+
+    // =========================================================================
+    // Issue #80 (cluster CL-14): backward slice over-inclusion.
+    //
+    // Two mechanisms, both pinned here:
+    //
+    // 1. Single-block CFGs (Swift, Luau — the CFG builder does not split
+    //    their bodies) collapsed the whole function body into ONE statement
+    //    span, so one PDG node covered every line and any slice touching it
+    //    returned the full range. The PDG builder now splits a swallowed
+    //    container span (one that defines on a row after its first and is not
+    //    the function signature) into per-row nodes, so the DFG's per-line
+    //    def-use edges carry the slice.
+    // 2. Control dependence was "every CFG edge out of a branch", which made
+    //    the unconditional join of an `if` without `else` (and every
+    //    statement after a loop) control-dependent on the condition. It is
+    //    now the post-dominance definition, so join/after-loop lines stay
+    //    out while branch arms and loop bodies stay in.
+    // =========================================================================
+
+    #[test]
+    fn slice_single_block_cfg_returns_intra_block_data_deps_swift() {
+        // GIVEN: a Swift if/else — the CFG for it is a single Entry block
+        // plus Exit (no Branch blocks at all), and the whole body used to be
+        // one PDG node spanning lines 3..11.
+        let source = "\nfunc foo(cond: Bool) -> Int {\n    let a = 1\n    if cond {\n        let b = 2\n    } else {\n        let b = 3\n    }\n    let c = a + 5\n    return c\n}\n";
+
+        // WHEN: we slice backward from `return c` (line 10).
+        let lines = sorted(
+            get_slice(
+                source,
+                "foo",
+                10,
+                SliceDirection::Backward,
+                None,
+                Language::Swift,
+            )
+            .unwrap(),
+        );
+
+        // THEN: exactly the data-dependence chain `a` (3) -> `c` (9) ->
+        // criterion (10). The if line and both `let b` arms CANNOT affect the
+        // result and are EXCLUDED — the pre-fix slice was [2..11], the whole
+        // function.
+        assert_eq!(
+            lines,
+            vec![3, 9, 10],
+            "slice from `return c` must be the a -> c -> return chain only"
+        );
+        for unrelated in [2, 4, 5, 6, 7, 8, 11] {
+            assert!(
+                !lines.contains(&unrelated),
+                "line {unrelated} cannot affect `return c` (cond / b / braces)"
+            );
+        }
+    }
+
+    #[test]
+    fn slice_single_block_cfg_returns_intra_block_data_deps_luau() {
+        // GIVEN: the Luau shape of the same fixture (also a single-block
+        // CFG with a whole-body statement span).
+        let source = "\nlocal function foo(cond)\n    local a = 1\n    if cond then\n        local b = 2\n    else\n        local b = 3\n    end\n    local c = a + 5\n    return c\nend\n";
+
+        let lines = sorted(
+            get_slice(
+                source,
+                "foo",
+                10,
+                SliceDirection::Backward,
+                None,
+                Language::Luau,
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(
+            lines,
+            vec![3, 9, 10],
+            "slice from `return c` must be the a -> c -> return chain only"
+        );
+        for unrelated in [2, 4, 5, 6, 7, 8] {
+            assert!(
+                !lines.contains(&unrelated),
+                "line {unrelated} cannot affect `return c` (cond / b / braces / end)"
+            );
+        }
+    }
+
+    #[test]
+    fn slice_single_block_cfg_straight_line_pin_swift() {
+        // GIVEN: branch-free Swift — the purest single-block case.
+        let source = "\nfunc foo() -> Int {\n    let a = 1\n    let b = 2\n    let c = a + 5\n    return c\n}\n";
+
+        let lines = sorted(
+            get_slice(
+                source,
+                "foo",
+                6,
+                SliceDirection::Backward,
+                None,
+                Language::Swift,
+            )
+            .unwrap(),
+        );
+
+        // `b = 2` (line 4) is unrelated; the pre-fix slice returned the full
+        // range [3..7].
+        assert_eq!(lines, vec![3, 5, 6]);
+        assert!(!lines.contains(&4), "`let b = 2` feeds nothing here");
+    }
+
+    #[test]
+    fn slice_control_dependence_excludes_unconditional_join_python() {
+        // GIVEN: an `if` WITHOUT else followed by straight-line code.
+        let source = "\ndef foo(cond):\n    y = 0\n    if cond:\n        x = 1\n    z = y + 2\n    return z\n";
+
+        // WHEN: we slice backward from `z = y + 2` (line 6), which strictly
+        // post-dominates the branch and therefore runs unconditionally.
+        let lines = sorted(
+            get_slice(
+                source,
+                "foo",
+                6,
+                SliceDirection::Backward,
+                None,
+                Language::Python,
+            )
+            .unwrap(),
+        );
+
+        // THEN: only `y = 0` (3) and the criterion. The branch line 4 and the
+        // arm `x = 1` (5) are EXCLUDED — the pre-fix slice was [2,3,4,6].
+        assert_eq!(lines, vec![3, 6]);
+        for unrelated in [2, 4, 5, 7] {
+            assert!(
+                !lines.contains(&unrelated),
+                "line {unrelated} cannot affect `z = y + 2` (signature/cond/branch arm)"
+            );
+        }
+    }
+
+    #[test]
+    fn slice_control_dependence_excludes_unconditional_join_c() {
+        // GIVEN: the same shape in C (borderline member of cluster CL-14).
+        let source = "\nint foo(int cond) {\n    int y = 0;\n    if (cond) {\n        int x = 1;\n    }\n    int z = y + 2;\n    return z;\n}\n";
+
+        let lines = sorted(
+            get_slice(
+                source,
+                "foo",
+                7,
+                SliceDirection::Backward,
+                None,
+                Language::C,
+            )
+            .unwrap(),
+        );
+
+        // Pre-fix this was [2,3,4,7] — the branch condition line 4 dragged in.
+        assert_eq!(lines, vec![3, 7]);
+        assert!(!lines.contains(&4), "`if (cond)` cannot affect `int z`");
+        assert!(!lines.contains(&5), "`int x = 1` cannot affect `int z`");
+    }
+
+    #[test]
+    fn slice_control_dependence_keeps_loop_body_dependent_on_header() {
+        // GIVEN: a while loop — the soundness half of the tightening. A
+        // statement inside the loop body IS control-dependent on the loop
+        // condition; the post-dominance fix must keep that edge.
+        let source = "\ndef foo(n):\n    s = 0\n    i = 0\n    while i < n:\n        s = s + i\n        i = i + 1\n    t = s + 1\n    return t\n";
+
+        let lines = sorted(
+            get_slice(
+                source,
+                "foo",
+                7,
+                SliceDirection::Backward,
+                None,
+                Language::Python,
+            )
+            .unwrap(),
+        );
+
+        // `i = i + 1` (7) is a body statement: it keeps the loop header (5),
+        // its data chain i = 0 (4) and the signature line (2, which defines n
+        // used by the header). The loop-exit statements `t = s + 1` (8) and
+        // `return t` (9) run unconditionally and stay out.
+        assert_eq!(lines, vec![2, 4, 5, 7]);
+        assert!(
+            lines.contains(&5),
+            "a loop-body statement stays control-dependent on the loop header"
+        );
+        assert!(!lines.contains(&8) && !lines.contains(&9));
+    }
 }
 
 // =============================================================================

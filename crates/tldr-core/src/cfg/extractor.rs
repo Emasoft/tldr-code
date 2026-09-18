@@ -1353,19 +1353,31 @@ impl<'a> CfgBuilder<'a> {
             });
         }
 
-        // If no explicit exit blocks, the last block is an exit
+        // If no explicit exit blocks, the fall-through block is an exit.
+        //
+        // Issue #80: this used to wire the LAST-CREATED block to the exit,
+        // but block creation order is not control-flow order — after an
+        // `if/else` the last block created is the ELSE arm while the actual
+        // fall-through position is the join (`process_if_statement` sets
+        // `current_block_id = join_block`). On a Scala `def f() = { if (c)
+        // {...} else {...}; expr }` (no explicit return) that produced a
+        // bogus `else -> Exit` edge and left the join with no path to the
+        // exit at all, which broke post-dominance and therefore the PDG's
+        // control dependence. Wire `current_block_id` — the position control
+        // actually flows to — exactly like the explicit-exits branch below
+        // already does.
         if self.exit_blocks.is_empty() && !self.blocks.is_empty() {
-            let last_id = self.blocks.len() - 1;
-            self.exit_blocks.push(last_id);
+            let fallthrough_id = self.current_block_id.min(self.blocks.len() - 1);
+            self.exit_blocks.push(fallthrough_id);
 
             // Add exit block if not present
-            if self.blocks[last_id].block_type != BlockType::Exit {
+            if self.blocks[fallthrough_id].block_type != BlockType::Exit {
                 let exit_block = self.new_block(
                     BlockType::Exit,
-                    self.blocks[last_id].lines.1,
-                    self.blocks[last_id].lines.1,
+                    self.blocks[fallthrough_id].lines.1,
+                    self.blocks[fallthrough_id].lines.1,
                 );
-                self.add_edge(last_id, exit_block, EdgeType::Unconditional, None);
+                self.add_edge(fallthrough_id, exit_block, EdgeType::Unconditional, None);
                 self.exit_blocks = vec![exit_block];
             }
         } else if !self.exit_blocks.is_empty() {
