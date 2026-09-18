@@ -632,6 +632,16 @@ impl<'a> DfgBuilder<'a> {
             }
 
             // =================================================================
+            // Rust augmented assignment: y += 1 (tree-sitter-rust names this
+            // kind `compound_assignment_expr`; without a handler it fell
+            // through to the generic identifier walk, which recorded the
+            // LHS as a bare Use and never as a def/update — issue #77).
+            // =================================================================
+            "compound_assignment_expr" if matches!(self.language, Language::Rust) => {
+                self.process_c_style_augmented_assignment(node, depth)?;
+            }
+
+            // =================================================================
             // Rust let declarations: let x = ...; let mut x = ...;
             // =================================================================
             "let_declaration" => {
@@ -842,7 +852,11 @@ impl<'a> DfgBuilder<'a> {
             // PHP variable names: $x
             "variable_name" if matches!(self.language, Language::Php) => {
                 let name = node.utf8_text(self.source.as_bytes()).unwrap_or("");
-                if !name.is_empty() && self.is_use_context(node) {
+                // issue #77 (CL-12): `$this` is an implicit receiver binding
+                // supplied by the runtime in method scope, not a local
+                // variable read — recording it produced a false
+                // uninitialized-variable hit.
+                if !name.is_empty() && name != "$this" && self.is_use_context(node) {
                     self.add_ref_from_node(node, RefType::Use);
                 }
             }
@@ -866,6 +880,23 @@ impl<'a> DfgBuilder<'a> {
                     && self.is_swift_use_context(node)
                 {
                     self.add_ref_from_node(node, RefType::Use);
+                }
+            }
+
+            // TS/JS ES6 shorthand property value: `{ scope }` — the
+            // identifier IS a real variable read (issue #77, CL-13). Only
+            // object-literal value position is captured here; destructuring
+            // patterns (`const { scope } = ...`) reach
+            // extract_assignment_targets and are recorded as definitions.
+            "shorthand_property_identifier" => {
+                let is_object_literal_value = node
+                    .parent()
+                    .is_some_and(|parent| parent.kind() == "object");
+                if is_object_literal_value {
+                    let name = node.utf8_text(self.source.as_bytes()).unwrap_or("");
+                    if !name.is_empty() && !is_keyword(name, self.language) {
+                        self.add_ref_from_node(node, RefType::Use);
+                    }
                 }
             }
 
@@ -994,6 +1025,19 @@ impl<'a> DfgBuilder<'a> {
             "variable_name" => {
                 self.add_ref_from_node(target, RefType::Definition);
             }
+            // issue #77 (CL-13): Ruby attribute assignment `obj.field = 1`
+            // parses with a `call` node on the left; without this arm the
+            // whole mutation was invisible to the DFG (no def, no use), so
+            // def-use chains through `obj` were severed. Record the
+            // receiver as a use — matching the OCaml field-mutation
+            // treatment (`v.f <- e` reads `v`).
+            "call" if matches!(self.language, Language::Ruby) => {
+                if let Some(receiver) = target.child_by_field_name("receiver") {
+                    if receiver.kind() == "identifier" {
+                        self.add_ref_from_node(receiver, RefType::Use);
+                    }
+                }
+            }
             _ => {}
         }
 
@@ -1004,7 +1048,23 @@ impl<'a> DfgBuilder<'a> {
     fn process_augmented_assignment(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         if let Some(left) = node.child_by_field_name("left") {
             if left.kind() == "identifier" {
+                // issue #77 (CL-13): `x += ...` reads x before writing it.
+                // reaching-defs and dead-store consumers treat Update as a
+                // def only, so without an explicit Use the pre-update value
+                // appears dead (`msg = "hi"; msg += x` flagged `msg` as a
+                // dead store). Record the implicit read first (read happens
+                // before the write), then the update.
+                self.add_ref_from_node(left, RefType::Use);
                 self.add_ref_from_node(left, RefType::Update);
+            } else if matches!(self.language, Language::Ruby) && left.kind() == "call" {
+                // Ruby field mutation through op-assign: `obj.count += 1`
+                // reads (and mutates) the receiver — record the receiver as
+                // a use so def-use chains through `obj` are not severed.
+                if let Some(receiver) = left.child_by_field_name("receiver") {
+                    if receiver.kind() == "identifier" {
+                        self.add_ref_from_node(receiver, RefType::Use);
+                    }
+                }
             }
         }
 
@@ -1156,6 +1216,19 @@ impl<'a> DfgBuilder<'a> {
     /// Used by TS/JS, Java, C, C++, Rust
     fn process_c_style_assignment(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         if let Some(left) = node.child_by_field_name("left") {
+            // issue #77 (CL-13): a compound operator (`+=`, `-=` ...) reads
+            // the target before writing it. These grammars (C/C++/Java/C#)
+            // keep the operator inside `assignment_expression`, so the
+            // target was recorded as a plain Definition and the implicit
+            // read was lost. Record the read, then the update.
+            if has_compound_assignment_operator(node, self.source) && left.kind() == "identifier" {
+                self.add_ref_from_node(left, RefType::Use);
+                self.add_ref_from_node(left, RefType::Update);
+                if let Some(right) = node.child_by_field_name("right") {
+                    self.extract_refs_from_node(right, depth + 1)?;
+                }
+                return Ok(());
+            }
             if left.kind() == "identifier" {
                 self.add_ref_from_node(left, RefType::Definition);
             } else {
@@ -1175,6 +1248,10 @@ impl<'a> DfgBuilder<'a> {
     fn process_c_style_augmented_assignment(&mut self, node: Node, depth: usize) -> TldrResult<()> {
         if let Some(left) = node.child_by_field_name("left") {
             if left.kind() == "identifier" {
+                // issue #77 (CL-13): `x += ...` reads x before writing it —
+                // record the implicit read, then the update (consumers treat
+                // Update as a def only, so the read must be explicit).
+                self.add_ref_from_node(left, RefType::Use);
                 self.add_ref_from_node(left, RefType::Update);
             }
         }
@@ -2092,6 +2169,22 @@ impl<'a> DfgBuilder<'a> {
                 "value_binding_pattern" => {
                     return false;
                 }
+                // issue #77 (CL-12): a simple_identifier directly inside a
+                // navigation_suffix is the member/method name after the dot
+                // (`obj.field`, `self.move`) — the member tail is resolved at
+                // runtime and is never a local variable read. (The
+                // navigation_expression arm above only matches when the
+                // *whole suffix* is the identifier; the grammar wraps the
+                // tail one level deeper, so that arm never fired for it.)
+                "navigation_suffix" => {
+                    return false;
+                }
+                // issue #77 (CL-12): Swift argument labels in
+                // `self.move(from: x, to: 2)` — the label identifiers are
+                // part of the call syntax, not variable reads.
+                "value_argument_label" => {
+                    return false;
+                }
                 _ => {}
             }
         }
@@ -2113,6 +2206,22 @@ impl<'a> DfgBuilder<'a> {
     /// to determine if this identifier is a target of assignment/declaration
     /// (and therefore NOT a use).
     fn is_use_context(&self, node: Node) -> bool {
+        // issue #77 (CL-12): Ruby method names and bare-call targets are not
+        // variable reads. In `x.to_s` / `self.bar` / `log(y)` the callee is
+        // the `method` field of the `call` node — it resolves to a method at
+        // runtime, has no defining write in the function body, and was
+        // flagged as a definite-uninitialized variable by reaching-defs.
+        if matches!(self.language, Language::Ruby) {
+            if let Some(parent) = node.parent() {
+                if parent.kind() == "call" {
+                    if let Some(method) = parent.child_by_field_name("method") {
+                        if method.id() == node.id() {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
         // cross-cutting-and-clear-fix-bugs-v1 (P18.B1): Scala method/field
         // names on the rhs of `field_expression` (`Tracing.calculateTracingEvent`
         // -> `calculateTracingEvent`) are member references, not local
@@ -2501,6 +2610,28 @@ fn last_identifier_text(node: Node, source: &str) -> Option<String> {
     let mut last = None;
     walk(node, source, &mut last);
     last.filter(|s| !s.is_empty())
+}
+
+/// Check if an assignment/compound-assignment node carries a compound
+/// operator (`+=`, `-=`, ...). These grammars (C/C++/Java/C#) keep the
+/// operator inside `assignment_expression` as an anonymous child token, so
+/// the only way to distinguish `x = 1` from `x += 1` is to look at the
+/// anonymous operator text (issue #77, CL-13).
+fn has_compound_assignment_operator(node: Node, source: &str) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.is_named() {
+            continue;
+        }
+        let text = child.utf8_text(source.as_bytes()).unwrap_or("");
+        if matches!(
+            text,
+            "+=" | "-=" | "*=" | "/=" | "%=" | "**=" | "&=" | "|=" | "^=" | "<<=" | ">>=" | ">>>="
+        ) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Check if a name is a language keyword
@@ -3132,6 +3263,341 @@ fn is_keyword(name: &str, language: Language) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // =========================================================================
+    // Issue #77 — DFG use-detection: false reads + missed uses (CL-12/CL-13)
+    // =========================================================================
+
+    /// Ruby: method names and bare-call targets are NOT variable reads.
+    ///
+    /// Before the fix, `x.to_s` recorded a `Use to_s`, `log(y)` a `Use log`,
+    /// and `self.bar` a `Use bar` — all resolved methods with no defining
+    /// write in the body, producing false uninitialized-variable hits in
+    /// reaching-defs.
+    #[test]
+    fn test_ruby_method_names_and_bare_calls_not_reads() {
+        let source = r#"
+def foo(x)
+  y = x.to_s
+  log(y)
+  self.bar
+  y
+end
+"#;
+        let dfg = get_dfg_context(source, "foo", Language::Ruby).unwrap();
+        let uses: Vec<&str> = dfg
+            .refs
+            .iter()
+            .filter(|r| r.ref_type == RefType::Use)
+            .map(|r| r.name.as_str())
+            .collect();
+        assert!(uses.contains(&"x"), "receiver/argument x is a read");
+        assert!(uses.contains(&"y"), "y is a read");
+        assert!(
+            !uses.contains(&"to_s"),
+            "method name `to_s` must not be a read, uses: {:?}",
+            uses
+        );
+        assert!(
+            !uses.contains(&"log"),
+            "bare call target `log` must not be a read, uses: {:?}",
+            uses
+        );
+        assert!(
+            !uses.contains(&"bar"),
+            "method name `bar` must not be a read, uses: {:?}",
+            uses
+        );
+    }
+
+    /// Ruby: `msg += x` records the implicit read in addition to the update.
+    ///
+    /// reaching-defs and dead-store consumers treat `Update` as def-only, so
+    /// the read that feeds the op-assign must be an explicit `Use` ref on the
+    /// same line — and the pre-update definition must chain to it.
+    #[test]
+    fn test_ruby_opassign_records_implicit_read() {
+        let source = r#"
+def foo(x)
+  msg = "hi"
+  msg += x
+  puts msg
+end
+"#;
+        let dfg = get_dfg_context(source, "foo", Language::Ruby).unwrap();
+
+        let msg_reads_on_opassign = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "msg" && r.line == 4 && r.ref_type == RefType::Use)
+            .count();
+        let msg_updates_on_opassign = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "msg" && r.line == 4 && r.ref_type == RefType::Update)
+            .count();
+        assert_eq!(
+            msg_reads_on_opassign, 1,
+            "exactly one implicit read of msg on the op-assign line, refs: {:?}",
+            dfg.refs
+        );
+        assert_eq!(
+            msg_updates_on_opassign, 1,
+            "exactly one update of msg on the op-assign line, refs: {:?}",
+            dfg.refs
+        );
+
+        assert!(
+            dfg.edges
+                .iter()
+                .any(|e| e.var == "msg" && e.def_line == 3 && e.use_line == 4),
+            "def of msg (line 3) must chain to the implicit read on line 4, edges: {:?}",
+            dfg.edges
+        );
+    }
+
+    /// Ruby: attribute assignment `obj.field = 1` reads the receiver.
+    #[test]
+    fn test_ruby_field_mutation_records_receiver_use() {
+        let source = r#"
+def foo
+  obj.field = 1
+  obj
+end
+"#;
+        let dfg = get_dfg_context(source, "foo", Language::Ruby).unwrap();
+        let obj_uses: Vec<u32> = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "obj" && r.ref_type == RefType::Use)
+            .map(|r| r.line)
+            .collect();
+        assert!(
+            obj_uses.contains(&3),
+            "field mutation must record the receiver read on line 3, uses: {:?}",
+            obj_uses
+        );
+        assert!(
+            obj_uses.contains(&4),
+            "`obj` on line 4 is a read, uses: {:?}",
+            obj_uses
+        );
+    }
+
+    /// Swift: argument labels and call-syntax method names are not reads.
+    #[test]
+    fn test_swift_argument_labels_and_method_name_not_reads() {
+        let source = r#"
+func foo(x: Int) -> Int {
+  self.move(from: x, to: 2)
+  return x
+}
+"#;
+        let dfg = get_dfg_context(source, "foo", Language::Swift).unwrap();
+        let uses: Vec<&str> = dfg
+            .refs
+            .iter()
+            .filter(|r| r.ref_type == RefType::Use)
+            .map(|r| r.name.as_str())
+            .collect();
+        assert!(uses.contains(&"x"), "argument value x is a read");
+        assert!(
+            !uses.contains(&"move"),
+            "method name `move` must not be a read, uses: {:?}",
+            uses
+        );
+        assert!(
+            !uses.contains(&"from"),
+            "argument label `from` must not be a read, uses: {:?}",
+            uses
+        );
+        assert!(
+            !uses.contains(&"to"),
+            "argument label `to` must not be a read, uses: {:?}",
+            uses
+        );
+    }
+
+    /// PHP: `$this` is an implicit receiver binding, not a variable read.
+    #[test]
+    fn test_php_this_not_a_read() {
+        let source = r#"
+<?php
+function foo() {
+  $this->bar();
+  $x = 1;
+  return $x;
+}
+"#;
+        let dfg = get_dfg_context(source, "foo", Language::Php).unwrap();
+        let names: Vec<&str> = dfg.refs.iter().map(|r| r.name.as_str()).collect();
+        assert!(
+            !names.contains(&"$this"),
+            "$this must not be recorded as a variable read, refs: {:?}",
+            names
+        );
+        assert!(names.contains(&"$x"), "$x defs/uses must still be recorded");
+    }
+
+    /// TypeScript: ES6 shorthand property value `{ scope }` is a read.
+    #[test]
+    fn test_typescript_shorthand_property_records_use() {
+        let source = r#"
+function foo(scope: string) {
+  const wrapped = { scope };
+  return wrapped;
+}
+"#;
+        let dfg = get_dfg_context(source, "foo", Language::TypeScript).unwrap();
+        let scope_uses: Vec<u32> = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "scope" && r.ref_type == RefType::Use)
+            .map(|r| r.line)
+            .collect();
+        assert_eq!(
+            scope_uses,
+            vec![3],
+            "shorthand property `{{ scope }}` must record exactly one use of scope"
+        );
+        assert!(
+            dfg.edges
+                .iter()
+                .any(|e| e.var == "scope" && e.def_line == 2 && e.use_line == 3),
+            "param def of scope must chain to the shorthand use, edges: {:?}",
+            dfg.edges
+        );
+    }
+
+    /// Rust: compound assignment `y += 1` records Update + Use (the grammar
+    /// kind `compound_assignment_expr` previously fell through to the
+    /// generic walk, recording a bare Use and never a def/update).
+    #[test]
+    fn test_rust_compound_assignment_records_update_and_use() {
+        let source = r#"
+fn foo(x: i32) -> i32 {
+    let mut y = x;
+    y += 1;
+    y
+}
+"#;
+        let dfg = get_dfg_context(source, "foo", Language::Rust).unwrap();
+        let y_updates_on_opassign = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "y" && r.line == 4 && r.ref_type == RefType::Update)
+            .count();
+        let y_reads_on_opassign = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "y" && r.line == 4 && r.ref_type == RefType::Use)
+            .count();
+        let y_defs_on_opassign = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "y" && r.line == 4 && r.ref_type == RefType::Definition)
+            .count();
+        assert_eq!(
+            y_updates_on_opassign, 1,
+            "y += 1 must record exactly one Update, refs: {:?}",
+            dfg.refs
+        );
+        assert_eq!(
+            y_reads_on_opassign, 1,
+            "y += 1 must record exactly one (implicit) Use, refs: {:?}",
+            dfg.refs
+        );
+        assert_eq!(
+            y_defs_on_opassign, 0,
+            "y += 1 must not be a Definition, refs: {:?}",
+            dfg.refs
+        );
+    }
+
+    /// C: compound operator inside `assignment_expression` (`x += 1`)
+    /// records Update + Use, not a plain Definition.
+    #[test]
+    fn test_c_compound_assignment_records_update_and_use() {
+        let source = r#"
+int foo(int x) {
+  x += 1;
+  return x;
+}
+"#;
+        let dfg = get_dfg_context(source, "foo", Language::C).unwrap();
+        let x_updates_on_opassign = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "x" && r.line == 3 && r.ref_type == RefType::Update)
+            .count();
+        let x_reads_on_opassign = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "x" && r.line == 3 && r.ref_type == RefType::Use)
+            .count();
+        let x_defs_on_opassign = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "x" && r.line == 3 && r.ref_type == RefType::Definition)
+            .count();
+        assert_eq!(
+            x_updates_on_opassign, 1,
+            "x += 1 must record exactly one Update, refs: {:?}",
+            dfg.refs
+        );
+        assert_eq!(
+            x_reads_on_opassign, 1,
+            "x += 1 must record exactly one (implicit) Use, refs: {:?}",
+            dfg.refs
+        );
+        assert_eq!(
+            x_defs_on_opassign, 0,
+            "x += 1 must not be a Definition, refs: {:?}",
+            dfg.refs
+        );
+    }
+
+    /// Java: same compound-operator shape as C.
+    #[test]
+    fn test_java_compound_assignment_records_update_and_use() {
+        let source = r#"
+int foo(int x) {
+  x += 1;
+  return x;
+}
+"#;
+        let dfg = get_dfg_context(source, "foo", Language::Java).unwrap();
+        let x_updates_on_opassign = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "x" && r.line == 3 && r.ref_type == RefType::Update)
+            .count();
+        let x_reads_on_opassign = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "x" && r.line == 3 && r.ref_type == RefType::Use)
+            .count();
+        let x_defs_on_opassign = dfg
+            .refs
+            .iter()
+            .filter(|r| r.name == "x" && r.line == 3 && r.ref_type == RefType::Definition)
+            .count();
+        assert_eq!(
+            x_updates_on_opassign, 1,
+            "x += 1 must record exactly one Update, refs: {:?}",
+            dfg.refs
+        );
+        assert_eq!(
+            x_reads_on_opassign, 1,
+            "x += 1 must record exactly one (implicit) Use, refs: {:?}",
+            dfg.refs
+        );
+        assert_eq!(
+            x_defs_on_opassign, 0,
+            "x += 1 must not be a Definition, refs: {:?}",
+            dfg.refs
+        );
+    }
 
     #[test]
     fn test_simple_function() {

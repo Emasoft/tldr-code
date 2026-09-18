@@ -336,9 +336,14 @@ pub fn find_dead_stores_dfg(
 
             if let Some(&(next_def_line, _, _)) = next_def_in_block {
                 // Check if there's any use between this def and the next def in the same block
+                // issue #77 (CL-13): the upper bound is inclusive — a read on
+                // the same line as the next definition is a read-then-write
+                // (`x = f(x)` in Lua, `msg += x` op-assign) and keeps the
+                // earlier definition alive. The strict `<` dropped such uses
+                // and flagged the earlier store as dead.
                 let has_use_between = uses
                     .iter()
-                    .any(|&use_line| use_line > def_line && use_line < next_def_line);
+                    .any(|&use_line| use_line > def_line && use_line <= next_def_line);
 
                 if !has_use_between {
                     // This is a dead store - overwritten before use in the same block
@@ -622,6 +627,53 @@ fn format_dead_stores_text(report: &DeadStoresReport) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// issue #77 (CL-13): Lua `x = f(x)` reads x on the same line it
+    /// redefines it — the read keeps the earlier definition alive. The
+    /// strict `<` upper bound dropped the same-line use and flagged
+    /// `local x = 1` as a dead store.
+    #[test]
+    fn test_lua_read_then_write_not_flagged_dead() {
+        let source = r#"
+local function foo()
+  local x = 1
+  x = f(x)
+  return x
+end
+"#;
+        let cfg = get_cfg_context(source, "foo", Language::Lua).unwrap();
+        let dfg = get_dfg_context(source, "foo", Language::Lua).unwrap();
+        let dead = find_dead_stores_dfg(&dfg.refs, &cfg).unwrap();
+        let x_dead: Vec<&DeadStore> = dead.iter().filter(|d| d.variable == "x").collect();
+        assert!(
+            x_dead.is_empty(),
+            "read-then-write `x = f(x)` keeps earlier defs alive, got: {:?}",
+            x_dead
+        );
+    }
+
+    /// issue #77 (CL-13): Ruby `msg += x` reads msg before writing it. The
+    /// explicit implicit-read Use (extractor) plus the inclusive upper
+    /// bound keep `msg = "hi"` alive.
+    #[test]
+    fn test_ruby_opassign_read_keeps_definition_alive() {
+        let source = r#"
+def foo(x)
+  msg = "hi"
+  msg += x
+  puts msg
+end
+"#;
+        let cfg = get_cfg_context(source, "foo", Language::Ruby).unwrap();
+        let dfg = get_dfg_context(source, "foo", Language::Ruby).unwrap();
+        let dead = find_dead_stores_dfg(&dfg.refs, &cfg).unwrap();
+        let msg_dead: Vec<&DeadStore> = dead.iter().filter(|d| d.variable == "msg").collect();
+        assert!(
+            msg_dead.is_empty(),
+            "`msg += x` reads msg, so `msg = \"hi\"` is not a dead store, got: {:?}",
+            msg_dead
+        );
+    }
 
     #[test]
     fn test_find_dead_stores_ssa_simple() {
