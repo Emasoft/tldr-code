@@ -4,27 +4,35 @@
 //! `daemon-registry.json` file. Each entry records one running daemon; the
 //! file always contains the union of all live daemons known to the user.
 //!
-//! # Concurrency (option c — bounded compare-and-swap retry)
+//! # Concurrency (option d — exclusive lock file, issue #64)
 //!
 //! The per-project flock at [`super::pid::try_acquire_lock`] (pid.rs:261,
 //! `libc::flock(LOCK_EX | LOCK_NB)`) protects the SOCKET file, NOT the
 //! registry. Two `daemon start` calls from DIFFERENT projects bypass that
 //! flock and race read-modify-write the shared registry.
 //!
-//! Rather than introducing a new advisory-lock dependency, this module uses
-//! a bounded compare-and-swap retry loop:
+//! v0.2.2 → v0.3.0 used a bounded mtime compare-and-swap retry here
+//! (option c). It had no mutual exclusion between the mtime check and the
+//! write: concurrent writers for different projects all passed the check
+//! and the last full-registry write silently dropped every earlier
+//! writer's entry (issue #64). The shared fixed temp filename also made
+//! concurrent `write_registry_atomic` calls steal each other's tmp file
+//! mid-rename, surfacing as spurious ENOENT errors.
 //!
-//! 1. Read the registry file's mtime (pre-mtime).
-//! 2. Read the registry, modify in-memory.
-//! 3. Re-read the mtime (post-mtime).
-//! 4. If pre == post (no concurrent writer landed): atomically write
-//!    (tmp + rename) and return.
-//! 5. Otherwise: retry, up to 3 attempts. On exhaustion return
-//!    [`std::io::ErrorKind::WouldBlock`].
+//! The registry is now guarded by a dedicated lock file,
+//! `daemon-registry.lock` (sibling of the registry file), held for the
+//! whole read-modify-write cycle:
 //!
-//! In practice, a 3-attempt cap is sufficient because each attempt's window
-//! is microseconds and the contender pool is bounded by the number of
-//! projects on disk.
+//! 1. `flock(LOCK_EX)` on the lock file (blocking). The kernel releases
+//!    the lock when the owning process exits, so a crashed writer can
+//!    never wedge the registry — no stale-lock recovery is needed.
+//! 2. Read the registry, modify in memory, write atomically (tmp + rename)
+//!    while still holding the lock.
+//! 3. Release on drop (RAII guard).
+//!
+//! Writers outside this module do not exist: every registry mutation goes
+//! through [`add_entry`], [`remove_entry`], or the prune/migration
+//! write-back in [`read_registry`], all of which hold the lock.
 //!
 //! # Migration from v0.2.x
 //!
@@ -33,6 +41,7 @@
 //! converted into a registry entry and the legacy file is deleted. If the
 //! PID is dead, the legacy file is also removed (stale record cleanup).
 
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -57,7 +66,91 @@ pub struct DaemonRegistry {
     pub daemons: Vec<DaemonRegistryEntry>,
 }
 
-const CAS_RETRY_ATTEMPTS: usize = 3;
+// =============================================================================
+// Registry lock (issue #64)
+// =============================================================================
+
+/// Sibling lock file guarding every read-modify-write cycle on the
+/// registry. A dedicated file (not the registry JSON itself) because the
+/// registry is REPLACED by `tmp + rename` on every write — a lock held on
+/// the renamed-away inode would protect nothing.
+fn registry_lock_path() -> PathBuf {
+    registry_file_path().with_extension("lock")
+}
+
+/// An exclusive advisory lock over the daemon registry (issue #64).
+///
+/// RAII: the OS drops the lock when the guard — and its file handle — is
+/// dropped, including on panic and on process exit, so a crashed daemon or
+/// CLI can never leave a stale lock behind.
+struct RegistryLock {
+    _file: File,
+}
+
+impl RegistryLock {
+    /// Block until the exclusive registry lock is acquired.
+    ///
+    /// Blocking (rather than the removed CAS loop's bounded non-blocking
+    /// retry) is the correct shape here: the lock protects a
+    /// read-modify-write cycle lasting microseconds, and the kernel
+    /// releases `flock`/`LockFileEx` when the owning process dies, so a
+    /// crashed writer cannot wedge the registry. Under contention callers
+    /// wait their turn instead of failing with `WouldBlock` — a `daemon
+    /// start` must not lose its registration because another project
+    /// registered at the same moment.
+    fn acquire() -> std::io::Result<Self> {
+        let path = registry_lock_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        lock_exclusive(&file)?;
+        Ok(RegistryLock { _file: file })
+    }
+}
+
+/// Acquire a blocking exclusive lock on `file`.
+///
+/// Unix: `flock(LOCK_EX)` — the same primitive `pid.rs::try_lock_file`
+/// uses for socket singleton enforcement (there non-blocking, here
+/// blocking), via the already-vendored `libc`. `flock` locks are owned by
+/// the open file description, so two `open()`s in the same process (the
+/// multi-threaded test case) exclude each other just like two processes.
+#[cfg(unix)]
+fn lock_exclusive(file: &File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Windows equivalent: a blocking exclusive byte-range lock via
+/// `LockFileEx` (no `LOCKFILE_FAIL_IMMEDIATELY`), mirroring `pid.rs`.
+#[cfg(windows)]
+fn lock_exclusive(file: &File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK};
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    let handle = file.as_raw_handle() as HANDLE;
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    let result = unsafe { LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &mut overlapped) };
+    if result != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
 
 /// Directory used when the platform cache dir is unavailable.
 ///
@@ -113,8 +206,26 @@ fn write_registry_atomic(registry: &DaemonRegistry) -> std::io::Result<()> {
 /// and prune dead-PID entries. The pruned-and-migrated registry is also
 /// written back so subsequent reads observe a clean state.
 ///
+/// Issue #64: the prune write-back is a WRITE to the shared registry file,
+/// so it runs under the registry lock like every other mutation — without
+/// it, a reader pruning a stale entry could overwrite a concurrent
+/// registration with a snapshot that predates it.
+///
 /// Auxiliary state — a missing/corrupt file simply yields an empty registry.
+/// If the lock file itself cannot be created (e.g. read-only cache dir),
+/// the read degrades to unlocked: callers lose only the prune write-back,
+/// which is best-effort.
 pub fn read_registry() -> DaemonRegistry {
+    // Hold the lock for the whole read + prune write-back. If the lock
+    // file itself cannot be created/opened, degrade to unlocked: the
+    // caller loses only the prune write-back, which is best-effort.
+    let _guard = RegistryLock::acquire().ok();
+    read_registry_unlocked()
+}
+
+/// Read the registry WITHOUT acquiring the lock. Callers must already hold
+/// the registry lock ([`RegistryLock::acquire`]).
+fn read_registry_unlocked() -> DaemonRegistry {
     migrate_from_active_if_needed();
     let path = registry_file_path();
     let mut registry = match std::fs::read_to_string(&path) {
@@ -192,73 +303,49 @@ pub fn find_entry(project: &Path) -> Option<DaemonRegistryEntry> {
         .find(|d| d.project == canon)
 }
 
-/// Add (or replace) the registry entry for `project` via bounded
-/// compare-and-swap.
+/// Add (or replace) the registry entry for `project`.
 ///
-/// Returns `Err(io::ErrorKind::WouldBlock)` if [`CAS_RETRY_ATTEMPTS`] are
-/// exhausted under contention.
+/// Issue #64: the whole read-modify-write cycle runs while holding the
+/// exclusive registry lock, so a concurrent registration can neither
+/// interleave between this call's read and its write (the old mtime CAS
+/// had no mutual exclusion there — every writer passed the check and the
+/// last full-file write dropped the others' entries) nor steal the shared
+/// `daemon-registry.json.tmp` file out from under the atomic rename.
 pub fn add_entry(project: &Path, pid: u32, socket: &Path) -> std::io::Result<()> {
     let canon = project
         .canonicalize()
         .unwrap_or_else(|_| project.to_path_buf());
-    let path = registry_file_path();
+    let _lock = RegistryLock::acquire()?;
 
-    for _attempt in 0..CAS_RETRY_ATTEMPTS {
-        let pre_mtime = std::fs::metadata(&path)
-            .ok()
-            .and_then(|m| m.modified().ok());
-        let mut registry = read_registry();
-        registry.daemons.retain(|d| d.project != canon);
-        registry.daemons.push(DaemonRegistryEntry {
-            project: canon.clone(),
-            pid,
-            socket: socket.to_path_buf(),
-            started_at: chrono::Utc::now().to_rfc3339(),
-        });
-        let post_mtime = std::fs::metadata(&path)
-            .ok()
-            .and_then(|m| m.modified().ok());
-        if pre_mtime == post_mtime {
-            return write_registry_atomic(&registry);
-        }
-        // Contention: another writer landed between our read and our
-        // intended write. Retry.
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::WouldBlock,
-        "daemon registry contended after 3 CAS attempts",
-    ))
+    let mut registry = read_registry_unlocked();
+    registry.daemons.retain(|d| d.project != canon);
+    registry.daemons.push(DaemonRegistryEntry {
+        project: canon,
+        pid,
+        socket: socket.to_path_buf(),
+        started_at: chrono::Utc::now().to_rfc3339(),
+    });
+    write_registry_atomic(&registry)
 }
 
-/// Remove the registry entry for `project` via bounded compare-and-swap.
+/// Remove the registry entry for `project`.
+///
+/// Serialized against [`add_entry`] and the prune write-back by the same
+/// registry lock (issue #64); removing an absent entry is a no-op.
 pub fn remove_entry(project: &Path) -> std::io::Result<()> {
     let canon = project
         .canonicalize()
         .unwrap_or_else(|_| project.to_path_buf());
-    let path = registry_file_path();
+    let _lock = RegistryLock::acquire()?;
 
-    for _attempt in 0..CAS_RETRY_ATTEMPTS {
-        let pre_mtime = std::fs::metadata(&path)
-            .ok()
-            .and_then(|m| m.modified().ok());
-        let mut registry = read_registry();
-        let before = registry.daemons.len();
-        registry.daemons.retain(|d| d.project != canon);
-        if registry.daemons.len() == before {
-            // Nothing to remove — caller's invariant satisfied.
-            return Ok(());
-        }
-        let post_mtime = std::fs::metadata(&path)
-            .ok()
-            .and_then(|m| m.modified().ok());
-        if pre_mtime == post_mtime {
-            return write_registry_atomic(&registry);
-        }
+    let mut registry = read_registry_unlocked();
+    let before = registry.daemons.len();
+    registry.daemons.retain(|d| d.project != canon);
+    if registry.daemons.len() == before {
+        // Nothing to remove — caller's invariant satisfied.
+        return Ok(());
     }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::WouldBlock,
-        "daemon registry contended after 3 CAS attempts",
-    ))
+    write_registry_atomic(&registry)
 }
 
 /// One-shot migration from v0.2.x `daemon-active.json`.
@@ -414,6 +501,110 @@ mod tests {
                 live.iter().all(|d| d.pid != dead_pid),
                 "dead PID entry should have been pruned on read"
             );
+        });
+    }
+
+    // =========================================================================
+    // issue-64-concurrent-registration-v1: concurrent add_entry must not
+    // silently lose entries
+    // =========================================================================
+
+    /// Issue #64: concurrent `add_entry` calls for DIFFERENT projects must
+    /// all survive. The mtime-based compare-and-swap has no mutual exclusion
+    /// between its check and its write: when several writers are inside the
+    /// read-modify-write window at the same time (released by a barrier —
+    /// the exact interleaving the issue describes), every one of them passes
+    /// the `pre_mtime == post_mtime` check and the last full-registry write
+    /// silently drops all earlier writers' entries.
+    ///
+    /// Contract: every `add_entry` that returns `Ok(())` must leave its
+    /// entry in the registry, so all THREADS × PROJECTS_PER_THREAD × CYCLES
+    /// distinct projects must be present at the end.
+    #[test]
+    fn concurrent_add_entry_preserves_all_entries() {
+        use std::sync::Arc;
+
+        const THREADS: usize = 8;
+        const PROJECTS_PER_THREAD: usize = 8;
+        const CYCLES: usize = 3;
+
+        with_registry_dir("concurrent-add", |dir| {
+            // Pre-create every project directory so add_entry can
+            // canonicalize it (macOS: /var → /private/var).
+            let mut all_projects = Vec::new();
+            for cycle in 0..CYCLES {
+                for t in 0..THREADS {
+                    for p in 0..PROJECTS_PER_THREAD {
+                        let project = dir.join(format!("c{cycle}-t{t}-p{p}"));
+                        std::fs::create_dir_all(&project).unwrap();
+                        all_projects.push(project);
+                    }
+                }
+            }
+
+            let barrier = Arc::new(std::sync::Barrier::new(THREADS));
+            let mut handles = Vec::new();
+            for t in 0..THREADS {
+                let projects: Vec<_> = all_projects
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| i % THREADS == t)
+                    .map(|(_, p)| p.clone())
+                    .collect();
+                let barrier = barrier.clone();
+                handles.push(std::thread::spawn(move || {
+                    let mut oks = 0usize;
+                    let mut errs = Vec::new();
+                    barrier.wait();
+                    for project in &projects {
+                        let socket = project.with_file_name(format!(
+                            "{}.sock",
+                            project.file_name().unwrap().to_string_lossy()
+                        ));
+                        match add_entry(project, std::process::id(), &socket) {
+                            Ok(()) => oks += 1,
+                            Err(e) => errs.push(e.to_string()),
+                        }
+                    }
+                    (oks, errs)
+                }));
+            }
+
+            let mut total_ok = 0usize;
+            let mut errors = Vec::new();
+            for h in handles {
+                let (oks, errs) = h.join().expect("worker thread must not panic");
+                total_ok += oks;
+                errors.extend(errs);
+            }
+
+            assert!(
+                errors.is_empty(),
+                "issue #64: add_entry must not fail under concurrent \
+                 registration, got {} errors: {:?}",
+                errors.len(),
+                errors.first()
+            );
+            assert_eq!(
+                total_ok,
+                THREADS * PROJECTS_PER_THREAD * CYCLES,
+                "issue #64: every concurrent registration must report success"
+            );
+
+            let entries = live_entries();
+            assert_eq!(
+                entries.len(),
+                THREADS * PROJECTS_PER_THREAD * CYCLES,
+                "issue #64: entries were silently lost by concurrent \
+                 add_entry (last-writer-wins over the shared registry file)"
+            );
+            for project in &all_projects {
+                assert!(
+                    find_entry(project).is_some(),
+                    "issue #64: entry for {} was lost by a concurrent writer",
+                    project.display()
+                );
+            }
         });
     }
 

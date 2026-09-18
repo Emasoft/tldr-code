@@ -6,10 +6,13 @@
 //! when multiple daemons are live; migration from v0.2.x daemon-active.json
 //! is one-shot.
 //!
-//! Concurrency story: option (c) bounded compare-and-swap retry. Per-project
-//! flock at `pid.rs::try_acquire_lock` protects the SOCKET file, NOT the
-//! registry. Cross-project starts can race read-modify-write the shared
-//! registry; CAS retry (3 attempts) handles this without a new dep.
+//! Concurrency story: issue #64 replaced the original option (c) bounded
+//! mtime compare-and-swap (no mutual exclusion between check and write —
+//! concurrent registrations silently overwrote each other) with an
+//! exclusive `flock` on a dedicated `daemon-registry.lock` file held for
+//! the whole read-modify-write cycle. Per-project flock at
+//! `pid.rs::try_acquire_lock` still protects the SOCKET file, NOT the
+//! registry.
 
 #![cfg(unix)]
 
@@ -275,12 +278,14 @@ fn migration_from_v022_daemon_active_is_one_shot() {
     );
 }
 
-/// Concurrent `daemon start` from 3 distinct projects: at least 2 of 3 must
-/// succeed in registering. (Option (c) bounded CAS retry — under ordinary
-/// load all 3 succeed; under heavy contention the 3rd may exhaust retries,
-/// which is acceptable per spec.)
+/// Concurrent `daemon start` from 3 distinct projects: ALL 3 must succeed
+/// in registering (issue #64). Pre-fix, the mtime-based CAS let concurrent
+/// writers pass the check simultaneously and the last full-registry write
+/// silently dropped the earlier registrations — the test accepted "≥2 of 3"
+/// to tolerate that loss. With the registry lock, no registration may be
+/// lost, so the assertion is exact.
 #[test]
-fn concurrent_add_entry_is_bounded_cas_safe() {
+fn concurrent_daemon_starts_all_register() {
     use std::thread;
 
     let cache_root = tempfile::Builder::new()
@@ -330,9 +335,10 @@ fn concurrent_add_entry_is_bounded_cas_safe() {
             ok_count += 1;
         }
     }
-    assert!(
-        ok_count >= 2,
-        "expected >=2 of 3 concurrent daemon starts to succeed (option c CAS bound), got {}",
+    assert_eq!(
+        ok_count, 3,
+        "issue #64: all 3 concurrent daemon starts must succeed, got {} \
+         (a lost start means a registration was dropped)",
         ok_count
     );
 
@@ -346,10 +352,10 @@ fn concurrent_add_entry_is_bounded_cas_safe() {
     let stdout = String::from_utf8_lossy(&list_out.stdout);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("parse concurrent list");
     let n = parsed["daemons"].as_array().unwrap().len();
-    assert!(
-        n >= 2,
-        "expected >=2 daemons registered after concurrent CAS, got {}; payload={}",
-        n,
-        stdout
+    assert_eq!(
+        n, 3,
+        "issue #64: all 3 concurrently started daemons must appear in the \
+         registry, got {}; payload={}",
+        n, stdout
     );
 }
