@@ -3,7 +3,7 @@
 //! Tests all public types, enums, and their methods from:
 //! - crates/tldr-core/src/types.rs
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -854,7 +854,7 @@ fn test_type_resolution_stats_summary_enabled() {
 #[test]
 fn test_impact_report_creation() {
     let report = ImpactReport {
-        targets: HashMap::new(),
+        targets: BTreeMap::new(),
         total_targets: 0,
         type_resolution: None,
     };
