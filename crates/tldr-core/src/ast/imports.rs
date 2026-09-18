@@ -23,6 +23,11 @@ use super::parser::parse_file_with_lang_threadlocal;
 /// parse correctly instead of failing path-extension detection inside
 /// the parser pool.
 ///
+/// The file's FILE NAME is passed down as the virtual-document host label
+/// (virtual-documents-v1): an HTML/SVG host names its embedded inline
+/// scripts/styles `<file>#script-N|#style-N`, and their outbound references
+/// are stamped `via = <file>#…` (see `ast::elements::embedded_document_refs`).
+///
 /// # Arguments
 /// * `file_path` - Path to source file
 /// * `language` - Programming language; overrides extension detection
@@ -32,7 +37,7 @@ use super::parser::parse_file_with_lang_threadlocal;
 /// * `Err(TldrError::PathNotFound)` - File doesn't exist
 pub fn get_imports(file_path: &Path, language: Language) -> TldrResult<Vec<ImportInfo>> {
     let (tree, source, _) = parse_file_with_lang(file_path, Some(language))?;
-    extract_imports_from_tree(&tree, &source, language)
+    extract_imports_from_tree_hosted(&tree, &source, language, host_label(file_path))
 }
 
 /// [`get_imports`], parsing through the per-thread parser cache (PERF-2).
@@ -46,14 +51,47 @@ pub fn get_imports_threadlocal(
     language: Language,
 ) -> TldrResult<Vec<ImportInfo>> {
     let (tree, source, _) = parse_file_with_lang_threadlocal(file_path, Some(language))?;
-    extract_imports_from_tree(&tree, &source, language)
+    extract_imports_from_tree_hosted(&tree, &source, language, host_label(file_path))
 }
 
-/// Extract imports from a parsed tree
+/// The virtual-document host label of a file: its FILE NAME (e.g.
+/// `"page.html"`), or `None` for a non-UTF-8 name (a nameless host cannot
+/// name a virtual document — the same rule `extract_elements` applies).
+fn host_label(path: &Path) -> Option<&str> {
+    path.file_name().and_then(|n| n.to_str())
+}
+
+/// Extract imports from a parsed tree (host-less form).
+///
+/// Convenience wrapper for callers that hold only a tree+source — HTML/XML
+/// virtual-document outbound references are NOT collected on this path (a
+/// tree has no file name to name them with). The production callers
+/// (`get_imports`, `extract_from_tree`) go through
+/// [`extract_imports_from_tree_hosted`].
 pub fn extract_imports_from_tree(
     tree: &Tree,
     source: &str,
     language: Language,
+) -> TldrResult<Vec<ImportInfo>> {
+    extract_imports_from_tree_hosted(tree, source, language, None)
+}
+
+/// [`extract_imports_from_tree`] with the virtual-document host label.
+///
+/// virtual-documents-v1: when `host` is `Some(<file name>)` and the language
+/// is Html/Xml, the outbound references of the host's embedded virtual
+/// documents (inline `<script>` JS bodies, `<style>` CSS bodies) are APPENDED
+/// to the host's own link rows, each stamped
+/// `via = <host>#script-N|#style-N` — the embedded-document scan
+/// (`ast::elements::embedded_document_refs`) runs the same deterministic
+/// walk that produces the `#script-N`/`#style-N` containers in the
+/// definitions, so `tldr structure` and `tldr imports` agree on naming.
+/// `host: None` reproduces the pre-virtual-documents behavior exactly.
+pub fn extract_imports_from_tree_hosted(
+    tree: &Tree,
+    source: &str,
+    language: Language,
+    host: Option<&str>,
 ) -> TldrResult<Vec<ImportInfo>> {
     let root = tree.root_node();
 
@@ -127,9 +165,23 @@ pub fn extract_imports_from_tree(
                 super::doclinks::extract_doc_links(language, source, Some(tree))
             }
         }
+        // virtual-documents-v1: HTML/XML hosts append the OUTBOUND references
+        // of their embedded virtual documents (inline `<script>` JS bodies and
+        // `<style>` CSS bodies) to the host's own link rows — every row
+        // stamped `via = <host>#script-N|#style-N`, deduplicated per virtual
+        // document by (module, via). The scan reuses the SAME walk that
+        // numbers the `#script-N`/`#style-N` containers in the definitions,
+        // so `tldr structure` and `tldr imports` agree on naming. `host:
+        // None` (unit probes, callers without a file name) skips the
+        // embedded scan — a nameless host has no attributable edges.
+        Language::Html | Language::Xml => {
+            let mut links = super::doclinks::extract_doc_links(language, source, Some(tree));
+            links.extend(super::elements::embedded_document_refs(
+                language, tree, source, host,
+            ));
+            links
+        }
         Language::Markdown
-        | Language::Html
-        | Language::Xml
         | Language::Css
         | Language::Latex
         | Language::Json
@@ -178,6 +230,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             names: Vec::new(),
                             is_from: false,
                             alias: None,
+                            via: None,
                         });
                     } else if import_child.kind() == "aliased_import" {
                         let module = import_child
@@ -192,6 +245,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             names: Vec::new(),
                             is_from: false,
                             alias,
+                            via: None,
                         });
                     }
                 }
@@ -239,6 +293,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                                 names: vec![name],
                                 is_from: true,
                                 alias,
+                                via: None,
                             });
                         }
                         _ => {}
@@ -250,6 +305,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                         names,
                         is_from: true,
                         alias: None,
+                        via: None,
                     });
                 }
             }
@@ -303,6 +359,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                                 names: vec![name],
                                 is_from: true,
                                 alias,
+                                via: None,
                             });
                         }
                         "wildcard_import" => {
@@ -319,6 +376,7 @@ fn extract_python_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                         names,
                         is_from: true,
                         alias: None,
+                        via: None,
                     });
                 }
             }
@@ -430,6 +488,7 @@ fn extract_ts_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                     names,
                     is_from: !is_default,
                     alias: namespace_alias,
+                    via: None,
                 });
             }
             "export_statement" => {
@@ -441,6 +500,7 @@ fn extract_ts_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                         names: Vec::new(),
                         is_from: true,
                         alias: None,
+                        via: None,
                     });
                 }
             }
@@ -485,6 +545,7 @@ fn extract_go_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                                 names: Vec::new(),
                                 is_from: false,
                                 alias,
+                                via: None,
                             });
                         }
                         "import_spec_list" => {
@@ -505,6 +566,7 @@ fn extract_go_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                                         names: Vec::new(),
                                         is_from: false,
                                         alias,
+                                        via: None,
                                     });
                                 }
                             }
@@ -517,6 +579,7 @@ fn extract_go_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Imp
                                 names: Vec::new(),
                                 is_from: false,
                                 alias: None,
+                                via: None,
                             });
                         }
                         _ => {}
@@ -556,6 +619,7 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                         names,
                         is_from: true,
                         alias: None,
+                        via: None,
                     });
                 }
             }
@@ -568,6 +632,7 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                         names: Vec::new(),
                         is_from: false,
                         alias: None,
+                        via: None,
                     });
                 }
             }
@@ -583,6 +648,7 @@ fn extract_rust_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                         names: Vec::new(),
                         is_from: false,
                         alias,
+                        via: None,
                     });
                 }
             }
@@ -761,6 +827,7 @@ fn extract_java_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                 names: Vec::new(),
                 is_from: is_static,
                 alias: None,
+                via: None,
             });
         } else {
             extract_java_imports_recursive(&child, source, imports);
@@ -809,6 +876,7 @@ fn extract_c_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Impo
                     names: Vec::new(),
                     is_from: is_system, // We use is_from to indicate system vs local
                     alias: None,
+                    via: None,
                 });
             }
         } else {
@@ -855,6 +923,7 @@ fn extract_cpp_imports_recursive(node: &Node, source: &str, imports: &mut Vec<Im
                     names: Vec::new(),
                     is_from: is_system,
                     alias: None,
+                    via: None,
                 });
             }
         } else {
@@ -926,6 +995,7 @@ fn extract_ruby_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                             names: Vec::new(),
                             is_from: is_relative, // is_from indicates relative path
                             alias: None,
+                            via: None,
                         });
                     }
                 }
@@ -936,6 +1006,7 @@ fn extract_ruby_imports_recursive(node: &Node, source: &str, imports: &mut Vec<I
                         names: Vec::new(),
                         is_from: true, // is_from = true for require_relative (relative import)
                         alias: None,
+                        via: None,
                     });
                 }
                 _ => {}
@@ -1029,6 +1100,7 @@ fn extract_csharp_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                     // Use is_from to indicate static imports (similar to Java pattern)
                     is_from: is_static || is_global,
                     alias,
+                    via: None,
                 });
             }
         } else {
@@ -1126,6 +1198,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
                         } else {
                             Some(alias.to_string())
                         },
+                        via: None,
                     });
                 }
             } else if selector == "_" {
@@ -1135,6 +1208,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
                     names: vec!["*".to_string()],
                     is_from: true,
                     alias: None,
+                    via: None,
                 });
             } else {
                 // Simple selector: import scala.util.{Try}
@@ -1149,6 +1223,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
                     names: Vec::new(),
                     is_from: false,
                     alias: None,
+                    via: None,
                 });
             }
         }
@@ -1160,6 +1235,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
             names: vec!["*".to_string()],
             is_from: true,
             alias: None,
+            via: None,
         });
     } else {
         // Simple import: import scala.collection.mutable.ListBuffer
@@ -1168,6 +1244,7 @@ fn parse_scala_import_text(text: &str, imports: &mut Vec<ImportInfo>) {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         });
     }
 }
@@ -1263,6 +1340,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             names: vec!["*".to_string()],
                             is_from: true,
                             alias: None,
+                            via: None,
                         });
                     }
                 }
@@ -1276,6 +1354,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             names: Vec::new(),
                             is_from: false,
                             alias: resolved_alias,
+                            via: None,
                         });
                     }
                 }
@@ -1286,6 +1365,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             names: Vec::new(),
                             is_from: false,
                             alias: None,
+                            via: None,
                         });
                     }
                 }
@@ -1296,6 +1376,7 @@ fn extract_elixir_imports_recursive(node: &Node, source: &str, imports: &mut Vec
                             names: vec!["*".to_string()],
                             is_from: true,
                             alias: None,
+                            via: None,
                         });
                     }
                 }
@@ -1341,6 +1422,7 @@ fn extract_ocaml_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
                         names: vec!["*".to_string()],
                         is_from: true,
                         alias: None,
+                        via: None,
                     });
                 }
             }
@@ -1373,6 +1455,7 @@ fn extract_ocaml_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
                                 names: Vec::new(),
                                 is_from: false,
                                 alias: alias_name,
+                                via: None,
                             });
                         }
                     }
@@ -1389,6 +1472,7 @@ fn extract_ocaml_imports_recursive(node: &Node, source: &str, imports: &mut Vec<
                         names: vec!["*".to_string()],
                         is_from: true,
                         alias: None,
+                        via: None,
                     });
                 }
             }
@@ -1507,6 +1591,7 @@ fn extract_lua_require(node: &Node, source: &str) -> Option<ImportInfo> {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         })
     } else {
         None
@@ -1628,6 +1713,7 @@ fn extract_php_use_declaration(node: &Node, source: &str, imports: &mut Vec<Impo
                                 names: Vec::new(),
                                 is_from: true, // use is similar to "from X import Y"
                                 alias,
+                                via: None,
                             });
                         }
                     }
@@ -1650,6 +1736,7 @@ fn extract_php_use_declaration(node: &Node, source: &str, imports: &mut Vec<Impo
                     names: Vec::new(),
                     is_from: true,
                     alias,
+                    via: None,
                 });
             }
         }
@@ -1758,6 +1845,7 @@ fn extract_php_require_include(node: &Node, source: &str) -> Option<ImportInfo> 
         } else {
             None
         },
+        via: None,
     })
 }
 
@@ -1832,6 +1920,7 @@ fn parse_cjs_require(node: &Node, source: &str) -> Option<ImportInfo> {
         names: Vec::new(),
         is_from: true,
         alias: None,
+        via: None,
     })
 }
 
@@ -1932,6 +2021,7 @@ fn parse_swift_import_text(raw: &str) -> Option<ImportInfo> {
         names: Vec::new(),
         is_from: false,
         alias: None,
+        via: None,
     })
 }
 
@@ -2025,6 +2115,7 @@ fn parse_kotlin_import_text(raw: &str) -> Option<ImportInfo> {
         // for Java `static`/wildcard and Scala `_` selectors).
         is_from: path_part.ends_with(".*") || path_part.ends_with("*"),
         alias: alias_part.filter(|s| !s.is_empty()),
+        via: None,
     })
 }
 

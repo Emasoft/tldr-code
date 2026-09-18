@@ -1820,6 +1820,163 @@ fn tsv_records_use_the_tab_delimiter() {
 }
 
 // =============================================================================
+// virtual-documents-v1: <style> bodies are NAMED virtual documents
+// (`<host>#style-N`, mirroring `#script-N`) and their outbound references
+// (@import / url()) join the host file's IMPORTS with `via` provenance
+// =============================================================================
+
+/// Two real styles around a whitespace-only one (numbering continuity: the
+/// whitespace body consumes no `#style-N` number) and an inert script (its
+/// own counter never disturbs the style numbers). Style #1 imports a
+/// stylesheet and loads the same image TWICE (the `(module, via)` dedup pin:
+/// one row, not two).
+const HTML_STYLE_VIRTUAL_DOC_FIXTURE: &str = "<!DOCTYPE html>\n\
+                                              <html>\n\
+                                              <head>\n\
+                                              <style>\n\
+                                              @import url(\"theme.css\");\n\
+                                              .hero { background: url(img/hero.png); }\n\
+                                              .hero { background: url(img/hero.png); }\n\
+                                              </style>\n\
+                                              <style>\n\
+                                              \x20  \n\
+                                              </style>\n\
+                                              <script>var x = 1;</script>\n\
+                                              <style>\n\
+                                              .p { color: black; }\n\
+                                              </style>\n\
+                                              </head>\n\
+                                              <body id=\"main\">\n\
+                                              </body>\n\
+                                              </html>\n";
+
+#[test]
+fn html_style_bodies_are_numbered_virtual_documents_with_containers() {
+    let defs = extract_elements(
+        "styled.html",
+        HTML_STYLE_VIRTUAL_DOC_FIXTURE,
+        Language::Html,
+    );
+    assert_element_invariants(&defs, "styled.html");
+
+    // EXACT (kind, name, container) sequence: host element rows stay
+    // container-less; each style body's rows carry its OWN `#style-N` name.
+    // The whitespace style and the inert script emit element rows only and
+    // consume no number, so the third style is `#style-2` (continuity pin).
+    let sequence: Vec<(String, String, Option<String>)> = defs
+        .iter()
+        .map(|d| (d.kind.clone(), d.name.clone(), d.container.clone()))
+        .collect();
+    let expected: Vec<(String, String, Option<String>)> = [
+        ("element", "html", None),
+        ("element", "head", None),
+        ("element", "style", None),
+        ("selector", ".hero", Some("styled.html#style-1")),
+        ("selector", ".hero", Some("styled.html#style-1")),
+        ("element", "style", None),
+        ("element", "script", None),
+        ("element", "style", None),
+        ("selector", ".p", Some("styled.html#style-2")),
+        ("element", "body#main", None),
+    ]
+    .iter()
+    .map(|(k, n, c)| (k.to_string(), n.to_string(), c.map(str::to_string)))
+    .collect();
+    assert_eq!(
+        sequence, expected,
+        "element-extraction-v1 [styled.html]: expected exact style virtual-document sequence"
+    );
+}
+
+#[test]
+fn html_style_virtual_document_selectors_slice_back_byte_exactly() {
+    let defs = extract_elements(
+        "styled.html",
+        HTML_STYLE_VIRTUAL_DOC_FIXTURE,
+        Language::Html,
+    );
+
+    // Style #1's first `.hero` (line 6): the byte span is the re-based
+    // rule_set node — the EXACT rule text inside the host file.
+    let hero = defs
+        .iter()
+        .find(|d| {
+            d.kind == "selector"
+                && d.name == ".hero"
+                && d.container.as_deref() == Some("styled.html#style-1")
+                && d.line_start == 6
+        })
+        .expect("first .hero selector (line 6)");
+    assert_span(hero, "styled.html", "selector:.hero#1", 6, 6);
+    let (hs, he) = (
+        hero.byte_start.unwrap() as usize,
+        hero.byte_end.unwrap() as usize,
+    );
+    assert_eq!(
+        &HTML_STYLE_VIRTUAL_DOC_FIXTURE[hs..he],
+        ".hero { background: url(img/hero.png); }",
+        "selector:.hero must slice back to the exact rule text in the host file"
+    );
+
+    // Style #2's `.p` (line 14): same slice-back invariant, second document.
+    let p = find_virtual(
+        &defs,
+        "styled.html",
+        "selector",
+        ".p",
+        "styled.html#style-2",
+    );
+    assert_span(p, "styled.html", "selector:.p", 14, 14);
+    let (ps, pe) = (p.byte_start.unwrap() as usize, p.byte_end.unwrap() as usize);
+    assert_eq!(
+        &HTML_STYLE_VIRTUAL_DOC_FIXTURE[ps..pe],
+        ".p { color: black; }",
+        "selector:.p must slice back to the exact rule text in the host file"
+    );
+}
+
+/// The OUTBOUND references of the embedded styles ride the host file's
+/// `imports` array with `via` provenance (the blast-radius edges): the
+/// `@import` target, and the `url()` image — emitted TWICE by the fixture
+/// but deduplicated to ONE row by the `(module, via)` pair. A style with no
+/// references contributes none.
+#[test]
+fn html_style_outbound_references_join_the_host_imports_with_via() {
+    let dir = TempDir::new().unwrap_or_else(|e| panic!("tempdir failed: {e}"));
+    let path = dir.path().join("styled.html");
+    fs::write(&path, HTML_STYLE_VIRTUAL_DOC_FIXTURE).unwrap();
+
+    let structure = get_code_structure(&path, Language::Html, 0, None).expect("structure");
+    assert_eq!(structure.files.len(), 1);
+    let imports = &structure.files[0].imports;
+
+    // Exactly the deduplicated loaded elements of style #1 — nothing from
+    // the whitespace style, nothing from the inert script, no host-level
+    // rows (the fixture has no href/src attributes).
+    assert_eq!(
+        imports.len(),
+        2,
+        "expected the deduplicated style refs only: {imports:#?}"
+    );
+    let theme = &imports[0];
+    assert_eq!(theme.module, "theme.css");
+    assert_eq!(theme.alias.as_deref(), Some("import"), "@import url() form");
+    assert_eq!(
+        theme.via.as_deref(),
+        Some("styled.html#style-1"),
+        "the row must name the virtual document it came from"
+    );
+    let hero = &imports[1];
+    assert_eq!(hero.module, "img/hero.png");
+    assert_eq!(hero.alias.as_deref(), Some("url"));
+    assert_eq!(hero.via.as_deref(), Some("styled.html#style-1"));
+    assert!(
+        imports.iter().all(|i| i.is_from),
+        "virtual-document refs ride the document-link is_from convention"
+    );
+}
+
+// =============================================================================
 // Cross-format: the JSON shape consumers see is the plain definitions array
 // =============================================================================
 

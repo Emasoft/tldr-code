@@ -3480,6 +3480,7 @@ mod tests {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         };
         let result = resolve_c_cpp_import(
             &import,
@@ -3499,6 +3500,7 @@ mod tests {
             names: Vec::new(),
             is_from: true,
             alias: None,
+            via: None,
         };
         let result = resolve_c_cpp_import(
             &import,
@@ -3526,6 +3528,7 @@ mod tests {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         };
         let result = resolve_c_cpp_import(
             &import,
@@ -3573,6 +3576,7 @@ mod tests {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         };
         let result = resolve_ruby_import(
             &import,
@@ -3597,6 +3601,7 @@ mod tests {
             names: Vec::new(),
             is_from: true,
             alias: None,
+            via: None,
         };
         let result = resolve_ruby_import(
             &import,
@@ -3642,6 +3647,7 @@ mod tests {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         };
         let result = resolve_csharp_import(
             &import,
@@ -3660,6 +3666,7 @@ mod tests {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         };
         let result = resolve_csharp_import(
             &import,
@@ -3704,6 +3711,7 @@ mod tests {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         };
         let result = resolve_scala_import(
             &import,
@@ -3731,6 +3739,7 @@ mod tests {
             names: vec!["*".to_string()],
             is_from: true,
             alias: None,
+            via: None,
         };
         let result = resolve_scala_import(
             &import,
@@ -3749,6 +3758,7 @@ mod tests {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         };
         let result = resolve_scala_import(
             &import,
@@ -3773,6 +3783,7 @@ mod tests {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         };
         let result = resolve_import(
             &import,
@@ -3797,6 +3808,7 @@ mod tests {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         };
         let result = resolve_import(
             &import,
@@ -3818,6 +3830,7 @@ mod tests {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         };
         let result = resolve_import(
             &import,
@@ -3842,6 +3855,7 @@ mod tests {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         };
         let result = resolve_import(
             &import,
@@ -3866,6 +3880,7 @@ mod tests {
             names: Vec::new(),
             is_from: false,
             alias: None,
+            via: None,
         };
         let result = resolve_import(
             &import,

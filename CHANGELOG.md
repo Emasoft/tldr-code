@@ -4,6 +4,57 @@
 
 ### Added
 
+- **Embedded HTML/SVG `<script>` and `<style>` bodies are now indexed virtual
+  documents whose outbound references join the host graph**
+  (virtual-documents-v1, `crates/tldr-core/src/ast/elements.rs` +
+  `ImportInfo::via` in `types.rs`). Two halves:
+  - **Style containers.** Every `<style>` body that actually emits (non-empty,
+    CSS parse succeeds) is numbered per file with a `style_no` counter
+    mirroring the script counter — a whitespace-only or unparseable body
+    consumes no number — and its `selector`/`at-rule` rows now carry
+    `DefinitionInfo::container` = `<hostfilename>#style-N`, the same naming
+    the script rows already used; host element rows stay `container: None`.
+    Nameless hosts (OOXML parts, yaml chunk merges) keep the
+    container-less style-inner-css behavior and consume no numbers.
+  - **Outbound references with provenance.** The same walk that emits the
+    embedded definitions also collects the embedded documents' OUTBOUND
+    references as `ImportInfo` rows appended to the host file's imports:
+    from each extracted script the JS import surface (`import … from`,
+    `require()`, `export … from` — the `ast::imports` JavaScript extractor
+    over the body's parsed tree) plus the doclinks path/URL scan of the body
+    text (fetch/xhr string arguments), and from each successfully processed
+    style the doclinks CSS scan (`@import`/`url()` — the loaded elements).
+    Each row carries the new additive `via` field
+    (`serde(default, skip_serializing_if = "Option::is_none")` — zero schema
+    break) = the virtual document's name (`page.html#script-1`,
+    `page.html#style-1`), matching `container` naming exactly; host-level
+    rows keep `via: None`. Rows are deduplicated per virtual document by the
+    `(module, via)` pair — a script importing the same URL twice contributes
+    one row (the first source-ordered one survives, so an `import` row keeps
+    its names), while the same URL from two different virtual documents stays
+    two rows. The rows surface through `tldr imports`, `tldr structure`,
+    `tldr importers` and the document blast-radius graph, so a target
+    referenced ONLY from an inline script/style is discoverable end to end.
+  - **`tldr impact` accepts any existing file target** (any-target-impact-v1,
+    `crates/tldr-cli/src/commands/impact.rs`). A single-argument file target
+    (the doc-target slot) now takes the document-link closure for ANY
+    existing file — `tldr impact <root>/lib/x.js` (a code file referenced
+    only by an inline script) and `tldr impact <root>/fonts/a.woff2` (a
+    binary asset referenced only by an embedded style's `url()`) both find
+    the page embedding them, where the woff2 case previously died in the
+    "Binary file" language rejection; the path-slot rule is unchanged
+    (`tldr impact func_b a.py` still builds the code call graph,
+    impact-file-arg-v1). `document_impact` itself needed no change — its
+    resolution (`resolve_doc_target`) matches targets by existence and never
+    filtered by target type.
+  - Pinned in `element_extraction_v1` (style container sequence + numbering
+    continuity, byte slice-backs, style refs in the host's imports with the
+    dedup rule), `doclinks_v1` (via provenance for script/style references,
+    structure↔imports naming agreement, impact closures on the `.js` code
+    file / binary font / fetch target), `body_elements_v1` (byte-exact
+    `tldr body page.html .hero` on an embedded style selector) and
+    `symbol_fidelity_v1` (embedded style container provenance).
+
 - **Embedded HTML/SVG `<script>` bodies are now navigable as virtual JS
   documents** (script-inner-js-v1, `crates/tldr-core/src/ast/elements.rs` +
   `DefinitionInfo::container` in `types.rs`). An inline `<script>` element in

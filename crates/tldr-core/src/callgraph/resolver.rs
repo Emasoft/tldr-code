@@ -720,6 +720,7 @@ mod tests {
             names: vec!["helper".to_string()],
             is_from: true,
             alias: None,
+            via: None,
         };
         let from_file = Path::new("/project/src/main.rs");
         let resolved = resolver.resolve_import(&import, from_file);
@@ -731,6 +732,7 @@ mod tests {
             names: vec!["do_stuff".to_string()],
             is_from: true,
             alias: None,
+            via: None,
         };
         let resolved = resolver.resolve_import(&import, from_file);
         assert_eq!(resolved, Some(helpers_path));
@@ -753,6 +755,7 @@ mod tests {
             names: vec!["func".to_string()],
             is_from: true,
             alias: None,
+            via: None,
         };
         let from_file = Path::new("/project/src/foo/bar.rs");
         let resolved = resolver.resolve_import(&import, from_file);
@@ -776,6 +779,7 @@ mod tests {
             names: vec!["func".to_string()],
             is_from: true,
             alias: None,
+            via: None,
         };
         let from_file = Path::new("/project/src/foo/mod.rs");
         let resolved = resolver.resolve_import(&import, from_file);
@@ -792,6 +796,7 @@ mod tests {
             names: vec!["HashMap".to_string()],
             is_from: true,
             alias: None,
+            via: None,
         };
         let from_file = Path::new("/project/src/main.rs");
         let resolved = resolver.resolve_import(&import, from_file);
@@ -806,6 +811,7 @@ mod tests {
             names: vec!["Serialize".to_string()],
             is_from: true,
             alias: None,
+            via: None,
         };
         let resolved = resolver.resolve_import(&import, from_file);
         assert_eq!(resolved, None);
@@ -860,6 +866,7 @@ mod tests {
             names: vec![],
             is_from: false,
             alias: None,
+            via: None,
         };
         let from_file = Path::new("/project/com/example/Main.java");
         let resolved = resolver.resolve_import(&import, from_file);
@@ -889,6 +896,7 @@ mod tests {
             names: vec![],
             is_from: false,
             alias: None,
+            via: None,
         };
         let from_file = Path::new("/project/com/example/Main.java");
         let resolved = resolver.resolve_import(&import, from_file);
@@ -912,6 +920,7 @@ mod tests {
             names: vec!["add".to_string()],
             is_from: true, // static imports are like "from" imports
             alias: None,
+            via: None,
         };
         let from_file = Path::new("/project/com/example/Main.java");
         let resolved = resolver.resolve_import(&import, from_file);
@@ -928,6 +937,7 @@ mod tests {
             names: vec![],
             is_from: false,
             alias: None,
+            via: None,
         };
         let from_file = Path::new("/project/com/example/Main.java");
         let resolved = resolver.resolve_import(&import, from_file);
@@ -976,6 +986,7 @@ mod tests {
             names: vec!["process".to_string()],
             is_from: true,
             alias: Some("proc".to_string()),
+            via: None,
         }];
 
         // Calling "proc" (the alias) should resolve via the original name "process"
@@ -1003,6 +1014,7 @@ mod tests {
             names: vec!["do_work".to_string()],
             is_from: true,
             alias: None,
+            via: None,
         }];
 
         let result = resolver.resolve_function("do_work", &imports);

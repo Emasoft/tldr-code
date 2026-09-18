@@ -462,6 +462,64 @@ fn html_inline_script_symbols_carry_virtual_document_provenance() {
 }
 
 // =============================================================================
+// Embedded styles (virtual-documents-v1) — a <style> body's selector rows
+// ride the HOST file's definition table as a named virtual document
+// `<host>#style-N`, mirroring the script containers above
+// =============================================================================
+
+/// HTML host with ONE embedded style: its selector carries the virtual
+/// document's name `styled.html#style-1` while the host element rows stay
+/// container-less, and the byte span slices back to the exact rule text in
+/// the host file (the style-inner spans were already global; the container
+/// is what makes the rows navigable AS a virtual document).
+#[test]
+fn html_embedded_style_selectors_carry_virtual_document_provenance() {
+    const FIXTURE: &str = "<!DOCTYPE html>\n\
+                           <html>\n\
+                           <head>\n\
+                           <style>\n\
+                           .hero { color: red; }\n\
+                           </style>\n\
+                           </head>\n\
+                           <body></body>\n\
+                           </html>\n";
+    let defs = extract_definitions("styled.html", FIXTURE, Language::Html);
+
+    let hero = defs
+        .iter()
+        .find(|d| d.kind == "selector" && d.name == ".hero")
+        .expect("the embedded style's selector is a definition of the host file");
+    // Provenance: the virtual document name, `<hostfilename>#style-1` —
+    // the exact naming the style's outbound-reference rows use in `via`
+    // (see `ImportInfo::via`).
+    assert_eq!(
+        hero.container.as_deref(),
+        Some("styled.html#style-1"),
+        "embedded-style definitions must carry their virtual document's name"
+    );
+    // Span fidelity: full-file line and an exact byte slice-back.
+    assert_span(hero, "styled.html", "selector:.hero", 5, 5);
+    let (bs, be) = (
+        hero.byte_start
+            .expect("virtual-style defs carry byte spans") as usize,
+        hero.byte_end.expect("virtual-style defs carry byte spans") as usize,
+    );
+    assert_eq!(
+        &FIXTURE[bs..be],
+        ".hero { color: red; }",
+        "byte span must slice back to the exact CSS source in the host file"
+    );
+
+    // Host element rows stay container-less.
+    assert!(
+        defs.iter()
+            .filter(|d| d.kind == "element")
+            .all(|d| d.container.is_none()),
+        "host element definitions must not carry a container"
+    );
+}
+
+// =============================================================================
 // Java — tree-sitter-java 0.23.5, annotations live INSIDE method_declaration (modifiers child)
 // =============================================================================
 

@@ -465,6 +465,7 @@ fn test_import_info_creation() {
         names: vec!["path".to_string()],
         is_from: true,
         alias: Some("p".to_string()),
+        via: None,
     };
 
     assert_eq!(import.module, "os");
@@ -480,6 +481,7 @@ fn test_import_info_serde() {
         names: vec!["path".to_string()],
         is_from: true,
         alias: None,
+        via: None,
     };
 
     let json = serde_json::to_string(&import).unwrap();
@@ -1743,6 +1745,7 @@ fn test_skip_serializing_if_behavior() {
         names: vec![],  // Empty vec should be skipped
         is_from: false, // Default should be skipped
         alias: None,    // None should be skipped
+        via: None,      // None should be skipped too
     };
 
     let json = serde_json::to_string(&import).unwrap();

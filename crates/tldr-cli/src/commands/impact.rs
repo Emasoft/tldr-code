@@ -21,6 +21,48 @@ use crate::commands::remaining::explain::explain_project_root;
 use crate::output::{format_impact_dot, format_impact_text, OutputFormat, OutputWriter};
 use crate::path_validation::require_directory;
 
+/// any-target-impact-v1: decide whether an EXISTING file target takes the
+/// document-link path, and with which language hint. The hint is only a
+/// per-file detection fallback inside `document_impact` (every LINKING file
+/// is classified by its own extension) — `Language::Text` is the honest
+/// "not a parsed language" default.
+///
+/// Resolution order (see `resolve_target_language` for the shared ladder):
+/// - recognized extension that IS a doc language → that language;
+/// - recognized CODE extension → `None` (the code call-graph path owns the
+///   file — `impact-file-arg-v1` and every `--file`-scoped flow unchanged);
+/// - unknown/extensionless text (unknown-ext-text-v1) resolves inside
+///   `resolve_target_language` to `Some(Text)` → doc path;
+/// - OOXML container (`resolve_target_language` → `Ok(None)`) → doc path: a
+///   `.docx` referenced from a page is a real blast-radius target;
+/// - binary content (`resolve_target_language` → `Err(UnsupportedLanguage)`)
+///   → doc path (any-target-impact-v1): fonts, images and other assets are
+///   legitimate link targets, and `resolve_doc_target` matches them by
+///   existence. Missing paths never get here (the caller checks `is_file`).
+/// - `accept_code_targets` (the FUNCTION slot): a recognized CODE-language
+///   file also takes the closure, hinted Text — see the slot-asymmetry note
+///   at the call site.
+fn doc_target_language(
+    file: &Path,
+    accept_code_targets: bool,
+) -> tldr_core::TldrResult<Option<Language>> {
+    match resolve_target_language(file) {
+        Ok(Some(lang)) => {
+            if is_doc_language(lang) || accept_code_targets {
+                Ok(Some(lang))
+            } else {
+                Ok(None)
+            }
+        }
+        // `Ok(None)` = OOXML container; `Err(UnsupportedLanguage)` = binary
+        // content (fonts, images — the any-target-impact-v1 case). Both are
+        // EXISTING files at this point and both take the doc-link closure,
+        // hinted Text.
+        Ok(None) | Err(tldr_core::TldrError::UnsupportedLanguage(_)) => Ok(Some(Language::Text)),
+        Err(e) => Err(e),
+    }
+}
+
 /// Analyze impact of changing a function
 #[derive(Debug, Args)]
 pub struct ImpactArgs {
@@ -129,20 +171,45 @@ impl ImpactArgs {
         // IS a doc language via `is_doc_language`), so `tldr impact
         // notes.xyz` takes the document-link path instead of the pre-feature
         // not-a-doc fall-through.
+        //
+        // any-target-impact-v1 (virtual-documents-v1): the resolution filter
+        // is relaxed one more step — an EXISTING file whose language does not
+        // resolve to a doc language is still a legal blast-radius TARGET when
+        // it is not a code file either. `document_impact`'s graph only ever
+        // scans DOC-LANGUAGE files for links (the linker side is filtered);
+        // the TARGET side is just a `(file, "<doc>")` node that
+        // `resolve_doc_target` matches by existence — it never inspects the
+        // target's own type. So a font (`fonts/a.woff2`), an image or a
+        // `package.json`-referenced binary that is referenced ONLY from an
+        // embedded `<style>`/`<script>` (its `@import`/`url()`/fetch rows are
+        // `via`-provenanced ImportInfo rows since virtual-documents-v1) gets
+        // its reverse-link closure instead of a "Binary file" rejection:
+        // `tldr impact <root>/fonts/a.woff2` finds the page embedding it.
+        // Recognized CODE extensions keep the code path untouched (`tldr
+        // impact callee caller.py` still builds the call graph —
+        // impact-file-arg-v1).
+        //
+        // SLOT ASYMMETRY (any-target-impact-v1): impact's first positional is
+        // a FUNCTION NAME, so an existing FILE in the function slot is
+        // unambiguously a single-argument file-target request — the doc-target
+        // convention (`tldr impact <root>/b.md`) — and ANY existing file there
+        // takes the closure: `tldr impact <root>/lib/x.js` (a CODE-language
+        // file referenced only by an inline script) finds the page embedding
+        // it, exactly like the woff2/font case. The PATH slot keeps the strict
+        // rule: a recognized code file there belongs to the code call graph
+        // (`tldr impact func_b a.py`, impact-file-arg-v1), because impact's
+        // path argument doubles as root resolution, not as a target.
         let doc_target: Option<(PathBuf, PathBuf, Language)> = if self.path.is_file() {
-            resolve_target_language(&self.path)?
-                .filter(|l| is_doc_language(*l))
+            doc_target_language(&self.path, false)?
                 .map(|l| (self.path.clone(), analysis_root.clone(), l))
         } else if Path::new(&self.function).is_file() {
-            resolve_target_language(Path::new(&self.function))?
-                .filter(|l| is_doc_language(*l))
-                .map(|l| {
-                    (
-                        PathBuf::from(&self.function),
-                        explain_project_root(Path::new(&self.function)),
-                        l,
-                    )
-                })
+            doc_target_language(Path::new(&self.function), true)?.map(|l| {
+                (
+                    PathBuf::from(&self.function),
+                    explain_project_root(Path::new(&self.function)),
+                    l,
+                )
+            })
         } else {
             None
         };

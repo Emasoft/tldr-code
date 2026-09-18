@@ -97,6 +97,66 @@
 //! name): the OOXML part walker and the yaml chunk merger pass `None`, and
 //! a nameless host cannot name a virtual document.
 //!
+//! # Virtual documents and outbound references (virtual-documents-v1)
+//!
+//! Embedded `<script>` and `<style>` bodies are not decoration: each
+//! successfully processed body IS a document — a JS program or a stylesheet —
+//! and both halves of that statement are now indexed.
+//!
+//! 1. **Definitions carry provenance.** script-inner-js-v1 named its rows
+//!    `<hostfilename>#script-N` (above). virtual-documents-v1 closes the
+//!    symmetry for CSS: every `<style>` body that actually emits (non-empty,
+//!    CSS parse succeeds) is numbered per file with a `style_no` counter
+//!    mirroring `script_no` — the SAME continuity rule, a whitespace-only or
+//!    unparseable body consumes no number — and its `selector`/`at-rule` rows
+//!    carry `DefinitionInfo::container` = `<hostfilename>#style-N`. Host
+//!    element rows keep `container: None`, so a style row is always
+//!    distinguishable from a same-named host element. A nameless host (OOXML
+//!    parts, yaml chunk merges) cannot name a virtual document: those style
+//!    bodies keep emitting their rows exactly as style-inner-css-v1 shipped
+//!    them — container-less, and they consume no number.
+//!
+//! 2. **Outbound references join the host graph.** An embedded document that
+//!    references another file creates a real blast-radius edge from the HOST
+//!    file. The same walks that emit definitions therefore also collect
+//!    `ImportInfo` rows (see [`embedded_document_refs`]):
+//!    - from each extracted SCRIPT body: the JS import surface
+//!      (`import … from 'x'`, `require('x')`, `export … from 'x'` — the
+//!      `ast::imports` JavaScript extractor run over the body's parsed tree)
+//!      PLUS the doclinks path/URL scanner over the body text (fetch/xhr
+//!      string arguments; see the caveat on [`script_outbound_refs`]);
+//!    - from each successfully processed STYLE body: the doclinks CSS
+//!      extractor (`@import`/`url()` — the loaded elements) over the body
+//!      text.
+//!
+//! Every row is stamped with the new additive `ImportInfo::via` field = the
+//! virtual document's name (`page.html#script-1`, `page.html#style-2`) — the
+//! same naming as `container` — so a consumer can tell an embedded document's
+//! reference from one written in the host markup (`via: None`). Hosts without
+//! a name collect nothing (no virtual documents → nothing to attribute). Rows
+//! are deduplicated per virtual document by the `(module, via)` pair: a
+//! script that imports the same URL twice contributes ONE row (the first
+//! source-ordered one survives, so an `import` row wins over a later
+//! text-scan row of the same string), while the same URL referenced from two
+//! different virtual documents produces two rows with different `via` values
+//! — the provenance IS the edge identity.
+//!
+//! The rows surface everywhere the host file's imports do — `tldr imports`
+//! and `tldr structure` (via `ast::extract` → `extract_imports_from_tree`),
+//! `tldr importers`, and the document blast-radius graph
+//! (`analysis::doc_impact` builds its reverse map from `get_imports`) —
+//! so a target referenced only from an inline script or style is
+//! discoverable end to end.
+//!
+//! 3. **Planned hook (VD-2, NOT implemented here):** `foreignObject`
+//!    recursion — the HTML content nested inside an SVG `foreignObject`
+//!    element should be walked as an HTML subtree (its own inline
+//!    scripts/styles), re-based onto the XML host's coordinates. The HTML/XML
+//!    walkers are structured so this is one added arm in `walk_xml` (detect
+//!    the `foreignObject` tag, re-enter `walk_html` on the subtree) plus a
+//!    numbering decision (do nested documents consume host `#script-N`/
+//!    `#style-N` numbers, or nested ones?); nothing else changes.
+//!
 //! # SVG (and other XML dialects)
 //!
 //! SVG is ordinary XML to this module: `.svg` maps to `Language::Xml`, so
@@ -157,16 +217,19 @@
 
 use tree_sitter::{Node, Tree};
 
-use crate::types::{DefinitionInfo, Language};
+use crate::ast::extract_doc_links;
+use crate::ast::imports::extract_imports_from_tree;
+use crate::types::{DefinitionInfo, ImportInfo, Language};
 
 /// Extract format elements as `DefinitionInfo` entries.
 ///
 /// `host` is the host file's FILE NAME (e.g. `"page.html"`), used ONLY to
-/// name the virtual documents of embedded inline scripts
-/// (script-inner-js-v1): `Some(name)` enables script-inner JS extraction
-/// (`<file>#script-N` provenance on the emitted rows), `None` disables it —
-/// callers without a host file name (OOXML zip parts, yaml chunk merges,
-/// unit probes) keep the pre-script-inner behavior byte-for-byte.
+/// name the virtual documents of embedded inline scripts and styles
+/// (script-inner-js-v1 / virtual-documents-v1): `Some(name)` enables
+/// script-inner JS extraction (`<file>#script-N` provenance) and style
+/// container provenance (`<file>#style-N`), `None` disables both — callers
+/// without a host file name (OOXML zip parts, yaml chunk merges, unit probes)
+/// keep the pre-virtual-document behavior byte-for-byte.
 ///
 /// Returns an EMPTY vec for every non-format (code) language — the caller
 /// (`extractor::extract_file_structure`) appends the result to its
@@ -177,7 +240,49 @@ pub fn extract_elements(
     source: &str,
     host: Option<&str>,
 ) -> Vec<DefinitionInfo> {
+    extract_elements_inner(language, tree, source, host).0
+}
+
+/// virtual-documents-v1: the OUTBOUND reference rows of an HTML/XML host's
+/// embedded virtual documents (inline `<script>` JS bodies and `<style>` CSS
+/// bodies), as `ImportInfo` entries stamped with
+/// `via = <hostfilename>#script-N|#style-N`.
+///
+/// This is the imports half of the virtual-document walk — the definitions
+/// half is [`extract_elements`]. The two run the SAME deterministic pre-order
+/// walk (same body discovery, same numbering counters), so a row's `via`
+/// name always matches the `container` of the definitions emitted for the
+/// same body: `tldr structure page.html` and `tldr imports page.html` agree
+/// on `#script-1`/`#style-1` naming.
+///
+/// `host` is the host file's FILE NAME, the same argument
+/// [`extract_elements`] takes. `None` (OOXML parts, yaml chunk merges) yields
+/// an EMPTY vec — a nameless host has no named virtual documents and
+/// therefore no attributable edges. Every other language returns empty too:
+/// only Html/Xml hosts embed script/style documents.
+///
+/// Consumers: `get_imports` (→ `tldr imports`, `tldr importers`, the
+/// `analysis::doc_impact` reverse-link graph) and `extract_from_tree` (→ the
+/// `FileStructure.imports` array) — see `ast::imports`, the Html/Xml arm.
+pub(crate) fn embedded_document_refs(
+    language: Language,
+    tree: &Tree,
+    source: &str,
+    host: Option<&str>,
+) -> Vec<ImportInfo> {
+    extract_elements_inner(language, tree, source, host).1
+}
+
+/// Both halves of the virtual-document walk (definitions + outbound refs), in
+/// one pre-order pass so numbering stays consistent between them.
+fn extract_elements_inner(
+    language: Language,
+    tree: &Tree,
+    source: &str,
+    host: Option<&str>,
+) -> (Vec<DefinitionInfo>, Vec<ImportInfo>) {
     let mut elements = Vec::new();
+    let mut state = WalkState::new(host);
     let root = tree.root_node();
 
     match language {
@@ -189,14 +294,10 @@ pub fn extract_elements(
         // same element engine (kinds `element` / `selector` / `at-rule`).
         // script-inner-js-v1: the script counter is per FILE — the 1-based
         // `#script-N` numbering spans the whole host document in source order.
-        Language::Xml => {
-            let mut script_no = 0u32;
-            walk_xml(root, source, host, &mut script_no, &mut elements);
-        }
-        Language::Html => {
-            let mut script_no = 0u32;
-            walk_html(root, source, host, &mut script_no, &mut elements);
-        }
+        // virtual-documents-v1 adds the parallel `#style-N` counter and the
+        // outbound-reference collection for both.
+        Language::Xml => walk_xml(root, source, &mut state, &mut elements),
+        Language::Html => walk_html(root, source, &mut state, &mut elements),
         Language::Css => walk_css(root, source, &mut elements),
         // LaTeX batch (2025-11): document markup joins the same engine
         // (kinds `section` / `environment`).
@@ -209,7 +310,36 @@ pub fn extract_elements(
         _ => {}
     }
 
-    elements
+    (elements, state.refs)
+}
+
+/// Walker state threaded through the HTML/XML pre-order walks (private).
+struct WalkState<'h> {
+    /// The host file's FILE NAME — enables virtual-document extraction
+    /// (script-inner-js-v1, style containers, outbound refs). `None` for
+    /// nameless hosts (OOXML parts, yaml chunk merges): no virtual documents.
+    host: Option<&'h str>,
+    /// 1-based source-order counter over the file's EXTRACTED scripts
+    /// (numbering-continuity pin: consumed only by bodies that actually
+    /// become virtual documents).
+    script_no: u32,
+    /// The SAME counter for `<style>` bodies (virtual-documents-v1) —
+    /// identical continuity rule.
+    style_no: u32,
+    /// Outbound reference rows collected from embedded virtual documents
+    /// (virtual-documents-v1). Empty unless `host` is `Some`.
+    refs: Vec<ImportInfo>,
+}
+
+impl<'h> WalkState<'h> {
+    fn new(host: Option<&'h str>) -> Self {
+        Self {
+            host,
+            script_no: 0,
+            style_no: 0,
+            refs: Vec::new(),
+        }
+    }
 }
 
 // =============================================================================
@@ -539,13 +669,7 @@ fn walk_bash(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
 /// attribute — SVG 1.1 loaded by `xlink:href`, SVG 2 by `href`) and non-JS
 /// `type` values are skipped; a self-closing `<script …/>` (`EmptyElemTag`)
 /// has no content and emits nothing on its own.
-fn walk_xml(
-    node: Node,
-    source: &str,
-    host: Option<&str>,
-    script_no: &mut u32,
-    out: &mut Vec<DefinitionInfo>,
-) {
+fn walk_xml(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<DefinitionInfo>) {
     if node.kind() == "element" {
         if let Some(name) = xml_element_name(&node, source) {
             out.push(element_def("element", name, node, source));
@@ -562,14 +686,14 @@ fn walk_xml(
                     match text.kind() {
                         // Plain body: one CharData chunk holding the whole CSS
                         // text (leading/trailing newlines included).
-                        "CharData" => emit_style_inner_css(&text, source, out),
+                        "CharData" => emit_style_inner_css(&text, source, state, out),
                         // CDATA body: descend the CDSect wrapper for the
                         // CData text node (verified shape above).
                         "CDSect" => {
                             let mut sect = text.walk();
                             for part in text.children(&mut sect) {
                                 if part.kind() == "CData" {
-                                    emit_style_inner_css(&part, source, out);
+                                    emit_style_inner_css(&part, source, state, out);
                                 }
                             }
                         }
@@ -579,43 +703,41 @@ fn walk_xml(
             }
         }
         // script-inner-js-v1: same body shapes, JS grammar, virtual document.
-        if tag.as_deref() == Some("script") {
-            if let Some(host) = host {
-                let (external, script_type) = xml_script_attrs(&node, source);
-                if !external && is_js_script_type(script_type.as_deref()) {
-                    let mut cursor = node.walk();
-                    for child in node.children(&mut cursor) {
-                        if child.kind() != "content" {
-                            continue;
-                        }
-                        let mut inner = child.walk();
-                        for text in child.children(&mut inner) {
-                            match text.kind() {
-                                "CharData" => {
-                                    emit_script_inner_js(&text, source, host, script_no, out)
-                                }
-                                "CDSect" => {
-                                    let mut sect = text.walk();
-                                    for part in text.children(&mut sect) {
-                                        if part.kind() == "CData" {
-                                            emit_script_inner_js(
-                                                &part, source, host, script_no, out,
-                                            );
-                                        }
+        if tag.as_deref() == Some("script") && state.host.is_some() {
+            let (external, script_type) = xml_script_attrs(&node, source);
+            if !external && is_js_script_type(script_type.as_deref()) {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() != "content" {
+                        continue;
+                    }
+                    let mut inner = child.walk();
+                    for text in child.children(&mut inner) {
+                        match text.kind() {
+                            "CharData" => emit_script_inner_js(&text, source, state, out),
+                            "CDSect" => {
+                                let mut sect = text.walk();
+                                for part in text.children(&mut sect) {
+                                    if part.kind() == "CData" {
+                                        emit_script_inner_js(&part, source, state, out);
                                     }
                                 }
-                                _ => {}
                             }
+                            _ => {}
                         }
                     }
                 }
             }
         }
+        // VD-2 PLANNED HOOK (not implemented): `tag == "foreignObject"` would
+        // re-enter `walk_html` over the element's `content` subtree here,
+        // giving nested HTML scripts/styles the same virtual-document
+        // treatment (see the virtual-documents-v1 module-doc section).
     }
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_xml(child, source, host, script_no, out);
+        walk_xml(child, source, state, out);
     }
 }
 
@@ -759,13 +881,7 @@ fn xml_attribute(attribute: &Node, source: &str) -> (String, Option<String>) {
 /// [`emit_script_inner_js`]). A `src` attribute makes the script external —
 /// doclinks already indexes that reference — and a non-JS `type` is not
 /// JavaScript; both are skipped before any parse.
-fn walk_html(
-    node: Node,
-    source: &str,
-    host: Option<&str>,
-    script_no: &mut u32,
-    out: &mut Vec<DefinitionInfo>,
-) {
+fn walk_html(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<DefinitionInfo>) {
     match node.kind() {
         "element" => {
             if let Some(name) = html_element_name(&node, source) {
@@ -776,13 +892,13 @@ fn walk_html(
             if let Some(name) = html_element_name(&node, source) {
                 out.push(element_def("element", name, node, source));
             }
-            if let Some(host) = host {
+            if state.host.is_some() {
                 let (external, script_type) = html_script_attrs(&node, source);
                 if !external && is_js_script_type(script_type.as_deref()) {
                     let mut cursor = node.walk();
                     for child in node.children(&mut cursor) {
                         if child.kind() == "raw_text" {
-                            emit_script_inner_js(&child, source, host, script_no, out);
+                            emit_script_inner_js(&child, source, state, out);
                         }
                     }
                 }
@@ -796,7 +912,7 @@ fn walk_html(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "raw_text" {
-                    emit_style_inner_css(&child, source, out);
+                    emit_style_inner_css(&child, source, state, out);
                 }
             }
         }
@@ -805,7 +921,7 @@ fn walk_html(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_html(child, source, host, script_no, out);
+        walk_html(child, source, state, out);
     }
 }
 
@@ -941,17 +1057,47 @@ fn html_attribute(attribute: &Node, source: &str) -> (String, Option<String>) {
 ///   the physical line the body starts on (the `<style>` tag's line), so
 ///   inner line N is full line `N + line_base`.
 ///
+/// virtual-documents-v1: when the walk has a host file name
+/// ([`WalkState::host`]), the body is a named virtual document — `state`'s
+/// `style_no` counter is consumed ONLY by a body that actually emits
+/// (non-empty + CSS parse succeeds, the same continuity rule the script
+/// counter pins), every emitted row carries `container` =
+/// `<hostfilename>#style-N`, and the doclinks CSS scan over the body text
+/// (`@import` / `url()` — the loaded elements) contributes
+/// `via`-provenanced outbound-reference rows to `state.refs` (deduplicated
+/// by the `(module, via)` pair, see [`dedup_refs`]). A nameless host keeps
+/// the pre-virtual-documents behavior: rows emit container-less, no number
+/// is consumed, no references are collected (nothing to attribute them to).
+///
 /// Guards: an empty/whitespace-only body emits nothing (no wasted parse) and
 /// a failed inner parse keeps just the element definition — the element row
 /// is already pushed by the caller, so this function can only ADD rows, never
-/// crash the walk.
-fn emit_style_inner_css(body: &Node, source: &str, out: &mut Vec<DefinitionInfo>) {
+/// crash the walk. (Unlike the script path, a CSS tree with error nodes still
+/// walks — style-inner-css-v1's shipped extraction is error-tolerant and that
+/// behavior is unchanged; "successfully processed" for numbering means the
+/// parse itself succeeded.)
+fn emit_style_inner_css(
+    body: &Node,
+    source: &str,
+    state: &mut WalkState,
+    out: &mut Vec<DefinitionInfo>,
+) {
     let text = &source[body.byte_range()];
     if text.trim().is_empty() {
         return;
     }
     let Ok(tree) = crate::ast::parser::PARSER_POOL.parse(text, Language::Css) else {
         return;
+    };
+
+    // Named virtual document: consume the style number and stamp the
+    // container on every row; nameless hosts keep container-less rows.
+    let container = match state.host {
+        Some(host) => {
+            state.style_no += 1;
+            Some(format!("{host}#style-{}", state.style_no))
+        }
+        None => None,
     };
 
     let content_offset = body.start_byte();
@@ -974,7 +1120,22 @@ fn emit_style_inner_css(body: &Node, source: &str, out: &mut Vec<DefinitionInfo>
         if let Some(line) = def.definition_line.as_mut() {
             *line += line_base;
         }
+        def.container = container.clone();
         out.push(def);
+    }
+
+    // Outbound references: the stylesheet's loaded elements (`@import`/`url()`)
+    // are blast-radius edges from the HOST file, attributed to this virtual
+    // document. Nameless hosts collect nothing.
+    if let Some(via) = &container {
+        let rows = crate::ast::extract_doc_links(Language::Css, text, None)
+            .into_iter()
+            .map(|mut row| {
+                row.via = Some(via.clone());
+                row
+            })
+            .collect();
+        state.refs.extend(dedup_refs(rows));
     }
 }
 
@@ -1017,15 +1178,26 @@ fn emit_style_inner_css(body: &Node, source: &str, out: &mut Vec<DefinitionInfo>
 /// emits nothing (no wasted parse); a body whose JS parse carries error
 /// nodes emits NOTHING — a syntax-broken script must not fabricate rows out
 /// of error-recovered garbage; a failed parse (`Err`) likewise. Neither can
-/// fail the host walk — one bad script costs only its own rows. `*script_no`
-/// is consumed ONLY by a body that actually becomes a virtual document
-/// (non-empty, JS-typed, parses clean), so `#script-N` numbers stay
+/// fail the host walk — one bad script costs only its own rows. `state`'s
+/// `script_no` is consumed ONLY by a body that actually becomes a virtual
+/// document (non-empty, JS-typed, parses clean), so `#script-N` numbers stay
 /// contiguous over the file's extracted scripts.
+///
+/// virtual-documents-v1: a body that becomes a virtual document ALSO
+/// contributes OUTBOUND reference rows to `state.refs` — the JS import
+/// surface (`import … from 'x'` / `require('x')` / `export … from 'x'`, via
+/// the `ast::imports` JavaScript extractor run on the SAME parsed tree) plus
+/// the doclinks path/URL scan over the body text (fetch/xhr string
+/// arguments). Every row is stamped `via = <host>#script-N` (the same name
+/// the definitions carry in `container`) and the merge is deduplicated by
+/// the `(module, via)` pair — a script that imports the same URL twice
+/// yields one row, the first source-ordered one surviving (so an `import`
+/// row with its imported names wins over a later text-scan row of the same
+/// string).
 fn emit_script_inner_js(
     body: &Node,
     source: &str,
-    host: &str,
-    script_no: &mut u32,
+    state: &mut WalkState,
     out: &mut Vec<DefinitionInfo>,
 ) {
     let text = &source[body.byte_range()];
@@ -1039,8 +1211,12 @@ fn emit_script_inner_js(
         return;
     }
 
-    *script_no += 1;
-    let container = format!("{host}#script-{}", *script_no);
+    state.script_no += 1;
+    let host = state.host.expect(
+        "emit_script_inner_js is only called from walks with a host label \
+         (callers gate on WalkState::host)",
+    );
+    let container = format!("{host}#script-{}", state.script_no);
 
     let content_offset = body.start_byte();
     let line_base = source.as_bytes()[..content_offset]
@@ -1062,6 +1238,42 @@ fn emit_script_inner_js(
         info.container = Some(container.clone());
         out.push(info);
     }
+
+    // Outbound references (virtual-documents-v1): the script's import
+    // surface, then the path/URL scan of the body text, all attributed to
+    // this virtual document and deduplicated by (module, via).
+    let via = container;
+    let mut rows = extract_imports_from_tree(&tree, text, Language::JavaScript).unwrap_or_default();
+    rows.extend(extract_doc_links(Language::Text, text, None));
+    state.refs.extend(dedup_refs(
+        rows.into_iter()
+            .map(|mut row| {
+                row.via = Some(via.clone());
+                row
+            })
+            .collect(),
+    ));
+}
+
+/// virtual-documents-v1: collapse one virtual document's outbound-reference
+/// rows to their `(module, via)` identity — the SAME reference written twice
+/// inside one embedded document (two `import`s from one module, a URL
+/// appearing in two `url()` tokens, an import row and a text-scan row of the
+/// same string) is ONE edge; first-in-scan-order wins (so a JS `import` row
+/// with its imported names survives over a later text-scan row of the same
+/// string). Two different virtual documents referencing the same module stay
+/// two rows: their `via` provenance differs, and the provenance IS the edge
+/// identity.
+fn dedup_refs(rows: Vec<ImportInfo>) -> Vec<ImportInfo> {
+    let mut seen: std::collections::HashSet<(String, Option<String>)> =
+        std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        if seen.insert((row.module.clone(), row.via.clone())) {
+            out.push(row);
+        }
+    }
+    out
 }
 
 // =============================================================================
@@ -1444,6 +1656,37 @@ mod tests {
         assert!(extract_elements(Language::Python, &tree, "def foo(): pass", None).is_empty());
         let tree = parse("fn foo() {}", Language::Rust).unwrap();
         assert!(extract_elements(Language::Rust, &tree, "fn foo() {}", None).is_empty());
+    }
+
+    /// virtual-documents-v1: a NAMELESS host (the OOXML part walker and the
+    /// yaml chunk merger pass `None`) keeps the pre-virtual-documents
+    /// behavior — style bodies still emit their selector rows (the
+    /// style-inner-css-v1 contract) but container-less, and the embedded
+    /// reference scan collects NOTHING (no name to attribute edges to).
+    #[test]
+    fn nameless_host_keeps_style_rows_container_less_and_collects_no_refs() {
+        let src = "<html><style>a{ color: red; }</style></html>";
+        let tree = parse(src, Language::Html).unwrap();
+        let (defs, refs) = extract_elements_inner(Language::Html, &tree, src, None);
+        let selector = defs
+            .iter()
+            .find(|d| d.kind == "selector" && d.name == "a")
+            .expect("style-inner CSS row still emits without a host label");
+        assert!(
+            selector.container.is_none(),
+            "nameless host cannot name a virtual document: {selector:?}"
+        );
+        assert!(refs.is_empty(), "no host label → no attributable refs");
+
+        // The SAME source WITH a host label: container + via-provenanced
+        // loaded-element rows (here: none in the CSS — only the container
+        // pin matters).
+        let (with_host, _) = extract_elements_inner(Language::Html, &tree, src, Some("p.html"));
+        let selector = with_host
+            .iter()
+            .find(|d| d.kind == "selector" && d.name == "a")
+            .expect("style-inner CSS row with a host label");
+        assert_eq!(selector.container.as_deref(), Some("p.html#style-1"));
     }
 
     #[test]

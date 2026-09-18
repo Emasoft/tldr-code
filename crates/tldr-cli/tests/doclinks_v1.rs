@@ -1057,8 +1057,280 @@ fn impact_yaml_config_closure_finds_the_referring_workflow() {
     );
 }
 
+/// Fixture for the virtual-documents batch: `page.html` embeds an inline
+/// `<style>` (an `@import`ed stylesheet + a font and an image through
+/// `url()`) and an inline `<script>` (an ESM import of `./lib/x.js` and a
+/// multi-line `fetch("api/v1.json")` — the string forms its own token, so
+/// the path scan extracts it cleanly). The referenced targets exist on disk
+/// (a `package.json` root marker resolves the impact doc-root). This pins
+/// the virtual-documents-v1 blast-radius story end to end: embedded
+/// documents' outbound references join the HOST file's imports with `via`
+/// provenance, and targets referenced ONLY from an embedded script/style are
+/// discoverable through `tldr impact` — including non-document targets
+/// (the `.js` code file via the single-arg file rule and the binary `.woff2`
+/// font, any-target-impact-v1).
+fn build_virtual_doc_project() -> TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write(
+        root.join("package.json"),
+        r#"{ "name": "fixture", "private": true }"#,
+    );
+    write(
+        root.join("page.html"),
+        r#"<!DOCTYPE html>
+<html>
+<head>
+<style>
+@import url("theme.css");
+@font-face {
+  font-family: "Inter";
+  src: url(fonts/a.woff2) format("woff2");
+}
+.hero { background: url(img/hero.png); }
+</style>
+<script src="app.js"></script>
+</head>
+<body>
+<script>
+import { init } from './lib/x.js';
+import { extra } from './lib/x.js';
+const res = await fetch(
+  "api/v1.json"
+);
+export function boot() {
+  return init();
+}
+</script>
+</body>
+</html>
+"#,
+    );
+    write(root.join("theme.css"), "body { margin: 0; }\n");
+    write(root.join("fonts/a.woff2"), "woff2-bytes\n");
+    write(root.join("img/hero.png"), "png\n");
+    write(root.join("lib/x.js"), "export const init = () => 1;\n");
+    write(root.join("api/v1.json"), "{ \"v\": 1 }\n");
+    write(root.join("app.js"), "// external script\n");
+    dir
+}
+
 // =============================================================================
-// (6) plain-text batch (build_text_project): .txt prose references
+// (7) virtual-documents batch (build_virtual_doc_project): embedded
+//     <script>/<style> bodies are indexed virtual documents
+// =============================================================================
+
+/// `tldr imports page.html` — the host's own rows (the external script's
+/// `src`) stay via-less, while the embedded documents' outbound references
+/// carry `via` provenance: the style's loaded elements under
+/// `page.html#style-1`, the script's import + fetch targets under
+/// `page.html#script-1`. The script imports `./lib/x.js` TWICE — the
+/// `(module, via)` dedup collapses them to ONE row (the first import's
+/// names survive).
+#[test]
+fn imports_html_embedded_documents_join_the_host_imports_with_via() {
+    let dir = build_virtual_doc_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(&["imports", "page.html", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+    assert_eq!(json["language"], "html");
+
+    let imports = json["imports"].as_array().unwrap();
+    let find = |module: &str| {
+        imports
+            .iter()
+            .filter(|i| i["module"] == module)
+            .collect::<Vec<_>>()
+    };
+
+    // Host-level row (written in the markup itself): no `via`.
+    let app = find("app.js");
+    assert_eq!(app.len(), 1, "the external script's src row: {imports:?}");
+    assert_eq!(app[0]["alias"], "src");
+    assert!(
+        app[0]["via"].is_null(),
+        "host-level rows carry no virtual-document provenance"
+    );
+
+    // The embedded STYLE's loaded elements, provenance `page.html#style-1`.
+    let theme = find("theme.css");
+    assert_eq!(theme.len(), 1, "the @import target: {imports:?}");
+    assert_eq!(theme[0]["alias"], "import");
+    assert_eq!(theme[0]["via"], "page.html#style-1");
+    assert_eq!(theme[0]["is_from"], true);
+
+    let woff = find("fonts/a.woff2");
+    assert_eq!(woff.len(), 1, "the @font-face url() load: {imports:?}");
+    assert_eq!(woff[0]["alias"], "url");
+    assert_eq!(woff[0]["via"], "page.html#style-1");
+
+    let hero = find("img/hero.png");
+    assert_eq!(hero.len(), 1, "the background url() load: {imports:?}");
+    assert_eq!(hero[0]["alias"], "url");
+    assert_eq!(hero[0]["via"], "page.html#style-1");
+
+    // The embedded SCRIPT's references, provenance `page.html#script-1`.
+    // Two `import` lines from the same module → ONE row (dedup by
+    // (module, via)); the first import's names survive.
+    let xjs = find("./lib/x.js");
+    assert_eq!(
+        xjs.len(),
+        1,
+        "the same module imported twice is one (module, via) edge: {imports:?}"
+    );
+    assert_eq!(xjs[0]["via"], "page.html#script-1");
+    assert_eq!(
+        xjs[0]["names"],
+        serde_json::json!(["init"]),
+        "the FIRST import's names survive the dedup"
+    );
+
+    let api = find("api/v1.json");
+    assert_eq!(api.len(), 1, "the fetch target: {imports:?}");
+    assert_eq!(api[0]["via"], "page.html#script-1");
+    assert_eq!(api[0]["alias"], "path");
+}
+
+/// The definitions of `tldr structure page.html` agree with the imports'
+/// `via` names: the style's selector/at-rule rows carry `container` =
+/// `page.html#style-1` (the same walk numbers both sides).
+#[test]
+fn structure_containers_agree_with_imports_via_naming() {
+    let dir = build_virtual_doc_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(&["structure", "page.html", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+
+    let definitions = json["files"][0]["definitions"].as_array().unwrap();
+    let containers: Vec<&str> = definitions
+        .iter()
+        .filter_map(|d| d["container"].as_str())
+        .collect();
+    assert!(
+        containers.contains(&"page.html#style-1"),
+        "style rows carry their virtual document's name: {containers:?}"
+    );
+    assert!(
+        containers.contains(&"page.html#script-1"),
+        "script rows carry their virtual document's name: {containers:?}"
+    );
+    assert!(
+        definitions
+            .iter()
+            .filter(|d| d["kind"] == "element")
+            .all(|d| d["container"].is_null()),
+        "host element rows stay container-less"
+    );
+}
+
+/// `tldr impact <root>/lib/x.js` — a CODE-language file referenced ONLY from
+/// an inline script is discoverable: the single-argument file target takes
+/// the document-link path (any-target-impact-v1 slot asymmetry), and the
+/// script-1 import edge resolves `./lib/x.js` against page.html's directory.
+#[test]
+fn impact_code_file_referenced_only_by_inline_script_finds_the_page() {
+    let dir = build_virtual_doc_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(
+        &[
+            "impact",
+            root.join("lib/x.js").to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0), "impact on a code file target must succeed");
+
+    assert_eq!(json["total_targets"], 1);
+    let tree = json["targets"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    assert_eq!(tree["function"], "<doc>");
+    assert_eq!(tree["note"], "discovered via document link");
+    assert_eq!(tree["caller_count"], 1, "page.html imports ./lib/x.js");
+    assert!(tree["callers"].as_array().unwrap()[0]["file"]
+        .as_str()
+        .unwrap()
+        .ends_with("page.html"));
+}
+
+/// `tldr impact <root>/fonts/a.woff2` — a BINARY target (not a doc language,
+/// not a code language) referenced only from the embedded style's `url()`
+/// load takes the document-link closure too: `resolve_doc_target` matches by
+/// existence, never by the target's own type.
+#[test]
+fn impact_binary_asset_referenced_only_by_embedded_style_finds_the_page() {
+    let dir = build_virtual_doc_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(
+        &[
+            "impact",
+            root.join("fonts/a.woff2").to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(
+        code,
+        Some(0),
+        "impact on a binary asset target must succeed"
+    );
+
+    let tree = json["targets"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    assert_eq!(tree["note"], "discovered via document link");
+    assert_eq!(tree["caller_count"], 1, "the style-1 url() edge");
+    assert!(tree["callers"].as_array().unwrap()[0]["file"]
+        .as_str()
+        .unwrap()
+        .ends_with("page.html"));
+}
+
+/// The fetch target closes the loop as well: `api/v1.json` is referenced
+/// only by the script's `fetch(...)` string.
+#[test]
+fn impact_fetch_target_referenced_only_by_inline_script_finds_the_page() {
+    let dir = build_virtual_doc_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(
+        &[
+            "impact",
+            root.join("api/v1.json").to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0));
+
+    let mut files = Vec::new();
+    collect_files(&json, &mut files);
+    assert!(
+        files.iter().any(|f| f.ends_with("page.html")),
+        "closure must contain page.html: {files:?}"
+    );
+}
+
+// =============================================================================
+// (8) plain-text batch (build_text_project): .txt prose references
 // =============================================================================
 
 /// `tldr imports notes.txt` — the prose reference scan emits one ImportInfo

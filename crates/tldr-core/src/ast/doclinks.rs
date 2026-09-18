@@ -1109,6 +1109,10 @@ fn doc_import(module: &str, alias: &str) -> ImportInfo {
         names: Vec::new(),
         is_from: true,
         alias: Some(alias.to_string()),
+        // Host-level link rows carry no virtual-document provenance — only
+        // the embedded-document scans in `ast::elements` set `via`
+        // (virtual-documents-v1).
+        via: None,
     }
 }
 

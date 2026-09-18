@@ -1721,6 +1721,20 @@ pub struct ImportInfo {
     /// Import alias (e.g., `import X as Y`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    /// Virtual-document provenance (virtual-documents-v1): when this import
+    /// edge was extracted from an EMBEDDED document — an inline `<script>`'s
+    /// JS body or a `<style>` element's CSS body — rather than from the host
+    /// file's own code/markup, this names the virtual document the reference
+    /// came from: `<hostfilename>#script-N` / `<hostfilename>#style-N`, the
+    /// exact same naming `DefinitionInfo::container` uses for the embedded
+    /// definitions. Host-level rows (every pre-existing producer) keep `None`.
+    ///
+    /// Additive field: skipped in JSON when absent (mirroring
+    /// `ImportInfo::alias` and `DefinitionInfo::container`), so caches written
+    /// before it existed and schema consumers that pin the import key set are
+    /// unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 /// Complete module information (spec Section 2.1.3)

@@ -354,3 +354,36 @@ fn html_inline_script_function_body_is_byte_exact() {
     assert_eq!(json["body"].as_str().expect("body is a string"), expected);
     assert_eq!(json["byte_count"], expected.len());
 }
+
+/// (13) virtual-documents-v1: a SELECTOR defined inside an embedded `<style>`
+/// of an HTML host resolves through the same byte path — the selector row's
+/// byte span is the rule's exact source inside the host file, so `tldr body
+/// page.html .hero` extracts the CSS rule verbatim (no markup, no trailing
+/// newline). The style is a named virtual document (`page.html#style-1`),
+/// but `body` lookup is by NAME and byte-span-first — the container rides
+/// along for consumers that care.
+#[test]
+fn html_embedded_style_selector_body_is_byte_exact() {
+    let dir = TempDir::new().expect("tempdir");
+    let src = "<!DOCTYPE html>\n\
+               <html>\n\
+               <head>\n\
+               <style>\n\
+               .hero { color: red; }\n\
+               </style>\n\
+               </head>\n\
+               <body></body>\n\
+               </html>\n";
+    let file = write(&dir, "page.html", src);
+
+    let json = body_json(&file, ".hero");
+
+    assert_eq!(json["function"], ".hero");
+    assert_eq!(json["language"], "html");
+    // FILE line (the virtual document's line translated onto the host).
+    assert_eq!(json["line_start"], 5);
+    assert_eq!(json["line_end"], 5);
+    let expected = ".hero { color: red; }";
+    assert_eq!(json["body"].as_str().expect("body is a string"), expected);
+    assert_eq!(json["byte_count"], expected.len());
+}

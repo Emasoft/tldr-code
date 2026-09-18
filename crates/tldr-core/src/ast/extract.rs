@@ -16,7 +16,7 @@ use crate::error::TldrError;
 use crate::types::{ClassInfo, FieldInfo, FunctionInfo, IntraFileCallGraph, Language, ModuleInfo};
 use crate::TldrResult;
 
-use super::imports::extract_imports_from_tree;
+use super::imports::extract_imports_from_tree_hosted;
 use super::parser::parse_file_with_lang;
 
 /// Extract complete module information from a file.
@@ -118,8 +118,17 @@ pub fn extract_from_tree(
     // Extract module docstring
     let docstring = extract_module_docstring(tree, source, language);
 
-    // Extract imports
-    let imports = extract_imports_from_tree(tree, source, language)?;
+    // Extract imports — with the file's FILE NAME as the virtual-document
+    // host label (virtual-documents-v1): an HTML/SVG host contributes its
+    // embedded scripts'/styles' outbound references here, `via`-stamped, so
+    // `FileStructure.imports` (structure) and `get_imports` (tldr imports)
+    // agree. ImportInfo has no spans — no re-basing needed.
+    let imports = extract_imports_from_tree_hosted(
+        tree,
+        source,
+        language,
+        file_path.file_name().and_then(|n| n.to_str()),
+    )?;
 
     // Extract functions with full details
     let functions = extract_functions_detailed(tree, source, language);
