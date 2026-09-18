@@ -1234,7 +1234,7 @@ fn is_statement(kind: &str) -> bool {
 
 /// C / C++: a `case_statement` whose first child is the `default` keyword
 /// is the catchall arm and is NOT credited.
-fn is_default_case_statement(node: Node) -> bool {
+pub(crate) fn is_default_case_statement(node: Node) -> bool {
     let mut cursor = node.walk();
     if !cursor.goto_first_child() {
         return false;
@@ -1304,7 +1304,7 @@ fn is_scala_wildcard_arm(node: Node, source: &str) -> bool {
 
 /// Kotlin: a `when_entry` whose first child is the `else` token is the
 /// catchall arm and is NOT credited.
-fn is_kotlin_else_when_entry(node: Node) -> bool {
+pub(crate) fn is_kotlin_else_when_entry(node: Node) -> bool {
     let mut cursor = node.walk();
     if !cursor.goto_first_child() {
         return false;
@@ -1328,7 +1328,7 @@ fn is_kotlin_else_when_entry(node: Node) -> bool {
 
 /// OCaml: a `match_case` whose first pattern child is a `value_pattern`
 /// containing only `_` is the catchall arm and is NOT credited.
-fn is_ocaml_wildcard_match_case(node: Node, source: &str) -> bool {
+pub(crate) fn is_ocaml_wildcard_match_case(node: Node, source: &str) -> bool {
     let mut cursor = node.walk();
     if !cursor.goto_first_child() {
         return false;
@@ -1347,7 +1347,7 @@ fn is_ocaml_wildcard_match_case(node: Node, source: &str) -> bool {
 /// Elixir: a `stab_clause` whose `arguments` child is a single
 /// identifier `_` (or `true` in `cond`) is the catchall arm and is NOT
 /// credited.
-fn is_elixir_catchall_stab_clause(node: Node, source: &str) -> bool {
+pub(crate) fn is_elixir_catchall_stab_clause(node: Node, source: &str) -> bool {
     // Locate the `arguments` child.
     let mut cursor = node.walk();
     if !cursor.goto_first_child() {
