@@ -9,6 +9,7 @@ mod check;
 pub mod dead;
 pub mod diff;
 pub mod first_run;
+pub(crate) mod kill_guard;
 pub mod l2;
 pub mod parsers;
 pub mod runner;

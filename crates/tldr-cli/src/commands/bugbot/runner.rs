@@ -18,49 +18,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use super::kill_guard;
 use super::parsers;
 use super::tools::{L1Finding, ToolConfig, ToolResult};
-
-/// Kill a process by its OS-level PID. Cross-platform (F3).
-///
-/// On Unix, sends SIGKILL via libc. On Windows, uses `TerminateProcess`
-/// via the `windows-sys` crate (or raw WinAPI). This is needed because the
-/// watchdog thread only has the PID, not the `Child` handle (which is
-/// consumed by `wait_with_output`).
-fn kill_process_by_id(pid: u32) {
-    #[cfg(unix)]
-    {
-        // SAFETY: We are sending SIGKILL to a process we spawned.
-        // The PID is valid because we obtained it from child.id() before
-        // the watchdog thread was spawned.
-        unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGKILL);
-        }
-    }
-    #[cfg(windows)]
-    {
-        // On Windows, open the process handle and terminate it.
-        // SAFETY: We spawned this process and hold a valid PID.
-        unsafe {
-            let handle = windows_sys::Win32::System::Threading::OpenProcess(
-                windows_sys::Win32::System::Threading::PROCESS_TERMINATE,
-                0, // bInheritHandle = FALSE
-                pid,
-            );
-            if handle != 0 {
-                windows_sys::Win32::System::Threading::TerminateProcess(handle, 1);
-                windows_sys::Win32::Foundation::CloseHandle(handle);
-            }
-        }
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        // Unsupported platform: log a warning. The timeout flag is still
-        // set, so the result will report a timeout even if the process
-        // continues running.
-        eprintln!("bugbot: cannot kill process {} on this platform", pid);
-    }
-}
 
 /// Largest byte index `<= max` that lands on a UTF-8 char boundary of `s`.
 ///
@@ -148,8 +108,18 @@ impl ToolRunner {
         // SIGKILL that innocent process when it eventually wakes up. Polling
         // a `done` flag lets the watchdog exit as soon as the main thread
         // observes the child has exited, closing that PID-reuse race.
+        //
+        // why the identity guard (issue #55): the `done` poll narrows the
+        // reuse window but cannot close it — the child may be reaped in the
+        // gap between the watchdog's final poll and the kill, and the kernel
+        // may then hand the PID to an unrelated process. The watchdog
+        // therefore only signals the PID after `kill_guard` has re-verified
+        // that the process behind it still carries the birth time captured
+        // right after spawn (while the PID was still held by our unreaped
+        // child). A recycled PID is never signalled.
         let timeout = Duration::from_secs(self.timeout_secs);
         let child_id = child.id();
+        let child_identity = kill_guard::ChildIdentity::capture(child_id);
         let timed_out = Arc::new(AtomicBool::new(false));
         let timed_out_clone = timed_out.clone();
         let done = Arc::new(AtomicBool::new(false));
@@ -168,9 +138,12 @@ impl ToolRunner {
                 return;
             }
             timed_out_clone.store(true, Ordering::SeqCst);
-            // Kill the child process. Platform-specific because we only have
-            // the PID (the Child handle is consumed by wait_with_output).
-            kill_process_by_id(child_id);
+            // Kill the child process — but only if the PID still refers to
+            // the child we spawned (issue #55). Platform-specific because we
+            // only have the PID (the Child handle is consumed by
+            // wait_with_output). A skipped kill (stale/recycled PID or
+            // vanished process) still reports the timeout below.
+            kill_guard::kill_if_still_child(&child_identity);
         });
 
         // Block until child exits (naturally or killed by watchdog)

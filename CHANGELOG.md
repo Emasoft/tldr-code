@@ -4,6 +4,31 @@
 
 ### Fixed
 
+- **The bugbot timeout watchdog can no longer kill an unrelated process via a stale/recycled
+  PID** (watchdog-kill-identity-guard-v1, `commands/bugbot/kill_guard.rs` + both watchdog sites
+  (`runner.rs`, `l2/engines/tldr_differential.rs`), issue #55). The watchdogs signalled the
+  child by bare PID after the timeout. `runner.rs` already polled a `done` flag (closing the
+  seconds-wide window from a watchdog that slept the FULL timeout after an early child exit),
+  but a reuse window remained: the child may be reaped between the watchdog's final poll and
+  the kill, and the kernel may hand the PID to an unrelated process — a late SIGKILL would
+  then destroy that innocent process. `tldr_differential.rs` still slept the full timeout and
+  killed a bare PID with no cancellation at all. Both watchdogs now verify PID OWNERSHIP
+  before every kill: the child's process start-time ("birth time") is captured immediately
+  after spawn — while the child is still OUR unreaped child, so the kernel holds the PID and
+  the snapshot cannot belong to a recycled occupant — and the watchdog signals the PID only
+  if the current occupant carries the SAME birth time. Mismatched birth time (recycled PID)
+  → no kill; no readable process → nothing to kill; reader present but baseline missing →
+  fail closed (no kill); platform with no reader (Windows) → legacy unverified kill preserved
+  and documented. The guard only ever signals the single verified PID, never a process group.
+  A skipped kill still reports the timeout, as before. Start-time sources use std + the
+  already-vendored `libc` (no new deps): `proc_pidinfo(PROC_PIDTBSDINFO)` on macOS
+  (microsecond birth time), `/proc/<pid>/stat` field 22 on Linux (parsed after `comm`, which
+  may contain spaces/parens). Pinned by unit tests in `kill_guard.rs` (decision function:
+  mismatch → skip, match → kill, vanished → skip, unverifiable → fail closed, unsupported
+  platform → legacy kill; hazard shape: a stale record against a LIVE non-child process is
+  refused and the process is left running; end-to-end: a fresh child's identity verifies and
+  the guarded kill terminates it; readers see the test's own process; the Linux `stat` parser
+  survives `comm` fields with spaces/parentheses).
 - **`tldr cache clear` no longer leaves the cache "magically restored" when a daemon is
   running** (cache-clear-shutdown-race-v1, `commands/daemon/cache_clear.rs`, issue #62).
   `cache clear` sent `Shutdown` fire-and-forget and deleted the cache files immediately, but

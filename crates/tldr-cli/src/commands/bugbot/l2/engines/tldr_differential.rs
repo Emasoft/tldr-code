@@ -260,6 +260,15 @@ impl TldrDifferentialEngine {
         // process that happens to have been assigned the same PID by then.
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let done_clone = done.clone();
+        // why the identity guard (issue #55): the `done` check leaves a
+        // reuse window between the check and the kill — and the kill here
+        // happens after a FULL timeout sleep, so the child has long been
+        // reaped and its PID may already belong to an unrelated process.
+        // The watchdog therefore only signals the PID after `kill_guard` has
+        // re-verified that the process behind it still carries the birth
+        // time captured right after spawn (while the PID was still held by
+        // our unreaped child). A recycled PID is never signalled.
+        let child_identity = crate::commands::bugbot::kill_guard::ChildIdentity::capture(child_id);
 
         let _watchdog = std::thread::spawn(move || {
             std::thread::sleep(timeout);
@@ -267,22 +276,9 @@ impl TldrDifferentialEngine {
                 return;
             }
             timed_out_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(child_id as libc::pid_t, libc::SIGKILL);
-            }
-            #[cfg(windows)]
-            unsafe {
-                let handle = windows_sys::Win32::System::Threading::OpenProcess(
-                    windows_sys::Win32::System::Threading::PROCESS_TERMINATE,
-                    0,
-                    child_id,
-                );
-                if handle != 0 {
-                    windows_sys::Win32::System::Threading::TerminateProcess(handle, 1);
-                    windows_sys::Win32::Foundation::CloseHandle(handle);
-                }
-            }
+            // Only signal the PID if it still refers to the child we spawned
+            // (issue #55). A skipped kill still reports the timeout below.
+            crate::commands::bugbot::kill_guard::kill_if_still_child(&child_identity);
         });
 
         let output = child
