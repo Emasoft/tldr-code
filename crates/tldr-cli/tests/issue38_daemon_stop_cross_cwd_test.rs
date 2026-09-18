@@ -70,7 +70,8 @@ fn wait_for_daemon_running(project: &Path, timeout: Duration, registry_dir: &Pat
             .output();
         if let Ok(out) = out {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            if stdout.contains("\"status\": \"running\"") || stdout.contains("\"status\":\"running\"")
+            if stdout.contains("\"status\": \"running\"")
+                || stdout.contains("\"status\":\"running\"")
             {
                 return true;
             }
@@ -195,11 +196,8 @@ fn stop_of_one_project_keeps_another_projects_discovery_record() {
         "socket": other_project.join("daemon-other.sock"),
     });
     let record_path = active_dir.join("daemon-active.json");
-    std::fs::write(
-        &record_path,
-        serde_json::to_string_pretty(&record).unwrap(),
-    )
-    .expect("seed discovery record");
+    std::fs::write(&record_path, serde_json::to_string_pretty(&record).unwrap())
+        .expect("seed discovery record");
 
     let (_fixture, fixture_path) = create_fixture("issue38-fixture2-");
 

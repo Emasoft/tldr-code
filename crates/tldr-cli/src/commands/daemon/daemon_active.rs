@@ -38,22 +38,48 @@ pub struct DaemonActive {
     pub socket: PathBuf,
 }
 
+/// Directory used when the platform cache dir is unavailable
+/// (`dirs::cache_dir()` → `None`, e.g. `$HOME` unset with no passwd entry).
+///
+/// MUST be absolute (issue #34): the historical `PathBuf::from(".cache")`
+/// fallback made the discovery file's location depend on the cwd of
+/// whichever process touched it — `daemon start` wrote
+/// `<start-cwd>/.cache/tldr/daemon-active.json` while `daemon status` from
+/// another cwd read `<other-cwd>/.cache/tldr/daemon-active.json` and never
+/// found the record, so VAL-013 cross-cwd discovery silently failed in
+/// cache-dir-less environments. `std::env::temp_dir()` honors `TMPDIR`, is
+/// absolute on all platforms, and is the same directory family the daemon
+/// already uses for sockets and PID files (`ipc.rs` / `pid.rs`).
+fn fallback_cache_root() -> PathBuf {
+    std::env::temp_dir()
+}
+
+/// Compose the discovery-file path from a resolved cache root.
+///
+/// Exposed for tests: the `None` branch is exactly the issue #34 bug — the
+/// fallback root must compose to an ABSOLUTE path so the file resolves
+/// identically from any cwd.
+pub fn active_file_path_in(cache_dir: Option<PathBuf>) -> PathBuf {
+    cache_dir
+        .unwrap_or_else(fallback_cache_root)
+        .join("tldr")
+        .join("daemon-active.json")
+}
+
 /// Path to the active-daemon discovery file.
 ///
 /// Resolution order:
 /// 1. `TLDR_DAEMON_ACTIVE_DIR` env override (used by tests for isolation;
 ///    mirrors `TLDR_DAEMON_REGISTRY_DIR` on the registry file).
 /// 2. `<dirs::cache_dir()>/tldr/daemon-active.json`.
-/// 3. Relative `.cache/tldr/...` fallback if `dirs::cache_dir()` is
-///    unavailable (see issue #34 for why this fallback is being reworked).
+/// 3. `<temp_dir>/tldr/daemon-active.json` fallback if `dirs::cache_dir()`
+///    is unavailable — ABSOLUTE, so the file resolves identically from any
+///    cwd (issue #34).
 pub fn active_file_path() -> PathBuf {
     if let Ok(dir) = std::env::var("TLDR_DAEMON_ACTIVE_DIR") {
         return PathBuf::from(dir).join("daemon-active.json");
     }
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from(".cache"))
-        .join("tldr")
-        .join("daemon-active.json")
+    active_file_path_in(dirs::cache_dir())
 }
 
 /// Atomically write the active-daemon record.
@@ -146,7 +172,10 @@ pub fn remove_active_for_project(project: &Path) -> bool {
             // have stored a non-canonical spelling, and macOS resolves
             // `/var` → `/private/var` — a byte comparison of raw strings
             // would miss the match and leave a stale record behind.
-            let recorded = active.project.canonicalize().unwrap_or_else(|_| active.project.clone());
+            let recorded = active
+                .project
+                .canonicalize()
+                .unwrap_or_else(|_| active.project.clone());
             if recorded == canon {
                 remove_active().is_ok()
             } else {
@@ -284,10 +313,7 @@ mod tests {
             let project_b = dir.join("daemon-b");
             std::fs::create_dir_all(&project_b).unwrap();
             let removed = remove_active_for_project(&project_b);
-            assert!(
-                !removed,
-                "no record for project B — nothing may be removed"
-            );
+            assert!(!removed, "no record for project B — nothing may be removed");
             assert!(
                 active_file_path().exists(),
                 "project A's discovery record must survive a stop of project B"
@@ -352,5 +378,54 @@ mod tests {
         with_active_dir(|dir| {
             assert_eq!(active_file_path(), dir.join("daemon-active.json"));
         });
+    }
+
+    // =========================================================================
+    // issue-34-no-cache-dir-discovery-v1: ABSOLUTE fallback when
+    // `dirs::cache_dir()` is unavailable
+    // =========================================================================
+
+    /// THE issue #34 bug: with no platform cache dir, the fallback used to
+    /// be the RELATIVE `.cache` path, so the discovery file's location
+    /// depended on the cwd of whichever process touched it (`daemon start`
+    /// wrote `<start-cwd>/.cache/...`, `daemon status` from another cwd
+    /// read `<other-cwd>/.cache/...` and never found it). The composed
+    /// fallback path must be ABSOLUTE.
+    #[test]
+    fn active_file_path_fallback_is_absolute() {
+        let composed = active_file_path_in(None);
+        assert!(
+            composed.is_absolute(),
+            "issue #34: the no-cache-dir fallback for the discovery file must be \
+             absolute (was the relative `.cache`), got {}",
+            composed.display()
+        );
+        assert_eq!(
+            composed.file_name().and_then(|n| n.to_str()),
+            Some("daemon-active.json"),
+            "fallback must keep the discovery-file name"
+        );
+    }
+
+    /// A resolved cache dir composes unchanged (the fallback only applies
+    /// when `dirs::cache_dir()` is `None`).
+    #[test]
+    fn active_file_path_uses_resolved_cache_dir_when_available() {
+        let composed = active_file_path_in(Some(PathBuf::from("/cache-root")));
+        assert_eq!(
+            composed,
+            PathBuf::from("/cache-root/tldr/daemon-active.json")
+        );
+        assert!(composed.is_absolute());
+    }
+
+    /// Round-trip through the fallback root: a record written via the
+    /// no-cache-dir fallback path resolves from the same absolute location
+    /// regardless of cwd — simulated by composing twice (different cwd
+    /// simulation is impossible in-process; absoluteness is the invariant
+    /// that guarantees it).
+    #[test]
+    fn fallback_root_matches_temp_dir_family() {
+        assert_eq!(fallback_cache_root(), std::env::temp_dir());
     }
 }

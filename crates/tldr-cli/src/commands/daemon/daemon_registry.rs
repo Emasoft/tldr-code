@@ -59,20 +59,41 @@ pub struct DaemonRegistry {
 
 const CAS_RETRY_ATTEMPTS: usize = 3;
 
+/// Directory used when the platform cache dir is unavailable.
+///
+/// Absolute, TMPDIR-honoring; see `daemon_active::fallback_cache_root` for
+/// the issue #34 rationale (a relative `.cache` fallback made the registry's
+/// location cwd-dependent, breaking cross-cwd discovery — and `daemon
+/// status` consults the registry BEFORE the legacy active record, so the
+/// registry path must be stable too).
+fn fallback_cache_root() -> PathBuf {
+    std::env::temp_dir()
+}
+
+/// Compose the registry-file path from a resolved cache root.
+///
+/// Exposed for tests: the `None` branch is the issue #34 bug — the fallback
+/// root must compose to an ABSOLUTE path.
+pub fn registry_file_path_in(cache_dir: Option<PathBuf>) -> PathBuf {
+    cache_dir
+        .unwrap_or_else(fallback_cache_root)
+        .join("tldr")
+        .join("daemon-registry.json")
+}
+
 /// Path to the daemon registry file.
 ///
 /// Resolution order:
 /// 1. `TLDR_DAEMON_REGISTRY_DIR` env override (used by tests for isolation).
 /// 2. `<dirs::cache_dir()>/tldr/daemon-registry.json`.
-/// 3. `./.cache/tldr/daemon-registry.json` fallback (mirrors `daemon_active`).
+/// 3. `<temp_dir>/tldr/daemon-registry.json` fallback if
+///    `dirs::cache_dir()` is unavailable — ABSOLUTE, mirroring
+///    `daemon_active::active_file_path` (issue #34).
 pub fn registry_file_path() -> PathBuf {
     if let Ok(dir) = std::env::var("TLDR_DAEMON_REGISTRY_DIR") {
         return PathBuf::from(dir).join("daemon-registry.json");
     }
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from(".cache"))
-        .join("tldr")
-        .join("daemon-registry.json")
+    registry_file_path_in(dirs::cache_dir())
 }
 
 /// Atomically write `registry` to [`registry_file_path`] via tmp + rename.
@@ -419,8 +440,7 @@ mod tests {
         with_isolated_discovery(|dir| {
             let daemon_project = dir.join("daemon-a");
             std::fs::create_dir_all(&daemon_project).unwrap();
-            add_entry(&daemon_project, std::process::id(), &dir.join("a.sock"))
-                .expect("add");
+            add_entry(&daemon_project, std::process::id(), &dir.join("a.sock")).expect("add");
             // Explicit path for a DIFFERENT project — even with a live
             // registry entry, the explicit path must be returned as-is
             // (canonicalized).
@@ -440,10 +460,8 @@ mod tests {
         with_isolated_discovery(|dir| {
             let daemon_project = dir.join("daemon-single");
             std::fs::create_dir_all(&daemon_project).unwrap();
-            add_entry(&daemon_project, std::process::id(), &dir.join("s.sock"))
-                .expect("add");
-            let resolved =
-                resolve_default_project(Path::new(".")).expect("resolve with one entry");
+            add_entry(&daemon_project, std::process::id(), &dir.join("s.sock")).expect("add");
+            let resolved = resolve_default_project(Path::new(".")).expect("resolve with one entry");
             assert_eq!(
                 resolved,
                 daemon_project.canonicalize().unwrap(),
@@ -495,8 +513,12 @@ mod tests {
             for name in ["m-daemon-a", "m-daemon-b"] {
                 let project = dir.join(name);
                 std::fs::create_dir_all(&project).unwrap();
-                add_entry(&project, std::process::id(), &dir.join(format!("{name}.sock")))
-                    .expect("add");
+                add_entry(
+                    &project,
+                    std::process::id(),
+                    &dir.join(format!("{name}.sock")),
+                )
+                .expect("add");
             }
             let result = resolve_default_project(Path::new("."));
             let err = result.expect_err("multiple daemons must be ambiguous");
@@ -505,5 +527,42 @@ mod tests {
                 "error must explain the ambiguity, got: {err}"
             );
         });
+    }
+
+    // =========================================================================
+    // issue-34-no-cache-dir-discovery-v1: ABSOLUTE registry fallback
+    // =========================================================================
+
+    /// THE issue #34 bug, registry side: `daemon status` consults the
+    /// registry BEFORE the legacy active record, so with no platform cache
+    /// dir the registry's relative `.cache` fallback made cross-cwd
+    /// discovery fail the same way. The composed fallback path must be
+    /// ABSOLUTE.
+    #[test]
+    fn registry_file_path_fallback_is_absolute() {
+        let composed = registry_file_path_in(None);
+        assert!(
+            composed.is_absolute(),
+            "issue #34: the no-cache-dir fallback for the registry file must be \
+             absolute (was the relative `.cache`), got {}",
+            composed.display()
+        );
+        assert_eq!(
+            composed.file_name().and_then(|n| n.to_str()),
+            Some("daemon-registry.json"),
+            "fallback must keep the registry-file name"
+        );
+    }
+
+    /// A resolved cache dir composes unchanged (the fallback only applies
+    /// when `dirs::cache_dir()` is `None`).
+    #[test]
+    fn registry_file_path_uses_resolved_cache_dir_when_available() {
+        let composed = registry_file_path_in(Some(PathBuf::from("/cache-root")));
+        assert_eq!(
+            composed,
+            PathBuf::from("/cache-root/tldr/daemon-registry.json")
+        );
+        assert!(composed.is_absolute());
     }
 }
