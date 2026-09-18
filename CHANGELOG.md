@@ -4,6 +4,57 @@
 
 ### Added
 
+- **Persistent daemon JSONL request log: every daemon session writes
+  `.tldr/cache/daemon.log`** (issue #67,
+  `crates/tldr-cli/src/commands/daemon/logging.rs`). The daemon previously
+  had only four `eprintln!` lifecycle events and no persistent record —
+  failures, slowness and daemon-vs-local fallbacks were undiagnosable after
+  the fact. The log lives next to `query_cache.bin`/`salsa_stats.json`
+  (`<project>/.tldr/cache/daemon.log`) and is append-only, one JSON object
+  per line: `{ts, pid, version, event, command, path?, duration_ms?,
+  status, detail?}` (`ts` RFC 3339; `version` = the exact `tldr --version`
+  value; `event` ∈ `request|response|lifecycle|slow|fallback|error`).
+  - **Per-request traces.** Every handled command is bracketed by a
+    `request` line (command + target path, `status: "accepted"`) and a
+    `response` line (`duration_ms` with sub-ms precision,
+    `status: "ok"|"error"`); failed requests add an `error` companion line
+    carrying the wire error context (the #85-family silent-swallowing gap),
+    and requests slower than `SLOW_REQUEST_MS` (1000 ms, injectable via
+    `TLDRDaemon::with_slow_request_ms` for tests) add a `slow` marker line.
+  - **Lifecycle.** `started` / `stopped` lines bracket every session, with
+    mid-session reason lines that distinguish explicit stops
+    (`shutdown_command`), idle exits (`idle_timeout`), deleted-project
+    exits (`project_missing`, status `error`) and persistence failures on
+    shutdown (`stopped_error`, status `error`); the pre-existing stderr
+    notes stay for interactive visibility. Liveness-probe connections
+    (`check_socket_alive`'s connect-and-drop) are deliberately NOT logged
+    as errors — that would pin a spurious error line onto every session.
+  - **Fallback visibility.** A failed `try_daemon_route` (the CLI's shared
+    daemon-routing choke point) appends a `fallback` line through the same
+    shared helper (`log_client_fallback`), so daemon-to-local fallbacks are
+    never silent. The helper only appends to an EXISTING log — commands in
+    projects that never ran a daemon leave no new state, and commands with
+    no daemon route at all (client-local enriched search) stay out of the
+    log's scope (documented).
+  - **Bounds.** Append + flush per line; the file is capped at 5 MB
+    (`MAX_LOG_BYTES`) with truncate-and-restart rotation checked before
+    every append (no last-N archival — the newest session wins); writes
+    are best-effort — a write failure never breaks request handling and is
+    counted in `DaemonLogger::dropped_writes`; a deleted project is never
+    resurrected by a log write.
+  - **Observability surface.** `tldr daemon status` gains additive
+    `log_path` + `log_size_bytes` fields (JSON and text output; absent
+    fields are skipped for back-compat, and old payloads deserialize as
+    `None`). No log-reading command (documented future work); cache
+    hit/miss remains observable through `FullStatus.salsa_stats` rather
+    than per-line log fields.
+  - **Tests.** Six new over-IPC contract tests in
+    `tests/daemon_contract_coverage_test.rs` (request/response/lifecycle
+    shape, injected-threshold slow marker, error context, cap rotation,
+    status log fields, router fallback line), the extended idle-timeout
+    test, and lib pins in `logging.rs` (schema, rotation, best-effort
+    failure counting, fallback gate) and `daemon_impl::tests`.
+
 - **Native SQL schema-outline scanner: `.sql`/`.ddl` files now report their
   DDL structure and foreign-key edges**
   (sql-schema-scan-v1, `crates/tldr-core/src/ast/sqlscan.rs`). SQL has no

@@ -499,6 +499,15 @@ fn default_top_k() -> usize {
 ///
 /// Key design: Error uses "error" field, Status uses "message" field.
 /// This makes them structurally distinguishable for serde untagged.
+//
+// `large_enum_variant` is allowed: the `FullStatus` variant is a wire
+// message constructed once per Status request and immediately serialized,
+// so its in-memory size is irrelevant, and boxing pre-existing fields
+// (clippy's suggestion) would churn every matcher across the crate and
+// tests for no gain. The variant grew past the lint's delta threshold when
+// issue #67 added the two additive `log_path`/`log_size_bytes`
+// observability fields.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DaemonResponse {
@@ -517,6 +526,16 @@ pub enum DaemonResponse {
         all_sessions: Option<AllSessionsSummary>,
         #[serde(skip_serializing_if = "Option::is_none")]
         hook_stats: Option<HashMap<String, HookStats>>,
+        /// Persistent daemon JSONL log path (issue #67). Additive field:
+        /// `Option` + `skip_serializing_if` keeps both wire directions
+        /// back-compatible (old clients ignore the key, old payloads
+        /// deserialize to `None`).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        log_path: Option<PathBuf>,
+        /// Current size of the daemon log in bytes (issue #67). Additive
+        /// field, same back-compat contract as `log_path`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        log_size_bytes: Option<u64>,
     },
 
     /// Notify response (4 required fields)

@@ -41,7 +41,8 @@
 //! - `query`: Low-level query passthrough command
 //! - `notify`: File change notification command
 //! - `warm`: Cache warming command
-//! - `stats`: Usage statistics command
+//! - `list`: Daemon registry listing
+//! - `logging`: Persistent JSONL request log (issue #67)
 //! - `cache_stats`: Cache statistics command
 //! - `cache_clear`: Cache clearing command
 
@@ -54,6 +55,7 @@ pub mod daemon_registry;
 pub mod error;
 pub mod ipc;
 pub mod list;
+pub mod logging;
 pub mod notify;
 pub mod pid;
 pub mod query;
@@ -72,6 +74,11 @@ pub use ipc::{
     check_socket_alive, cleanup_socket, read_command, send_command, send_raw_command,
     send_response, validate_socket_path, IpcListener, IpcStream, CONNECTION_TIMEOUT_SECS,
     MAX_MESSAGE_SIZE, READ_TIMEOUT_SECS,
+};
+pub use logging::{
+    daemon_log_path, log_client_fallback, DaemonLogger, DAEMON_LOG_FILENAME, EVENT_ERROR,
+    EVENT_FALLBACK, EVENT_LIFECYCLE, EVENT_REQUEST, EVENT_RESPONSE, EVENT_SLOW, MAX_LOG_BYTES,
+    SLOW_REQUEST_MS,
 };
 pub use pid::{
     check_stale_pid, cleanup_stale_pid, compute_hash, compute_pid_path, compute_socket_path,

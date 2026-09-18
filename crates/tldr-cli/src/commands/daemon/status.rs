@@ -66,6 +66,12 @@ pub struct DaemonStatusOutput {
     /// Cache statistics
     #[serde(skip_serializing_if = "Option::is_none")]
     pub salsa_stats: Option<SalsaCacheStats>,
+    /// Persistent daemon JSONL log path (issue #67; additive field).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_path: Option<PathBuf>,
+    /// Current size of the daemon log in bytes (issue #67; additive field).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_size_bytes: Option<u64>,
     /// Optional message
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -118,6 +124,8 @@ impl DaemonStatusArgs {
                     files: None,
                     project: None,
                     salsa_stats: None,
+                    log_path: None,
+                    log_size_bytes: None,
                     message: Some("Daemon not running".to_string()),
                 };
 
@@ -152,6 +160,8 @@ impl DaemonStatusArgs {
                 files,
                 project,
                 salsa_stats,
+                log_path,
+                log_size_bytes,
                 ..
             } => {
                 let status_str = format_status(status);
@@ -164,6 +174,8 @@ impl DaemonStatusArgs {
                     files: Some(files),
                     project: Some(project.clone()),
                     salsa_stats: Some(salsa_stats.clone()),
+                    log_path,
+                    log_size_bytes,
                     message: None,
                 };
 
@@ -179,6 +191,14 @@ impl DaemonStatusArgs {
                             println!("Uptime:  {}", uptime_human);
                             println!("Project: {}", project.display());
                             println!("Files:   {}", files);
+                            // Issue #67: where the daemon's persistent log
+                            // lives and how big it currently is.
+                            if let Some(log_path) = &output.log_path {
+                                println!("Log:     {}", log_path.display());
+                            }
+                            if let Some(size) = output.log_size_bytes {
+                                println!("Log size: {} bytes", size);
+                            }
                             println!();
                             println!("Cache Statistics");
                             println!("----------------");
@@ -203,6 +223,8 @@ impl DaemonStatusArgs {
                     files: None,
                     project: None,
                     salsa_stats: None,
+                    log_path: None,
+                    log_size_bytes: None,
                     message,
                 };
 
@@ -338,6 +360,10 @@ mod tests {
                 invalidations: 5,
                 recomputations: 3,
             }),
+            // Issue #67: the log observability surface is additive — the
+            // fields appear only when the daemon reported them.
+            log_path: Some(PathBuf::from("/test/project/.tldr/cache/daemon.log")),
+            log_size_bytes: Some(4096),
             message: None,
         };
 
@@ -345,6 +371,26 @@ mod tests {
         assert!(json.contains("running"));
         assert!(json.contains("3600"));
         assert!(json.contains("hits"));
+        assert!(
+            json.contains("log_path") && json.contains("daemon.log"),
+            "status JSON must expose the daemon log path, got: {json}"
+        );
+        assert!(
+            json.contains("log_size_bytes"),
+            "status JSON must expose the daemon log size, got: {json}"
+        );
+
+        // Absent log fields are omitted entirely (additive contract).
+        let without_log = DaemonStatusOutput {
+            log_path: None,
+            log_size_bytes: None,
+            ..output
+        };
+        let json = serde_json::to_string(&without_log).unwrap();
+        assert!(
+            !json.contains("log_path") && !json.contains("log_size_bytes"),
+            "None log fields must be skipped, got: {json}"
+        );
     }
 
     #[test]
@@ -356,6 +402,8 @@ mod tests {
             files: None,
             project: None,
             salsa_stats: None,
+            log_path: None,
+            log_size_bytes: None,
             message: Some("Daemon not running".to_string()),
         };
 

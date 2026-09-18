@@ -24,6 +24,10 @@ use tokio::sync::{watch, RwLock};
 
 use super::error::{DaemonError, DaemonResult};
 use super::ipc::{read_command, send_response, IpcListener, IpcStream};
+use super::logging::{
+    DaemonLogger, EVENT_ERROR, EVENT_LIFECYCLE, EVENT_REQUEST, EVENT_RESPONSE, EVENT_SLOW,
+    SLOW_REQUEST_MS,
+};
 use super::salsa::{QueryCache, QueryKey};
 use super::types::{
     AllSessionsSummary, DaemonCommand, DaemonConfig, DaemonResponse, DaemonStatus, HookStats,
@@ -313,6 +317,61 @@ fn count_tree_files(tree: &FileTree) -> usize {
 }
 
 // =============================================================================
+// Request-log instrumentation (issue #67)
+// =============================================================================
+
+/// Canonical name + target path for a daemon command, for the persistent
+/// JSONL request log (issue #67).
+///
+/// The name is the command's wire-`cmd` spelling (snake_case, matching
+/// `DaemonCommand`'s serde tag rename), so a log line names the command a
+/// client actually sent. The path is the command's primary filesystem
+/// target when it has one.
+fn describe_command(cmd: &DaemonCommand) -> (String, Option<String>) {
+    let path_of = |p: &PathBuf| Some(p.to_string_lossy().to_string());
+    match cmd {
+        DaemonCommand::Ping => ("ping".to_string(), None),
+        DaemonCommand::Status { .. } => ("status".to_string(), None),
+        DaemonCommand::Shutdown => ("shutdown".to_string(), None),
+        DaemonCommand::Notify { file } => ("notify".to_string(), path_of(file)),
+        DaemonCommand::Track { .. } => ("track".to_string(), None),
+        DaemonCommand::Warm { .. } => ("warm".to_string(), None),
+        DaemonCommand::Semantic { .. } => ("semantic".to_string(), None),
+        DaemonCommand::Search { .. } => ("search".to_string(), None),
+        DaemonCommand::Extract { file, .. } => ("extract".to_string(), path_of(file)),
+        DaemonCommand::Tree { path } => (
+            "tree".to_string(),
+            path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        ),
+        DaemonCommand::Structure { path, .. } => ("structure".to_string(), path_of(path)),
+        DaemonCommand::Context { .. } => ("context".to_string(), None),
+        DaemonCommand::Cfg { file, .. } => ("cfg".to_string(), path_of(file)),
+        DaemonCommand::Dfg { file, .. } => ("dfg".to_string(), path_of(file)),
+        DaemonCommand::Slice { file, .. } => ("slice".to_string(), path_of(file)),
+        DaemonCommand::Calls { path, .. } => (
+            "calls".to_string(),
+            path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        ),
+        DaemonCommand::Impact { .. } => ("impact".to_string(), None),
+        DaemonCommand::Dead { path, .. } => (
+            "dead".to_string(),
+            path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        ),
+        DaemonCommand::Arch { path, .. } => (
+            "arch".to_string(),
+            path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        ),
+        DaemonCommand::Imports { file } => ("imports".to_string(), path_of(file)),
+        DaemonCommand::Importers { path, .. } => (
+            "importers".to_string(),
+            path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        ),
+        DaemonCommand::Diagnostics { path, .. } => ("diagnostics".to_string(), path_of(path)),
+        DaemonCommand::ChangeImpact { .. } => ("change_impact".to_string(), None),
+    }
+}
+
+// =============================================================================
 // TLDRDaemon - Main Daemon Process
 // =============================================================================
 
@@ -352,6 +411,13 @@ pub struct TLDRDaemon {
     /// Persistent semantic index (built lazily on first query, invalidated on Notify)
     #[cfg(feature = "semantic")]
     semantic_index: Arc<RwLock<Option<SemanticIndex>>>,
+    /// Persistent JSONL request log (issue #67): `<project>/.tldr/cache/daemon.log`,
+    /// best-effort, never affects request handling.
+    logger: DaemonLogger,
+    /// Slow-request threshold in milliseconds (issue #67). Defaults to
+    /// [`SLOW_REQUEST_MS`]; overridable for tests via
+    /// [`TLDRDaemon::with_slow_request_ms`].
+    slow_request_ms: u64,
 }
 
 impl TLDRDaemon {
@@ -374,6 +440,11 @@ impl TLDRDaemon {
         let cache =
             QueryCache::load_from_file(&cache_path).unwrap_or_else(|_| QueryCache::with_defaults());
 
+        // Issue #67: the persistent JSONL logger is bound to the project's
+        // `.tldr/cache/daemon.log` up front but opens the file lazily on the
+        // first write, so constructing a daemon never touches the filesystem.
+        let logger = DaemonLogger::new(project.clone());
+
         Self {
             project,
             config,
@@ -389,7 +460,19 @@ impl TLDRDaemon {
             indexed_files: Arc::new(RwLock::new(0)),
             #[cfg(feature = "semantic")]
             semantic_index: Arc::new(RwLock::new(None)),
+            logger,
+            slow_request_ms: SLOW_REQUEST_MS,
         }
+    }
+
+    /// Override the slow-request threshold in milliseconds (issue #67).
+    ///
+    /// Production daemons use [`SLOW_REQUEST_MS`] (1000 ms). Tests inject a
+    /// tiny (even zero) threshold so the `slow` log marker fires without
+    /// sleeping. Must be called before the daemon is wrapped in `Arc`.
+    pub fn with_slow_request_ms(mut self, ms: u64) -> Self {
+        self.slow_request_ms = ms;
+        self
     }
 
     /// Get the daemon's current status.
@@ -470,6 +553,13 @@ impl TLDRDaemon {
             *status = DaemonStatus::Ready;
         }
 
+        // Issue #67: the persistent log's session opener. `daemon start`
+        // (and every in-process `run`) appends a `started` lifecycle line,
+        // so a daemon that starts but never logs is detectable by tests
+        // and by `tldr daemon status`'s log_size_bytes.
+        self.logger
+            .emit(EVENT_LIFECYCLE, "daemon", None, None, "ok", Some("started"));
+
         // Set up signal handlers for graceful shutdown
         #[cfg(unix)]
         {
@@ -508,6 +598,20 @@ impl TLDRDaemon {
                     "Project directory {} no longer exists, shutting down",
                     self.project.display()
                 );
+                // Issue #67: keep stderr for interactive visibility AND
+                // land the reason in the persistent log (status "error":
+                // this is an unplanned exit, unlike an explicit stop).
+                self.logger.emit(
+                    EVENT_LIFECYCLE,
+                    "daemon",
+                    None,
+                    None,
+                    "error",
+                    Some(&format!(
+                        "project_missing: {} no longer exists, shutting down",
+                        self.project.display()
+                    )),
+                );
                 break;
             }
 
@@ -518,6 +622,20 @@ impl TLDRDaemon {
                     eprintln!(
                         "No client activity for {}s, shutting down",
                         self.config.idle_timeout_secs
+                    );
+                    // Issue #67: idle shutdowns must be distinguishable from
+                    // explicit stops in the log (see the Shutdown arm's
+                    // `shutdown_command` line).
+                    self.logger.emit(
+                        EVENT_LIFECYCLE,
+                        "daemon",
+                        None,
+                        None,
+                        "ok",
+                        Some(&format!(
+                            "idle_timeout: no client activity for {}s",
+                            self.config.idle_timeout_secs
+                        )),
                     );
                     break;
                 }
@@ -536,12 +654,48 @@ impl TLDRDaemon {
                     let daemon = Arc::clone(&self);
                     tokio::spawn(async move {
                         if let Err(e) = daemon.handle_connection(&mut stream).await {
+                            match &e {
+                                // An accepted stream that yields EOF before
+                                // any command is the documented liveness-probe
+                                // handshake (`check_socket_alive` connects and
+                                // drops without sending; recv_raw surfaces the
+                                // empty read as ConnectionRefused). It happens
+                                // on every `daemon start` and every status
+                                // probe, so it is deliberately NOT an error
+                                // event in the persistent log — that would
+                                // pin a spurious error line onto every
+                                // session. stderr keeps the pre-existing note
+                                // for interactive visibility.
+                                DaemonError::ConnectionRefused => {}
+                                _ => {
+                                    // Issue #67: other connection failures
+                                    // used to be stderr-only (the "silent
+                                    // swallowing" family) — they now land in
+                                    // the persistent log too.
+                                    daemon.logger.emit(
+                                        EVENT_ERROR,
+                                        "connection",
+                                        None,
+                                        None,
+                                        "error",
+                                        Some(&format!("connection handling failed: {}", e)),
+                                    );
+                                }
+                            }
                             eprintln!("Connection error: {}", e);
                         }
                     });
                 }
                 Ok(Err(e)) => {
                     // Accept error - log and continue
+                    self.logger.emit(
+                        EVENT_ERROR,
+                        "accept",
+                        None,
+                        None,
+                        "error",
+                        Some(&format!("accept failed: {}", e)),
+                    );
                     eprintln!("Accept error: {}", e);
                 }
                 Err(_) => {
@@ -557,14 +711,41 @@ impl TLDRDaemon {
             *status = DaemonStatus::ShuttingDown;
         }
 
-        // Persist stats before exit
-        self.persist_stats().await?;
+        // Persist stats before exit. Issue #67: a persist failure is an
+        // ERROR exit — it must be distinguishable in the log from an
+        // explicit stop or an idle shutdown, and the error still propagates.
+        if let Err(e) = self.persist_stats().await {
+            self.logger.emit(
+                EVENT_ERROR,
+                "daemon",
+                None,
+                None,
+                "error",
+                Some(&format!("persist_stats on shutdown: {}", e)),
+            );
+            self.logger.emit(
+                EVENT_LIFECYCLE,
+                "daemon",
+                None,
+                None,
+                "error",
+                Some("stopped_error: stats persistence failed"),
+            );
+            return Err(e);
+        }
 
         // Set status to Stopped
         {
             let mut status = self.status.write().await;
             *status = DaemonStatus::Stopped;
         }
+
+        // Issue #67: the session closer. Paired with the `started` line and
+        // the mid-session reason line (shutdown_command / idle_timeout /
+        // project_missing), the log reconstructs exactly how this daemon
+        // ended.
+        self.logger
+            .emit(EVENT_LIFECYCLE, "daemon", None, None, "ok", Some("stopped"));
 
         Ok(())
     }
@@ -584,7 +765,73 @@ impl TLDRDaemon {
     }
 
     /// Handle a daemon command and return the response.
+    ///
+    /// Issue #67: every request is bracketed in the persistent JSONL log by
+    /// a `request` line (accepted, with command + path) and a `response`
+    /// line (with `duration_ms` and status `ok`/`error`). A failed request
+    /// additionally logs an `error` line carrying the error context, and a
+    /// request slower than `slow_request_ms` logs a `slow` marker. Logging
+    /// is best-effort and never affects the response.
     pub async fn handle_command(&self, cmd: DaemonCommand) -> DaemonResponse {
+        let started = Instant::now();
+        let (command, path) = describe_command(&cmd);
+        self.logger.emit(
+            EVENT_REQUEST,
+            &command,
+            path.as_deref().map(Path::new),
+            None,
+            "accepted",
+            None,
+        );
+
+        let response = self.dispatch_command(cmd).await;
+
+        let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let is_error = matches!(response, DaemonResponse::Error { .. });
+        let status = if is_error { "error" } else { "ok" };
+        self.logger.emit(
+            EVENT_RESPONSE,
+            &command,
+            path.as_deref().map(Path::new),
+            Some(duration_ms),
+            status,
+            None,
+        );
+
+        if is_error {
+            // Issue #85 family: error context is recorded, not swallowed.
+            // The wire error string identifies the failing command target.
+            let detail = match &response {
+                DaemonResponse::Error { error, .. } => Some(error.as_str()),
+                _ => None,
+            };
+            self.logger.emit(
+                EVENT_ERROR,
+                &command,
+                path.as_deref().map(Path::new),
+                Some(duration_ms),
+                "error",
+                detail,
+            );
+        }
+
+        if duration_ms > self.slow_request_ms as f64 {
+            self.logger.emit(
+                EVENT_SLOW,
+                &command,
+                path.as_deref().map(Path::new),
+                Some(duration_ms),
+                status,
+                Some(&format!("request exceeded {} ms", self.slow_request_ms)),
+            );
+        }
+
+        response
+    }
+
+    /// Dispatch a daemon command to its handler (the pre-#67
+    /// `handle_command` body, behaviorally unchanged).
+    async fn dispatch_command(&self, cmd: DaemonCommand) -> DaemonResponse {
         match cmd {
             DaemonCommand::Ping => DaemonResponse::Status {
                 status: "ok".to_string(),
@@ -594,6 +841,16 @@ impl TLDRDaemon {
             DaemonCommand::Status { session } => self.handle_status(session).await,
 
             DaemonCommand::Shutdown => {
+                // Issue #67: explicit stops are distinguishable from idle
+                // timeouts and error exits in the persistent log.
+                self.logger.emit(
+                    EVENT_LIFECYCLE,
+                    "daemon",
+                    None,
+                    None,
+                    "ok",
+                    Some("shutdown_command: explicit stop requested"),
+                );
                 self.shutdown();
                 DaemonResponse::Status {
                     status: "shutting_down".to_string(),
@@ -1605,6 +1862,10 @@ impl TLDRDaemon {
             session_stats,
             all_sessions,
             hook_stats,
+            // Issue #67: the observability surface for the persistent log —
+            // `tldr daemon status` surfaces both as additive fields.
+            log_path: Some(self.logger.log_path().to_path_buf()),
+            log_size_bytes: self.logger.log_size_bytes(),
         }
     }
 
@@ -4128,5 +4389,181 @@ mod tests {
         // The project doesn't exist, but daemon construction succeeds.
         // The run() loop would detect this and self-terminate.
         assert!(!fake_path.exists());
+    }
+
+    // =========================================================================
+    // Issue #67 — persistent JSONL request log (lib-level pins; the full
+    // over-IPC suite lives in tests/daemon_contract_coverage_test.rs)
+    // =========================================================================
+
+    /// Every handled command is bracketed by a `request` line and a
+    /// `response` line naming the SAME command, with `duration_ms` present
+    /// on the response and pid/version on every line.
+    #[tokio::test]
+    async fn test_daemon_log_brackets_each_request_with_request_and_response_lines() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().canonicalize().unwrap();
+        let daemon = TLDRDaemon::new(project.clone(), DaemonConfig::default());
+
+        let response = daemon.handle_command(DaemonCommand::Ping).await;
+        assert!(matches!(response, DaemonResponse::Status { .. }));
+
+        let log_path = project
+            .join(".tldr")
+            .join("cache")
+            .join(crate::commands::daemon::logging::DAEMON_LOG_FILENAME);
+        let raw = std::fs::read_to_string(&log_path)
+            .expect("handling a request must write the persistent log");
+        let lines: Vec<serde_json::Value> = raw
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("every log line is valid JSON"))
+            .collect();
+
+        assert_eq!(lines.len(), 2, "request + response line, got: {raw}");
+        assert_eq!(lines[0]["event"], "request");
+        assert_eq!(lines[0]["command"], "ping");
+        assert_eq!(lines[0]["status"], "accepted");
+        assert_eq!(lines[1]["event"], "response");
+        assert_eq!(
+            lines[1]["command"], "ping",
+            "the response names the same command"
+        );
+        assert_eq!(lines[1]["status"], "ok");
+        assert!(
+            lines[1]
+                .get("duration_ms")
+                .and_then(|v| v.as_f64())
+                .is_some(),
+            "response lines carry the request duration"
+        );
+        for line in &lines {
+            assert_eq!(line["pid"], std::process::id());
+            assert_eq!(line["version"], env!("CARGO_PKG_VERSION"));
+        }
+    }
+
+    /// A failed request produces the `error` companion line carrying the
+    /// wire error context (issue #85 family: no silent swallowing).
+    #[tokio::test]
+    async fn test_daemon_log_records_error_context_for_failing_request() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().canonicalize().unwrap();
+        let daemon = TLDRDaemon::new(project.clone(), DaemonConfig::default());
+
+        let response = daemon
+            .handle_command(DaemonCommand::Extract {
+                file: project.join("does_not_exist.py"),
+                session: None,
+            })
+            .await;
+        assert!(matches!(response, DaemonResponse::Error { .. }));
+
+        let log_path = project
+            .join(".tldr")
+            .join("cache")
+            .join(crate::commands::daemon::logging::DAEMON_LOG_FILENAME);
+        let raw = std::fs::read_to_string(&log_path).unwrap();
+        let lines: Vec<serde_json::Value> = raw
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("valid JSON"))
+            .collect();
+        let events: Vec<&str> = lines.iter().filter_map(|l| l["event"].as_str()).collect();
+        assert_eq!(
+            events,
+            vec!["request", "response", "error"],
+            "a failed request brackets AND records the error: {raw}"
+        );
+        let error_line = &lines[2];
+        assert_eq!(error_line["command"], "extract");
+        assert_eq!(error_line["status"], "error");
+        let detail = error_line["detail"].as_str().expect("error detail present");
+        assert!(
+            detail.contains("does_not_exist"),
+            "the error context must identify the failing target, got: {detail}"
+        );
+    }
+
+    /// The injected slow threshold makes the `slow` marker fire without any
+    /// sleeping: threshold 0 means every real request is slow.
+    #[tokio::test]
+    async fn test_daemon_log_slow_marker_fires_with_injected_threshold() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().canonicalize().unwrap();
+        let daemon =
+            TLDRDaemon::new(project.clone(), DaemonConfig::default()).with_slow_request_ms(0);
+
+        daemon.handle_command(DaemonCommand::Ping).await;
+
+        let log_path = project
+            .join(".tldr")
+            .join("cache")
+            .join(crate::commands::daemon::logging::DAEMON_LOG_FILENAME);
+        let raw = std::fs::read_to_string(&log_path).unwrap();
+        let lines: Vec<serde_json::Value> = raw
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("valid JSON"))
+            .collect();
+        let slow: Vec<&serde_json::Value> = lines
+            .iter()
+            .filter(|l| l["event"] == "slow" && l["command"] == "ping")
+            .collect();
+        assert_eq!(slow.len(), 1, "the ping must carry a slow marker: {raw}");
+        assert!(
+            slow[0]
+                .get("duration_ms")
+                .and_then(|v| v.as_f64())
+                .is_some(),
+            "slow markers carry the measured duration"
+        );
+        // The default threshold must NOT have marked the same request slow
+        // twice — exactly one slow line for one request.
+    }
+
+    /// `describe_command` maps commands to their wire-`cmd` spellings and
+    /// extracts the primary target path where one exists.
+    #[test]
+    fn test_describe_command_wire_names_and_paths() {
+        let file = PathBuf::from("/proj/main.py");
+        let (name, path) = describe_command(&DaemonCommand::Extract {
+            file: file.clone(),
+            session: None,
+        });
+        assert_eq!(name, "extract");
+        assert_eq!(path.as_deref(), Some("/proj/main.py"));
+
+        let (name, path) = describe_command(&DaemonCommand::Calls {
+            path: Some(file.clone()),
+            language: None,
+            max_items: None,
+        });
+        assert_eq!(name, "calls");
+        assert_eq!(path.as_deref(), Some("/proj/main.py"));
+
+        for (cmd, expected) in [
+            (DaemonCommand::Ping, "ping"),
+            (DaemonCommand::Status { session: None }, "status"),
+            (DaemonCommand::Shutdown, "shutdown"),
+            (DaemonCommand::Warm { language: None }, "warm"),
+            (
+                DaemonCommand::Search {
+                    pattern: "x".into(),
+                    max_results: None,
+                },
+                "search",
+            ),
+            (
+                DaemonCommand::ChangeImpact {
+                    files: None,
+                    session: None,
+                    git: None,
+                    language: None,
+                },
+                "change_impact",
+            ),
+        ] {
+            let (name, path) = describe_command(&cmd);
+            assert_eq!(name, expected);
+            assert_eq!(path, None, "{expected} has no primary path");
+        }
     }
 }

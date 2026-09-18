@@ -43,10 +43,12 @@
 //! | Cache hit/miss externally observable for daemon-cached commands | [new] `search_stats_are_visible_through_the_status_response`, `repeat_same_file_extract_hits_cache_while_a_different_file_misses`; [existing] CLI `cache stats` JSON (`test_cache_stats_json_output`) |
 //! | Invalidation externally observable | [existing] `test_daemon_calls_cache_invalidated_on_notify` (asserts `stats().invalidations ≥ 1`); [new] same counter observed through the `Status` wire response |
 //! | Errors are delivered with context, not swallowed; daemon stays live | [new] `error_responses_carry_context_over_ipc_and_daemon_stays_live`; [existing] `test_daemon_extract_nonexistent_file`, `test_daemon_diagnostics_returns_error_with_guidance` |
-//! | Shutdown state observable (explicit stop) | [new] `graceful_shutdown_persists_observability_state_and_releases_the_socket` (converts the ignored `daemon_test.rs::test_daemon_graceful_shutdown_persists_stats` placeholder) |
-//! | Idle shutdown observable in a testable config | [new] `idle_timeout_self_terminates_the_daemon` (converts the ignored `test_daemon_idle_timeout` placeholder) |
+//! | Shutdown state observable (explicit stop) | [new] `graceful_shutdown_persists_observability_state_and_releases_the_socket` (converts the ignored `daemon_test.rs::test_daemon_graceful_shutdown_persists_stats` placeholder); [log] `daemon_log_records_request_response_lifecycle_and_shutdown_shape_over_ipc` (log distinguishes `shutdown_command` from `idle_timeout` and error exits) |
+//! | Idle shutdown observable in a testable config | [new] `idle_timeout_self_terminates_the_daemon` (converts the ignored `test_daemon_idle_timeout` placeholder); [log] same test suite asserts the `idle_timeout` lifecycle line shape via the lib pins in `daemon_impl::tests` |
 //! | Startup metadata: project/pid/socket persisted | [existing] registry + discovery records (`val003_daemon_registry_test.rs`, `daemon_active.rs` lib tests); [new] e2e start output carries `pid` + `socket` |
-//! | Persistent `.tldr/daemon.log` with per-request traces, slow-request and local-fallback entries; version metadata | [gap] **no persistent log file exists anywhere in the daemon** — the only logging is four `eprintln!` lifecycle events (connection/accept errors, project-gone, idle timeout). Issue #67's premise ("the daemon now writes persistent logs") does not match the code. Needs a structured-logging feature (follow-up), not tests |
+//! | Persistent `.tldr/cache/daemon.log` with per-request traces, slow/error markers, version metadata | [IMPLEMENTED — was a gap] `commands/daemon/logging.rs` writes append-only JSONL `{ts, pid, version, event, command, path?, duration_ms?, status, detail?}` next to `salsa_stats.json`, capped at `MAX_LOG_BYTES` (truncate-and-restart), best-effort (write failures counted, never fatal). Tests: `daemon_log_records_request_response_lifecycle_and_shutdown_shape_over_ipc`, `slow_marker_fires_when_the_threshold_is_injected`, `error_events_carry_request_context_in_the_log_over_ipc`, `log_is_truncated_when_it_exceeds_the_cap`, `status_response_exposes_log_path_and_log_size_bytes`, plus lib pins in `logging.rs` and `daemon_impl::tests` |
+//! | Local fallback visibility | [IMPLEMENTED at the shared choke point] `try_daemon_route_async` appends a `fallback` line through the SAME shared helper (`logging::log_client_fallback`) — `client_fallback_is_logged_by_the_shared_router_helper`. Commands WITHOUT a daemon route (client-local enriched search) remain out of the log's scope: there is no shared choke point to hook, documented in `logging.rs` |
+//! | Cache hit/miss per line | [documented, out of scope] the log records per-request command/status/duration; hit/miss stays observable through `FullStatus.salsa_stats` (counters) — a `cache: hit|miss` log field would require threading per-request cache outcomes out of every handler arm (future work) |
 //!
 //! ## Issue #68 — ignored placeholder cleanup (lifecycle)
 //!
@@ -123,10 +125,19 @@ async fn start_in_process_daemon(
     project: &Path,
     config: DaemonConfig,
 ) -> tokio::task::JoinHandle<DaemonResult<()>> {
+    start_prebuilt_daemon(project, TLDRDaemon::new(project.to_path_buf(), config)).await
+}
+
+/// Variant of [`start_in_process_daemon`] that takes an already-constructed
+/// (possibly customized) daemon — the hook the #67 slow-threshold test uses
+/// to inject `with_slow_request_ms(0)` without sleeps.
+async fn start_prebuilt_daemon(
+    project: &Path,
+    daemon: TLDRDaemon,
+) -> tokio::task::JoinHandle<DaemonResult<()>> {
     let listener = IpcListener::bind(project)
         .await
         .expect("IPC listener bind on a fresh tempdir must succeed");
-    let daemon = TLDRDaemon::new(project.to_path_buf(), config);
     let handle = tokio::spawn(async move { Arc::new(daemon).run(listener).await });
 
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -265,6 +276,10 @@ async fn graceful_shutdown_persists_observability_state_and_releases_the_socket(
 /// (no Shutdown command is ever sent). Converts the ignored
 /// `test_daemon_idle_timeout` placeholder, which only documented the
 /// behaviour in comments.
+///
+/// Issue #67 extension: the idle exit must also be visible in the
+/// persistent log as an `idle_timeout` lifecycle line, distinguishable
+/// from the explicit-stop `shutdown_command` line.
 #[tokio::test]
 async fn idle_timeout_self_terminates_the_daemon() {
     let temp = project_dir("dc-idle-");
@@ -289,6 +304,37 @@ async fn idle_timeout_self_terminates_the_daemon() {
     assert!(
         !check_socket_alive(&project).await,
         "an idle-shut-down daemon must not accept connections"
+    );
+
+    // The log reconstructs the session: started → idle_timeout → stopped,
+    // with NO shutdown_command line (no explicit stop ever happened).
+    let raw = std::fs::read_to_string(tldr_cli::commands::daemon::daemon_log_path(&project))
+        .expect("an idle self-termination must still leave the persistent log");
+    let log: Vec<serde_json::Value> = raw
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("valid JSON line"))
+        .collect();
+    let lifecycle_details: Vec<&str> = log
+        .iter()
+        .filter(|l| l["event"] == "lifecycle")
+        .filter_map(|l| l["detail"].as_str())
+        .collect();
+    assert!(
+        lifecycle_details
+            .iter()
+            .any(|d| d.starts_with("idle_timeout")),
+        "the idle exit must be logged as an idle_timeout lifecycle line: {lifecycle_details:?}"
+    );
+    assert!(
+        lifecycle_details.contains(&"started") && lifecycle_details.contains(&"stopped"),
+        "the session must open and close in the log: {lifecycle_details:?}"
+    );
+    assert!(
+        !lifecycle_details
+            .iter()
+            .any(|d| d.starts_with("shutdown_command")),
+        "an idle exit must not be recorded as an explicit stop: {lifecycle_details:?}"
     );
 }
 
@@ -899,4 +945,433 @@ async fn track_flush_persists_stats_exactly_at_the_threshold() {
         .expect("daemon exits after shutdown")
         .expect("run task must not panic")
         .expect("graceful shutdown returns Ok");
+}
+
+// =============================================================================
+// Issue #67 — persistent JSONL request log (the implemented contract)
+// =============================================================================
+
+/// The daemon log path for a project: `<project>/.tldr/cache/daemon.log`,
+/// next to `query_cache.bin` / `salsa_stats.json`.
+fn log_file(project: &Path) -> std::path::PathBuf {
+    tldr_cli::commands::daemon::daemon_log_path(project)
+}
+
+/// Parse every non-empty line of the log into a JSON object (every line
+/// must be valid JSON — the JSONL contract).
+fn read_log(project: &Path) -> Vec<serde_json::Value> {
+    let raw = std::fs::read_to_string(log_file(project)).expect("daemon.log must exist");
+    raw.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("line {l:?} not JSON: {e}")))
+        .collect()
+}
+
+/// Events of the parsed log as `("event", "command")` pairs.
+fn event_pairs(log: &[serde_json::Value]) -> Vec<(String, String)> {
+    log.iter()
+        .map(|l| {
+            (
+                l["event"].as_str().expect("event is a string").to_string(),
+                l["command"]
+                    .as_str()
+                    .expect("command is a string")
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Start the daemon, serve a Ping and a real Extract, stop it, and verify
+/// the persistent log: a `started` lifecycle line, request/response pairs
+/// naming the same command (response with `duration_ms`), an explicit-stop
+/// `shutdown_command` line, a closing `stopped` line, and pid/version
+/// metadata on every line. Timestamps are never asserted by value
+/// (issue #67: stable names/fields only).
+#[tokio::test]
+async fn daemon_log_records_request_response_lifecycle_and_shutdown_shape_over_ipc() {
+    let temp = project_dir("dc-log-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    let pong = send_command(&project, &DaemonCommand::Ping)
+        .await
+        .expect("ping round-trip");
+    assert!(matches!(pong, DaemonResponse::Status { .. }));
+
+    let utils = project.join("utils.py");
+    let extract = send_command(
+        &project,
+        &DaemonCommand::Extract {
+            file: utils.clone(),
+            session: None,
+        },
+    )
+    .await
+    .expect("extract round-trip");
+    assert!(matches!(extract, DaemonResponse::Result(_)));
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+
+    let log = read_log(&project);
+    assert!(!log.is_empty(), "a served session must leave log lines");
+
+    // Every line carries the process metadata and the required fields.
+    for line in &log {
+        assert_eq!(line["pid"], std::process::id(), "line: {line}");
+        assert_eq!(
+            line["version"],
+            env!("CARGO_PKG_VERSION"),
+            "the version metadata matches `tldr --version`: {line}"
+        );
+        assert!(line.get("ts").and_then(|v| v.as_str()).is_some(), "{line}");
+        assert!(line.get("status").is_some(), "{line}");
+    }
+
+    // Session shape: started → request/response pairs → shutdown_command → stopped.
+    let pairs = event_pairs(&log);
+    assert_eq!(
+        pairs.first().map(|(e, c)| (e.as_str(), c.as_str())),
+        Some(("lifecycle", "daemon")),
+        "the session must open with a lifecycle line"
+    );
+    assert_eq!(
+        log[0]["detail"], "started",
+        "the opening lifecycle line marks the start: {:?}",
+        log[0]
+    );
+    assert_eq!(
+        pairs.last().map(|(e, c)| (e.as_str(), c.as_str())),
+        Some(("lifecycle", "daemon")),
+        "the session must close with a lifecycle line"
+    );
+    assert_eq!(
+        log.last().unwrap()["detail"],
+        "stopped",
+        "the closing lifecycle line marks the stop: {:?}",
+        log.last().unwrap()
+    );
+    assert!(
+        log.iter().any(|l| l["event"] == "lifecycle"
+            && l["detail"] == "shutdown_command: explicit stop requested"),
+        "an explicit stop is distinguishable from an idle timeout or an \
+         error exit in the log: {pairs:?}"
+    );
+
+    // Per-request traces: request + response lines naming the same command.
+    // The Shutdown arm emits its `shutdown_command` lifecycle line BETWEEN
+    // the request and response brackets (documented shape), so adjacency is
+    // asserted per-command.
+    for (command, expected_status, adjacent) in [
+        ("ping", "ok", true),
+        ("extract", "ok", true),
+        ("shutdown", "ok", false),
+    ] {
+        let i = pairs
+            .iter()
+            .position(|(e, c)| e == "request" && c == command)
+            .unwrap_or_else(|| {
+                panic!("exactly the served {command} request must be logged: {pairs:?}")
+            });
+        if adjacent {
+            assert_eq!(
+                pairs[i + 1],
+                ("response".to_string(), command.to_string()),
+                "the {command} request must be immediately followed by its response line: {pairs:?}"
+            );
+        } else {
+            // shutdown: the explicit-stop lifecycle line sits between the
+            // brackets (distinguishing it from idle/error exits).
+            assert_eq!(
+                pairs[i + 1],
+                ("lifecycle".to_string(), "daemon".to_string()),
+                "the shutdown request must carry its explicit-stop lifecycle line: {pairs:?}"
+            );
+            assert_eq!(
+                log[i + 1]["detail"],
+                "shutdown_command: explicit stop requested",
+                "{:?}",
+                log[i + 1]
+            );
+            assert_eq!(
+                pairs[i + 2],
+                ("response".to_string(), command.to_string()),
+                "the shutdown response must close the brackets: {pairs:?}"
+            );
+        }
+        let response = &log[i + 1 + usize::from(!adjacent)];
+        assert_eq!(response["event"], "response");
+        assert_eq!(response["status"], expected_status, "{response}");
+        assert!(
+            response
+                .get("duration_ms")
+                .and_then(|v| v.as_f64())
+                .is_some(),
+            "response lines carry the duration: {response}"
+        );
+    }
+
+    // The extract request line names the file it served.
+    let extract_request = &log[pairs
+        .iter()
+        .position(|(e, c)| e == "request" && c == "extract")
+        .unwrap()];
+    assert_eq!(
+        extract_request["path"],
+        utils.to_string_lossy().as_ref(),
+        "request lines carry the command's target path: {extract_request}"
+    );
+}
+
+/// The slow-request marker: with the threshold injected to 0 (the
+/// test-visible `with_slow_request_ms` hook — no sleeps needed), every
+/// served request gets a `slow` companion line carrying the duration.
+#[tokio::test]
+async fn slow_marker_fires_when_the_threshold_is_injected() {
+    let temp = project_dir("dc-slow-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+
+    let daemon = TLDRDaemon::new(project.to_path_buf(), default_config()).with_slow_request_ms(0);
+    let handle = start_prebuilt_daemon(&project, daemon).await;
+
+    send_command(&project, &DaemonCommand::Ping)
+        .await
+        .expect("ping round-trip");
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+
+    let log = read_log(&project);
+    let pairs = event_pairs(&log);
+    let slow: Vec<&serde_json::Value> = log.iter().filter(|l| l["event"] == "slow").collect();
+    assert!(
+        !slow.is_empty(),
+        "with threshold 0 at least one request must be marked slow: {pairs:?}"
+    );
+    assert!(
+        slow.iter().any(|l| l["command"] == "ping"),
+        "the ping request must be among the slow-marked: {pairs:?}"
+    );
+    for line in &slow {
+        assert!(
+            line.get("duration_ms").and_then(|v| v.as_f64()).is_some(),
+            "slow lines carry the measured duration: {line}"
+        );
+    }
+}
+
+/// A failing request over IPC produces the `error` companion line carrying
+/// the request's context — the #85-family silent-swallowing gap closed in
+/// the persistent log.
+#[tokio::test]
+async fn error_events_carry_request_context_in_the_log_over_ipc() {
+    let temp = project_dir("dc-logerr-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    let failing = send_command(
+        &project,
+        &DaemonCommand::Extract {
+            file: project.join("does_not_exist.py"),
+            session: None,
+        },
+    )
+    .await
+    .expect("the failing request still gets a wire response");
+    assert!(matches!(failing, DaemonResponse::Error { .. }));
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+
+    let log = read_log(&project);
+    let extract_errors: Vec<&serde_json::Value> = log
+        .iter()
+        .filter(|l| l["event"] == "error" && l["command"] == "extract")
+        .collect();
+    assert_eq!(
+        extract_errors.len(),
+        1,
+        "one failed extract request = one error line carrying its context: {log:?}"
+    );
+    let error = extract_errors[0];
+    assert_eq!(error["command"], "extract");
+    assert_eq!(error["status"], "error");
+    let detail = error["detail"]
+        .as_str()
+        .expect("error line carries context");
+    assert!(
+        detail.contains("does_not_exist"),
+        "the error context must identify the failing target: {detail}"
+    );
+}
+
+/// Bounds contract: a log pushed past `MAX_LOG_BYTES` is truncated on the
+/// next daemon start (truncate-and-restart), and the new session appends
+/// fresh lines.
+#[tokio::test]
+async fn log_is_truncated_when_it_exceeds_the_cap() {
+    let temp = project_dir("dc-rotate-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+
+    let max_bytes = tldr_cli::commands::daemon::MAX_LOG_BYTES;
+    let log_path = log_file(&project);
+    std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+    let filler = "x".repeat(max_bytes as usize + 1024);
+    std::fs::write(&log_path, &filler).unwrap();
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+    send_command(&project, &DaemonCommand::Ping)
+        .await
+        .expect("ping round-trip");
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+
+    let size = std::fs::metadata(&log_path).unwrap().len();
+    assert!(
+        size <= max_bytes,
+        "the log must be truncated at the cap, got {size} bytes"
+    );
+    let log = read_log(&project);
+    assert!(
+        !log.is_empty(),
+        "after rotation the fresh session's lines remain"
+    );
+    assert_eq!(
+        log[0]["detail"], "started",
+        "the surviving content is the NEW session's, not the filler"
+    );
+}
+
+/// The observability surface: `Status` over IPC exposes the additive
+/// `log_path` + `log_size_bytes` fields pointing at the live log.
+#[tokio::test]
+async fn status_response_exposes_log_path_and_log_size_bytes() {
+    let temp = project_dir("dc-logstatus-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    send_command(&project, &DaemonCommand::Ping)
+        .await
+        .expect("ping round-trip");
+
+    let status = send_command(&project, &DaemonCommand::Status { session: None })
+        .await
+        .expect("status round-trip");
+    let (log_path, log_size_bytes) = match status {
+        DaemonResponse::FullStatus {
+            log_path,
+            log_size_bytes,
+            ..
+        } => (log_path, log_size_bytes),
+        other => panic!("expected FullStatus, got {other:?}"),
+    };
+    assert_eq!(
+        log_path.as_deref(),
+        Some(log_file(&project).as_path()),
+        "log_path must point at the project's daemon.log"
+    );
+    let reported = log_size_bytes.expect("log_size_bytes must be present");
+    assert!(reported > 0, "the served session already logged lines");
+    let actual = std::fs::metadata(log_file(&project)).unwrap().len();
+    assert!(
+        reported <= actual,
+        "the reported size cannot exceed the real file (only grows): {reported} > {actual}"
+    );
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+}
+
+/// Local-fallback visibility: after the daemon is gone, a CLI command
+/// routed through `try_daemon_route_async` falls back to direct compute and
+/// appends a `fallback` line to the SAME project log via the shared helper
+/// (the fallback is never silent). Client-side fallbacks in commands with
+/// NO daemon route stay out of the log's scope (documented).
+#[tokio::test]
+async fn client_fallback_is_logged_by_the_shared_router_helper() {
+    use tldr_cli::commands::daemon_router::try_daemon_route_async;
+
+    let temp = project_dir("dc-fallback-");
+    let project = temp.path().canonicalize().unwrap();
+    write_python_project(&project);
+
+    // A daemon ran once (the log exists), then stopped.
+    let handle = start_in_process_daemon(&project, default_config()).await;
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+    assert!(
+        !check_socket_alive(&project).await,
+        "precondition: the daemon is down"
+    );
+
+    // CLI-side routing attempt → no daemon → fallback logged.
+    let routed: Option<serde_json::Value> = try_daemon_route_async(
+        &project,
+        "calls",
+        serde_json::json!({ "language": "python" }),
+    )
+    .await;
+    assert!(routed.is_none(), "a dead daemon route must yield None");
+
+    let log = read_log(&project);
+    let fallbacks: Vec<&serde_json::Value> = log
+        .iter()
+        .filter(|l| l["event"] == "fallback" && l["command"] == "calls")
+        .collect();
+    assert_eq!(
+        fallbacks.len(),
+        1,
+        "the failed daemon route must leave exactly one fallback line: {log:?}"
+    );
+    let detail = fallbacks[0]["detail"].as_str().unwrap_or("");
+    assert!(
+        detail.contains("daemon"),
+        "the fallback line says WHY the daemon route failed: {detail}"
+    );
+    assert_eq!(fallbacks[0]["pid"], std::process::id());
 }

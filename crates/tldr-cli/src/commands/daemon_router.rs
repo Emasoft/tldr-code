@@ -9,6 +9,15 @@
 //! If the daemon is running and responds successfully, the cached result is returned.
 //! Otherwise, the command falls back to computing the result directly.
 //!
+//! # Fallback observability (issue #67)
+//!
+//! Every `return None` after the IPC attempt appends a `fallback` line to
+//! the project's persistent daemon log (`<project>/.tldr/cache/daemon.log`)
+//! through the shared [`crate::commands::daemon::logging`] helper — the
+//! daemon-to-local fallback is never silent. The helper is best-effort and
+//! never creates the log file itself: projects that never ran a daemon gain
+//! no new state from a plain direct-compute command.
+//!
 //! # Performance
 //!
 //! The daemon maintains Salsa-style query memoization, providing ~35x speedup
@@ -20,6 +29,7 @@ use serde::de::DeserializeOwned;
 
 use crate::commands::daemon::error::DaemonError;
 use crate::commands::daemon::ipc::send_raw_command;
+use crate::commands::daemon::logging::log_client_fallback;
 
 // =============================================================================
 // Core Router Function
@@ -97,22 +107,47 @@ pub async fn try_daemon_route_async<T: DeserializeOwned>(
     };
 
     // Send to daemon
+    //
+    // Issue #67: every failure of the daemon route is a CLIENT-side
+    // fallback to direct compute, and it must not be silent. Each
+    // `return None` below appends a `fallback` line to the project's
+    // persistent daemon log (`<project>/.tldr/cache/daemon.log`) through
+    // the shared daemon/CLI helper — best-effort, and only when the log
+    // already exists (the helper never creates daemon state in projects
+    // that never ran a daemon).
     let response = match send_raw_command(&project, &command_json).await {
         Ok(resp) => resp,
-        Err(DaemonError::NotRunning) => return None,
-        Err(DaemonError::ConnectionRefused) => return None,
-        Err(_) => return None,
+        Err(DaemonError::NotRunning) => {
+            log_client_fallback(&project, endpoint, "daemon not running");
+            return None;
+        }
+        Err(DaemonError::ConnectionRefused) => {
+            log_client_fallback(&project, endpoint, "daemon connection refused");
+            return None;
+        }
+        Err(e) => {
+            log_client_fallback(&project, endpoint, &format!("daemon ipc error: {}", e));
+            return None;
+        }
     };
 
     // Parse response - check for error response first
     let response_value: serde_json::Value = match serde_json::from_str(&response) {
         Ok(v) => v,
-        Err(_) => return None,
+        Err(e) => {
+            log_client_fallback(
+                &project,
+                endpoint,
+                &format!("unparseable daemon response: {}", e),
+            );
+            return None;
+        }
     };
 
     // Check if response is an error
     if let Some(status) = response_value.get("status") {
         if status == "error" {
+            log_client_fallback(&project, endpoint, "daemon returned an error response");
             return None;
         }
     }
@@ -128,7 +163,17 @@ pub async fn try_daemon_route_async<T: DeserializeOwned>(
     };
 
     // Deserialize to target type
-    serde_json::from_value(result_value).ok()
+    match serde_json::from_value(result_value) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            log_client_fallback(
+                &project,
+                endpoint,
+                &format!("daemon response did not deserialize: {}", e),
+            );
+            None
+        }
+    }
 }
 
 /// Check if the daemon is running for a project.
