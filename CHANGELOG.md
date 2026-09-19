@@ -463,10 +463,20 @@
   sites share the chunker: `tldr structure` merges per-chunk definitions and doclinks;
   `tldr imports` concatenates per-chunk `$ref`/`extends` links (ImportInfo carries no spans).
   **Honesty for the unfixable case:** a `---`-less single document longer than 32 768 lines cannot be
-  split — the structure path now warns (`"...exceeds the tree-sitter-yaml line limit (32768 lines —
-  the grammar's scanner tracks rows as int16 and overflows above it)..."`) instead of extracting in
-  silence, and a chunk that still fails to parse warns the same way; the imports path has no warning
-  channel (documented in `ast::imports`). Proof: the previously `#[ignore]`d defect-pin test
+  split — its chunk's parse always aborts. The structure path now REPLACES the aborted tree's
+  truncated prefix with a **native top-level outline** (`ast::yaml_native`, yaml-native-outline-v1):
+  a deterministic line scan that emits one `key` definition per column-0 top-level mapping key —
+  comments, `---`/`...`, sequence entries and every indented line (nested keys, block-scalar bodies)
+  excluded by the first-character test; a key's region spans everything up to the next column-0 key
+  so nested blocks stay attached to their owner; quoted keys are unquoted; the colon must be followed
+  by space/tab/EOL (the YAML mapping form, which also rejects bare URLs); the scan stops at a
+  100 000-key paranoia budget and says so. Byte spans slice back exactly and lines map to full-file
+  coordinates (`byte_base`/`line_base` applied in the scanner). The abort warning is REPLACED by an
+  informational one — `"...single document exceeds the grammar's 32768-line limit; native top-level
+  outline used (N keys)"` — so a 40k-line single mapping now yields all 40 000 keys where it
+  previously yielded the truncated prefix plus a truncation warning. Ordinary parse failures at or
+  under the line limit keep the old best-effort + warning path, and the imports path still has no
+  warning channel (documented in `ast::imports`). Proof: the previously `#[ignore]`d defect-pin test
   `yaml_100mib_byte_exact` now runs green — a 100 MiB / ~2.86M-document fixture extracts ~8.6M
   byte-exact definitions in ~32 s (release) — and the full 13-format 100 MiB suite passes 13/13.
 - **`tldr explain --depth` actually scopes the project-callers traversal now.** It was declared in

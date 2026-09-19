@@ -76,9 +76,13 @@
 //! caller keeps the single whole-file parse (byte-identical behaviour, no
 //! renumbering, no new code paths). A `---`-less single document above the
 //! threshold cannot be split — it returns as ONE chunk whose parse aborts
-//! exactly as before, and the caller MUST surface that through `warnings`
-//! (the structure path does; the imports path has no warning channel and
-//! documents the silence in `ast::imports`).
+//! exactly as before. On the structure path that abort is no longer the end
+//! of the story: the chunk merger swaps the aborted tree's truncated prefix
+//! for the NATIVE TOP-LEVEL OUTLINE (`ast::yaml_native`), which recovers
+//! the document's column-0 mapping keys as definitions and reports the
+//! swap through an informational warning. The imports path has no warning
+//! channel and contributes only the parseable prefix — documented silence
+//! in `ast::imports`.
 
 use tree_sitter::Tree;
 
@@ -132,7 +136,9 @@ pub struct YamlChunk {
 impl YamlChunk {
     /// `true` when the segment's parse produced error nodes — for a segment
     /// at or under [`YAML_LINE_LIMIT`] this is a malformed-yaml signal, for a
-    /// longer un-splittable segment it is the int16-row abort itself.
+    /// longer un-splittable segment it is the int16-row abort itself (which
+    /// the structure-path merger routes to the native outline,
+    /// `ast::yaml_native`).
     pub fn has_error(&self) -> bool {
         self.tree.root_node().has_error()
     }
@@ -148,8 +154,10 @@ pub fn should_chunk(source: &str) -> bool {
 /// Returns exactly one chunk for sources at or under
 /// [`YAML_CHUNK_THRESHOLD_BYTES`] (the plain single parse, offsets 0) and for
 /// sources with no column-0 `---` document starts (nothing to split on — a
-/// single document; if it is over [`YAML_LINE_LIMIT`] lines the parse aborts
-/// and the CALLER must warn). Never returns an empty vec.
+/// single document; if it is over [`YAML_LINE_LIMIT`] lines the parse
+/// aborts, and the structure-path merger replaces the aborted tree with the
+/// native top-level outline — `ast::yaml_native`). Never returns an empty
+/// vec.
 pub fn parse_yaml_chunks(source: &str) -> Vec<YamlChunk> {
     if !should_chunk(source) {
         return vec![whole_source_chunk(source)];
@@ -216,7 +224,9 @@ fn whole_source_chunk(source: &str) -> YamlChunk {
 
 /// Byte offset one past the last non-newline byte at or before `end` — the
 /// parseable text of a non-final chunk (see [`parse_yaml_chunks_with`]).
-fn trim_trailing_newlines(source: &str, mut end: usize) -> usize {
+/// Also used by the native outline (`ast::yaml_native`) to end a key's
+/// region at its last content byte.
+pub(crate) fn trim_trailing_newlines(source: &str, mut end: usize) -> usize {
     let bytes = source.as_bytes();
     while end > 0 && matches!(bytes[end - 1], b'\n' | b'\r') {
         end -= 1;
@@ -747,16 +757,18 @@ mod large_file {
         }
     }
 
-    /// THE honesty pin (STEP 3): a `---`-less single document too long for
-    /// the grammar's int16 row counter cannot be chunked — its parse aborts
-    /// exactly as before, and the structure path must SAY SO instead of
-    /// silently extracting zero definitions.
+    /// THE fallback pin (yaml-native-outline-v1): a `---`-led single
+    /// document too long for the grammar's int16 row counter cannot be
+    /// chunked — its parse aborts, and the structure path REPLACES the
+    /// aborted tree's truncated prefix with the native top-level outline:
+    /// every top-level key on disk, byte-exact, one informational warning.
     #[test]
-    fn structure_over_threshold_single_doc_warns() {
-        // 40k lines / ~700 KB: over BOTH the chunk threshold and the 32768
-        // line limit, with no document marker to split on.
+    fn structure_over_threshold_single_doc_native_outline() {
+        // 40k lines / ~720 KB: over BOTH the chunk threshold and the 32768
+        // line limit, with no further document marker to split on.
+        let n = 40_000;
         let mut source = String::from("---\n");
-        for i in 0..40_000 {
+        for i in 0..n {
             source.push_str(&format!("key-{i}: value-{i}\n"));
         }
         assert!(should_chunk(&source));
@@ -768,25 +780,147 @@ mod large_file {
             ..
         } = crate::get_code_structure(&path, Language::Yaml, 0, None).expect("structure");
         assert_eq!(files_skipped, 0, "the file is analysed, not skipped");
-        assert_eq!(warnings.len(), 1, "exactly one honesty warning");
+        assert_eq!(warnings.len(), 1, "exactly one informational warning");
         assert!(warnings[0].contains(&path.display().to_string()));
         assert!(
-            warnings[0].contains("line limit"),
+            warnings[0].contains("single document exceeds the grammar's 32768-line limit"),
             "warning must name the mechanism: {}",
             warnings[0]
         );
-        assert!(warnings[0].contains("int16"));
-        // Best effort: the aborted tree still holds the parseable PREFIX
-        // (everything before source row 32768), so the extraction is
-        // truncated — not empty, and far short of the 40k keys on disk.
-        // The point of the warning is that the truncation is NAMED.
-        let defs = &files[0].definitions;
-        assert!(!defs.is_empty(), "the parseable prefix must still extract");
         assert!(
-            defs.len() < 40_000,
-            "the abort must truncate: got {} definitions",
+            warnings[0].contains("native top-level outline used (40000 keys)"),
+            "warning must carry the outline count: {}",
+            warnings[0]
+        );
+        assert!(
+            !warnings[0].contains("Skipped sections"),
+            "nothing is skipped — the outline covers the document: {}",
+            warnings[0]
+        );
+        // EVERY top-level key on disk is now a definition (was: the aborted
+        // tree's truncated prefix, far short of 40k), each an exact
+        // byte-slice-back of its key line.
+        let defs = &files[0].definitions;
+        assert_eq!(defs.len(), n, "every top-level key extracts");
+        for (i, def) in defs.iter().enumerate() {
+            assert_eq!(def.kind, "key");
+            assert_eq!(def.name, format!("key-{i}"));
+            assert_eq!(def.container, None, "host-structure keys, no container");
+            // Flat mapping: the key's region is exactly its own line; the
+            // `---` marker occupies line 1, so key i sits on line i+2.
+            assert_eq!(def.line_start, (i + 2) as u32, "line of key {i}");
+            assert_eq!(def.line_end, def.line_start, "region of key {i}");
+            assert_eq!(def.definition_line, Some((i + 2) as u32));
+            // Exact byte slice-back; only the file's LAST key swallows the
+            // trailing newline (the single-parse EOF convention).
+            let expected = if i + 1 == n {
+                format!("key-{i}: value-{i}\n")
+            } else {
+                format!("key-{i}: value-{i}")
+            };
+            assert_eq!(
+                &source[def.byte_start.unwrap() as usize..def.byte_end.unwrap() as usize],
+                expected,
+                "exact slice-back for key {i}"
+            );
+            assert_eq!(def.signature, expected.trim_end(), "signature of key {i}");
+        }
+    }
+
+    /// Ordinary parse failures stay on the OLD path (the yaml-native
+    /// engage condition): a chunk that errors at or under the 32768-line
+    /// limit is malformed yaml, NOT the row overflow — its best-effort
+    /// extraction and the plain warning are unchanged, and the native
+    /// outline does NOT fire.
+    #[test]
+    fn structure_syntax_error_below_limit_keeps_the_old_warning() {
+        // 20k docs × 5 lines = 100k lines / ~740 KB — chunked, every chunk
+        // coalesced to ≤ 8192 lines. ONE document carries a REAL syntax
+        // error (an unclosed flow sequence) inside a chunk far below the
+        // line limit.
+        let n = 20_000;
+        let bad = 9_876;
+        let mut source = String::new();
+        for i in 0..n {
+            if i == bad {
+                source.push_str(&format!("---\nid: unit-{i}\nitems: [unclosed\n"));
+            } else {
+                source.push_str(&doc(i));
+            }
+        }
+        assert!(should_chunk(&source));
+        let (_dir, path) = write_temp(&source);
+        let CodeStructure {
+            files, warnings, ..
+        } = crate::get_code_structure(&path, Language::Yaml, 0, None).expect("structure");
+        assert_eq!(
+            warnings.len(),
+            1,
+            "exactly the old parse-failure warning: {warnings:?}"
+        );
+        assert!(
+            warnings[0].contains("failed to parse cleanly"),
+            "the old warning text must stay: {}",
+            warnings[0]
+        );
+        assert!(
+            !warnings[0].contains("native top-level outline"),
+            "the native outline must NOT engage below the line limit: {}",
+            warnings[0]
+        );
+        // The clean majority still extracts (document + id + items per
+        // unit). No exact-count pin: the chunk holding the malformed
+        // document can be swallowed by flow-context error recovery (an
+        // unclosed `[` consumes to the chunk's EOF) — that is exactly what
+        // the warning's "structure may be incomplete" names, and the
+        // damage radius is error-recovery-dependent. The contract here is
+        // the WARNING text and the native outline staying disengaged.
+        let defs = &files[0].definitions;
+        assert!(
+            defs.len() > (n - 2_000) * 3,
+            "the clean majority must extract: {} defs",
             defs.len()
         );
+        assert!(
+            defs.len() < n * 3,
+            "the malformed section must not be fully extracted: {} defs",
+            defs.len()
+        );
+    }
+
+    /// A `---`-less giant file (no document marker at all) gets the same
+    /// native-outline treatment end-to-end: every top-level key as a
+    /// definition where the pre-chunking engine extracted ZERO.
+    #[test]
+    fn structure_markerless_giant_single_doc_native_outline() {
+        let n = 40_000;
+        let mut source = String::new();
+        for i in 0..n {
+            source.push_str(&format!("setting-{i}: {i}\n"));
+        }
+        assert!(should_chunk(&source));
+        let (_dir, path) = write_temp(&source);
+        let CodeStructure {
+            files, warnings, ..
+        } = crate::get_code_structure(&path, Language::Yaml, 0, None).expect("structure");
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("native top-level outline used (40000 keys)"),
+            "{}",
+            warnings[0]
+        );
+        let defs = &files[0].definitions;
+        assert_eq!(defs.len(), n, "definitions present, was zero");
+        // No `---` line: the first key is on line 1.
+        assert_eq!(defs[0].name, "setting-0");
+        assert_eq!(defs[0].line_start, 1);
+        assert_eq!(defs[0].definition_line, Some(1));
+        assert_eq!(
+            &source[defs[0].byte_start.unwrap() as usize..defs[0].byte_end.unwrap() as usize],
+            "setting-0: 0"
+        );
+        assert_eq!(defs[n - 1].name, format!("setting-{}", n - 1));
+        assert_eq!(defs[n - 1].line_start, n as u32);
     }
     /// The imports path merges per-chunk doclinks — no spans, plain
     /// concatenation in source order, nothing lost at chunk boundaries.

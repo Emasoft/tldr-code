@@ -712,7 +712,13 @@ fn extract_file_structure(
 /// Honesty: a chunk whose parse still errors is kept best-effort (whatever
 /// its partial tree contains) AND surfaces a warning here — the structure
 /// path is where "yaml extracted nothing" must become visible instead of
-/// silent.
+/// silent. The ONE exception is the LINE-LIMIT ABORT (yaml-native-outline-
+/// v1): a single document longer than the grammar's 32768-row ceiling
+/// cannot be split, its parse always aborts, and the aborted tree holds
+/// only a truncated prefix — there the tree extraction is REPLACED by the
+/// native top-level outline (`ast::yaml_native`) and the abort warning by
+/// an informational one. Ordinary parse failures at or under the line limit
+/// keep the old best-effort + warning path.
 pub(crate) fn merge_yaml_chunk_structure(
     path: &Path,
     relative_path: std::path::PathBuf,
@@ -726,51 +732,68 @@ pub(crate) fn merge_yaml_chunk_structure(
 
     for chunk in &chunks {
         let chunk_slice = &source[chunk.byte_base..chunk.byte_end];
+        let chunk_lines = chunk_slice.lines().count() as u32;
 
-        let mut chunk_defs = extract_definitions(&chunk.tree, chunk_slice, Language::Yaml);
-        // `host = None`: yaml has no script elements, and the chunk slice has
-        // no host file name to give anyway (script-inner-js-v1 is inert here).
-        chunk_defs.extend(super::elements::extract_elements(
-            Language::Yaml,
-            &chunk.tree,
-            chunk_slice,
-            None,
-        ));
-        for def in chunk_defs.iter_mut() {
-            crate::ast::yaml_chunk::translate_definition(def, chunk.byte_base, chunk.line_base);
+        // A chunk spanning more than the grammar's line limit is an
+        // un-splittable single document — the int16-row abort itself, the
+        // one case chunking cannot fix. The aborted tree holds only the
+        // parseable prefix, so instead of extracting that truncation the
+        // chunk's definitions are REPLACED by the native top-level outline
+        // (`ast::yaml_native`): every column-0 mapping key, byte-exact,
+        // with an informational warning instead of the abort warning.
+        // Engage condition is exact: has_error AND over the line limit.
+        // Ordinary parse failures (malformed yaml, the pathological
+        // column-0 `---` mid-scalar cut) are at or under the limit and
+        // never reach this branch.
+        if chunk.has_error() && chunk_lines > crate::ast::yaml_chunk::YAML_LINE_LIMIT {
+            let (native_defs, native_warnings) = crate::ast::yaml_native::scan_yaml_outline_native(
+                chunk_slice,
+                chunk.byte_base,
+                chunk.line_base,
+            );
+            for w in native_warnings {
+                warnings.push(format!("{}: {}", path.display(), w));
+            }
+            // Native definitions are emitted in FULL-FILE coordinates —
+            // no `translate_definition` pass — and carry no `document`
+            // elements, so `next_doc_no` is untouched for later chunks.
+            definitions.extend(native_defs);
+        } else {
+            let mut chunk_defs = extract_definitions(&chunk.tree, chunk_slice, Language::Yaml);
+            // `host = None`: yaml has no script elements, and the chunk slice has
+            // no host file name to give anyway (script-inner-js-v1 is inert here).
+            chunk_defs.extend(super::elements::extract_elements(
+                Language::Yaml,
+                &chunk.tree,
+                chunk_slice,
+                None,
+            ));
+            for def in chunk_defs.iter_mut() {
+                crate::ast::yaml_chunk::translate_definition(def, chunk.byte_base, chunk.line_base);
+            }
+            next_doc_no = crate::ast::yaml_chunk::renumber_documents(&mut chunk_defs, next_doc_no);
+            definitions.extend(chunk_defs);
         }
-        next_doc_no = crate::ast::yaml_chunk::renumber_documents(&mut chunk_defs, next_doc_no);
-        definitions.extend(chunk_defs);
 
+        // Imports still come from the chunk tree on BOTH paths: for an
+        // aborted single document that is the parseable prefix (the native
+        // outline does not cover doclinks — documented in `ast::imports`).
         imports.extend(extract_imports_from_tree(
             &chunk.tree,
             chunk_slice,
             Language::Yaml,
         )?);
 
-        // A chunk spanning more than the grammar's line limit is an
-        // un-splittable single document — the int16-row abort itself, the
-        // one case chunking cannot fix. Any other chunk error is a parse
-        // failure inside the chunk (malformed yaml, or the pathological
-        // column-0 `---` mid-scalar cut) — same warning channel, different
-        // message, both instead of silence.
-        if chunk.has_error() {
-            let chunk_lines = chunk_slice.lines().count() as u32;
-            if chunk_lines > crate::ast::yaml_chunk::YAML_LINE_LIMIT {
-                warnings.push(format!(
-                    "Skipped sections of {}: a yaml document spanning lines {}-{} exceeds the tree-sitter-yaml line limit ({} lines — the grammar's scanner tracks rows as int16 and overflows above it); structure truncated/empty for that document",
-                    path.display(),
-                    chunk.line_base + 1,
-                    chunk.line_base + chunk_lines,
-                    crate::ast::yaml_chunk::YAML_LINE_LIMIT,
-                ));
-            } else {
-                warnings.push(format!(
-                    "Skipped sections of {}: the yaml section starting at line {} failed to parse cleanly; structure may be incomplete for that section",
-                    path.display(),
-                    chunk.line_base + 1,
-                ));
-            }
+        // Remaining chunk errors are parse failures INSIDE the chunk at or
+        // under the line limit (malformed yaml, or the pathological
+        // column-0 `---` mid-scalar cut) — the over-limit case above has
+        // its own native-outline message.
+        if chunk.has_error() && chunk_lines <= crate::ast::yaml_chunk::YAML_LINE_LIMIT {
+            warnings.push(format!(
+                "Skipped sections of {}: the yaml section starting at line {} failed to parse cleanly; structure may be incomplete for that section",
+                path.display(),
+                chunk.line_base + 1,
+            ));
         }
     }
 
