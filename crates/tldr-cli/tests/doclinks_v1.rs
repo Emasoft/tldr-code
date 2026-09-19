@@ -579,7 +579,10 @@ fn impact_document_transitive_reverse_link_closure() {
     let targets = json["targets"].as_object().unwrap();
     assert_eq!(targets.len(), 1);
     let (key, tree) = targets.iter().next().unwrap();
-    assert!(key.ends_with("b.md:<doc>"), "targets key = {key}");
+    // Root-relative display key contract (mirrors issue #89): the file half
+    // of the key is spelled relative to the query root — on macOS this also
+    // keeps the /tmp → /private/tmp canonicalization artifact off the wire.
+    assert_eq!(key, "b.md:<doc>", "targets key = {key}");
     assert_eq!(tree["function"], "<doc>");
     assert_eq!(tree["note"], "discovered via document link");
 
@@ -587,14 +590,15 @@ fn impact_document_transitive_reverse_link_closure() {
     assert_eq!(tree["caller_count"], 1);
     let callers = tree["callers"].as_array().unwrap();
     assert_eq!(callers.len(), 1);
-    assert!(callers[0]["file"].as_str().unwrap().ends_with("a.md"));
+    assert_eq!(
+        callers[0]["file"].as_str().unwrap(),
+        "a.md",
+        "caller files carry the root-relative display spelling too"
+    );
     assert_eq!(callers[0]["caller_count"], 1);
     let grandparents = callers[0]["callers"].as_array().unwrap();
     assert_eq!(grandparents.len(), 1);
-    assert!(grandparents[0]["file"]
-        .as_str()
-        .unwrap()
-        .ends_with("index.md"));
+    assert_eq!(grandparents[0]["file"].as_str().unwrap(), "index.md");
     assert_eq!(grandparents[0]["caller_count"], 0);
 
     // Closure membership + external-URL absence, checked over every file in

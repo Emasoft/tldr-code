@@ -208,3 +208,89 @@ fn smells_files_path_validation_blocks_system_dirs() {
         stderr
     );
 }
+
+/// canonical-scan-root-v1 (BATCH-B): `--deep` fans the scan root out to
+/// analyzers with different canonicalization habits (the base scan
+/// canonicalizes per BUG-12; the deep sub-analyzers copy the walked
+/// spelling). Querying through a SYMLINKED root must yield ONE `by_file`
+/// key per file, all spelled against the real (canonical) root — never a
+/// mixed key set for the same file. Runs the same fixture through BOTH
+/// spellings of the root and asserts the key sets agree byte-for-byte.
+#[cfg(unix)]
+#[test]
+fn smells_deep_by_file_keys_are_canonical_across_root_spellings() {
+    use std::collections::BTreeSet;
+    use std::os::unix::fs::symlink;
+
+    let dir = TempDir::new().unwrap();
+    let real_root = dir.path().join("real");
+    fs::create_dir_all(&real_root).unwrap();
+    fs::write(real_root.join("god.py"), god_class_py("God")).unwrap();
+    // Deep-collector bait: two attribute-disjoint methods → LCOM4 >= 2 →
+    // the cohesion sub-analyzer must fire (a deep arm that copies its own
+    // walked spelling into the finding).
+    fs::write(
+        real_root.join("disjoint.py"),
+        "class Disjoint:\n    def a(self):\n        self.x = 1\n\n    def b(self):\n        self.y = 2\n",
+    )
+    .unwrap();
+
+    let link = dir.path().join("linked");
+    symlink(&real_root, &link).unwrap();
+
+    let run = |root: &std::path::Path| {
+        let out = Command::new(tldr_bin())
+            .args([
+                "smells",
+                root.to_str().unwrap(),
+                "--deep",
+                "--format",
+                "json",
+            ])
+            .output()
+            .expect("tldr smells --deep");
+        assert!(
+            out.status.success(),
+            "tldr smells --deep must succeed; stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&out.stdout)
+            .expect("smells --deep must emit valid JSON")
+    };
+
+    let via_real = run(&real_root);
+    let via_link = run(&link);
+
+    let by_file_keys = |report: &serde_json::Value| -> Vec<String> {
+        report["by_file"]
+            .as_object()
+            .expect("smells JSON must carry by_file")
+            .keys()
+            .cloned()
+            .collect()
+    };
+
+    assert!(
+        !by_file_keys(&via_real).is_empty(),
+        "fixture must produce smells (god class + low-cohesion bait)"
+    );
+
+    // ONE key per file: every key from the symlinked query is spelled
+    // against the REAL root.
+    let real_canonical = fs::canonicalize(&real_root).unwrap();
+    for key in by_file_keys(&via_link) {
+        assert!(
+            key.starts_with(real_canonical.to_str().unwrap()),
+            "by_file key must use the canonical root spelling: {key}"
+        );
+    }
+
+    // The two spellings of the same fixture agree byte-for-byte on the key
+    // set (one key per file, no second spelling of any file).
+    let keys_real: BTreeSet<String> = by_file_keys(&via_real).into_iter().collect();
+    let keys_link: BTreeSet<String> = by_file_keys(&via_link).into_iter().collect();
+    assert_eq!(
+        keys_real, keys_link,
+        "the same fixture queried via two root spellings must yield ONE key per file"
+    );
+}

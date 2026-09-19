@@ -498,14 +498,18 @@ mod tests {
         let source_path = dir.path().join("app.py");
         std::fs::write(&source_path, "x = 1\n").expect("write source");
 
-        let args = FixCheckArgs {
-            file: source_path,
-            test_cmd: "true".to_string(),
+        let config = fix::CheckConfig {
+            file: &source_path,
+            test_cmd: "true",
+            lang: Some("python"),
             max_attempts: 5,
         };
-        let result = run_check(&args, OutputFormat::Json, Some("python"));
+        // Exercise the check loop directly: `run_check` (the CLI glue) emits
+        // the result JSON to stdout by product contract, which would pollute
+        // the test runner's stdout.
+        let result = fix::run_check_loop(&config);
         assert!(
-            result.is_ok(),
+            result.final_pass,
             "Should succeed when test passes: {:?}",
             result
         );
@@ -604,12 +608,20 @@ mod tests {
         }
 
         let cmd = script_path.display().to_string();
-        let args = FixCheckArgs {
-            file: source_path,
-            test_cmd: cmd,
+        let config = fix::CheckConfig {
+            file: &source_path,
+            test_cmd: &cmd,
+            lang: Some("python"),
             max_attempts: 3,
         };
-        let result = run_check(&args, OutputFormat::Json, Some("python"));
-        assert!(result.is_err(), "Should fail when error is unfixable");
+        // Exercise the check loop directly: `run_check` (the CLI glue) emits
+        // the result JSON ("final_pass": false, ...) to stdout by product
+        // contract, which would pollute the test runner's stdout.
+        let result = fix::run_check_loop(&config);
+        assert!(
+            !result.final_pass,
+            "Should fail when error is unfixable: {:?}",
+            result
+        );
     }
 }

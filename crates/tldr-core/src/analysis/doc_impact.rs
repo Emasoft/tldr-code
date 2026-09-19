@@ -47,6 +47,18 @@
 //! consumers can tell document blast radius apart from code impact. Child
 //! notes (entry point / cycle detected / truncated at depth limit) come from
 //! the BFS itself.
+//!
+//! Display spelling (root-relative keys): the `<file>` half of the key — and
+//! every `CallerTree.file` in the tree — is spelled RELATIVE TO THE QUERY
+//! ROOT whenever the file lives inside it, falling back to the absolute
+//! spelling for files outside the root. This mirrors the issue-#89 contract
+//! on the code-impact side (all serialized paths are project-root-relative),
+//! and it removes the macOS `/tmp` → `/private/tmp` symlink artifact from
+//! the wire format: `dunce::canonicalize` resolves the symlinked tempdir in
+//! the canonical graph keys, so an unnormalized display key would surface
+//! `/private/tmp/...` spellings that never match the caller's spelling of
+//! the same file. The display mapping is applied ONLY at serialization
+//! boundaries — the reverse map and the BFS keep canonical absolute keys.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -56,7 +68,7 @@ use crate::ast::imports::get_imports;
 use crate::error::TldrError;
 use crate::fs::sniff::sniff_extensionless_files;
 use crate::fs::tree::{collect_files, get_file_tree};
-use crate::types::{IgnoreSpec, ImpactReport, Language};
+use crate::types::{CallerTree, IgnoreSpec, ImpactReport, Language};
 use crate::TldrResult;
 
 /// Synthetic function-name slot for the file-level link graph. The impact
@@ -122,7 +134,9 @@ fn doc_language_extensions() -> HashSet<String> {
 /// * `depth` - Maximum traversal depth (same semantics as `impact_analysis`)
 ///
 /// # Returns
-/// * `Ok(ImpactReport)` - Single-target report keyed `"<file>:<doc>"`
+/// * `Ok(ImpactReport)` - Single-target report keyed `"<file>:<doc>"` (the
+///   file half root-relative to `root` when inside it, absolute otherwise —
+///   see the display-spelling note in the module docs)
 /// * `Err(TldrError::PathNotFound)` - Target or root does not exist
 pub fn document_impact(
     root: &Path,
@@ -234,11 +248,21 @@ pub fn document_impact(
     // cycle / truncation) are inherited from the BFS.
     root_tree.note = Some(DOC_NOTE.to_string());
 
+    // Root-relative display keys (see the module-doc contract): the wire
+    // format spells every file relative to the query root when it lives
+    // inside it. The BFS above ran on canonical absolute keys — rewrite the
+    // tree's `file` fields for display only, after traversal.
+    relativize_caller_tree(&canonical_root, &mut root_tree);
+
     // BTreeMap — issue #74: deterministic key order in the serialized report
     // (single entry today, but the map type must match `ImpactReport.targets`).
     let mut targets = BTreeMap::new();
     targets.insert(
-        format!("{}:{}", canonical_target.display(), DOC_NODE),
+        format!(
+            "{}:{}",
+            display_spelling(&canonical_root, &canonical_target).display(),
+            DOC_NODE
+        ),
         root_tree,
     );
     Ok(ImpactReport {
@@ -246,6 +270,25 @@ pub fn document_impact(
         total_targets: 1,
         type_resolution: None,
     })
+}
+
+/// Display spelling for a canonical graph-node path: root-relative when the
+/// file lives inside the (canonical) query root, absolute otherwise.
+///
+/// Display-only — the reverse map and the BFS keep canonical keys. The
+/// fallback covers files outside the root (and uncanonicalizable roots,
+/// where the prefix strip simply fails and the absolute spelling survives).
+fn display_spelling(canonical_root: &Path, p: &Path) -> PathBuf {
+    p.strip_prefix(canonical_root).unwrap_or(p).to_path_buf()
+}
+
+/// Recursively rewrite a [`CallerTree`]'s `file` fields to the root-relative
+/// display spelling (see [`display_spelling`]).
+fn relativize_caller_tree(canonical_root: &Path, tree: &mut CallerTree) {
+    tree.file = display_spelling(canonical_root, &tree.file);
+    for caller in &mut tree.callers {
+        relativize_caller_tree(canonical_root, caller);
+    }
 }
 
 /// Resolve a raw link target string to a project file, if it points at one.
@@ -432,20 +475,57 @@ mod tests {
 
         assert_eq!(report.total_targets, 1);
         let (key, tree) = report.targets.iter().next().expect("single target");
-        assert!(key.ends_with("b.md:<doc>"), "key = {key}");
+        // Root-relative display keys (see the module-doc contract): the
+        // target is inside the query root, so the key spells exactly the
+        // root-relative path — never the canonical absolute spelling.
+        assert_eq!(key, "b.md:<doc>");
         assert_eq!(tree.function, "<doc>");
         assert_eq!(tree.note.as_deref(), Some("discovered via document link"));
 
-        // depth-1 caller: a.md; depth-2: index.md.
+        // depth-1 caller: a.md; depth-2: index.md — same root-relative
+        // display spelling on every tree node.
         assert_eq!(tree.callers.len(), 1);
         let a_tree = &tree.callers[0];
-        assert!(a_tree.file.ends_with("a.md"));
+        assert_eq!(a_tree.file, PathBuf::from("a.md"));
         assert_eq!(a_tree.callers.len(), 1);
-        assert!(a_tree.callers[0].file.ends_with("index.md"));
+        assert_eq!(a_tree.callers[0].file, PathBuf::from("index.md"));
 
         // The external URL is a real import but must never enter the graph.
         let json = serde_json::to_string(&report).unwrap();
         assert!(!json.contains("example.com"), "external URL leaked: {json}");
+    }
+
+    /// Root-relative display keys survive a SYMLINKED query root — the macOS
+    /// `/tmp` → `/private/tmp` case that motivated the display-spelling
+    /// contract: `dunce::canonicalize` resolves the symlink into the graph's
+    /// canonical keys, and the display mapping must still spell every wire
+    /// path relative to the query root (never the canonical `/private/...`
+    /// spelling, never the caller's symlink spelling either).
+    #[cfg(unix)]
+    #[test]
+    fn document_impact_symlinked_root_yields_root_relative_keys() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempfile::tempdir().unwrap();
+        fs::write(project.path().join("a.md"), "# A\n\n[B](b.md)\n").unwrap();
+        fs::write(project.path().join("b.md"), "# B\n").unwrap();
+
+        let link_dir = tempfile::tempdir().unwrap();
+        let linked = link_dir.path().join("linked");
+        symlink(project.path(), &linked).unwrap();
+
+        // Query through the symlink: root AND target spelled via `linked`.
+        let report = document_impact(&linked, &linked.join("b.md"), Language::Markdown, 5)
+            .expect("document_impact via symlinked root");
+
+        let (key, tree) = report.targets.iter().next().unwrap();
+        assert_eq!(key, "b.md:<doc>", "key = {key}");
+        assert_eq!(tree.callers.len(), 1);
+        assert_eq!(
+            tree.callers[0].file,
+            PathBuf::from("a.md"),
+            "caller files must also carry the root-relative display spelling"
+        );
     }
 
     #[test]
@@ -556,9 +636,10 @@ mod tests {
             .expect("document_impact");
         let tree = report.targets.values().next().unwrap();
         assert_eq!(tree.caller_count, 1, "the sniffed .bashrc must be a caller");
-        assert!(
-            tree.callers[0].file.ends_with(".bashrc"),
-            "caller = {:?}",
+        assert_eq!(
+            tree.callers[0].file,
+            PathBuf::from(".bashrc"),
+            "caller files carry the root-relative display spelling: {:?}",
             tree.callers[0].file
         );
     }

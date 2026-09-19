@@ -260,7 +260,10 @@ fn impact_on_extensionless_target_finds_sniffed_bashrc() {
         .into_iter()
         .next()
         .unwrap();
-    assert!(key.ends_with("lib/env.sh:<doc>"), "key = {key}");
+    // Root-relative display key contract (mirrors issue #89's normalization
+    // on the code-impact side): the file half is spelled relative to the
+    // query root — never the canonical absolute spelling.
+    assert_eq!(key, "lib/env.sh:<doc>", "key = {key}");
     assert_eq!(tree["note"], "discovered via document link");
     let callers = tree["callers"].as_array().unwrap();
     assert_eq!(
@@ -268,10 +271,10 @@ fn impact_on_extensionless_target_finds_sniffed_bashrc() {
         1,
         "the sniffed .bashrc must be the only caller: {callers:?}"
     );
-    assert!(
-        callers[0]["file"].as_str().unwrap().ends_with(".bashrc"),
-        "caller = {}",
-        callers[0]["file"]
+    assert_eq!(
+        callers[0]["file"].as_str().unwrap(),
+        ".bashrc",
+        "caller files carry the root-relative display spelling too"
     );
 }
 

@@ -425,6 +425,10 @@ pub fn detect_smells_with_walker_opts(
     suggest: bool,
     walker_opts: SmellsWalkerOpts,
 ) -> TldrResult<SmellsReport> {
+    // Shared-boundary canonicalization (canonical-scan-root-v1, BATCH-B):
+    // every key this report emits must come from ONE path spelling. See
+    // `canonical_scan_root`.
+    let path = &canonical_scan_root(path);
     let thresholds = Thresholds::from_preset(threshold);
     // Max file size to analyze (500KB) - skip minified/generated files
     const MAX_FILE_SIZE: u64 = 500 * 1024;
@@ -2659,6 +2663,16 @@ pub fn analyze_smells_aggregated_with_walker_opts(
     suggest: bool,
     walker_opts: SmellsWalkerOpts,
 ) -> TldrResult<SmellsReport> {
+    // Shared-boundary canonicalization (canonical-scan-root-v1, BATCH-B):
+    // the base detectors AND every deep sub-analyzer (cohesion, coupling,
+    // dead code, clones, cognitive complexity, inheritance, call graph) walk
+    // this root independently and copy the walked spelling into their
+    // findings' `file` fields. Canonicalize ONCE here so all of them see the
+    // same spelling — otherwise a symlinked query root (macOS `/tmp` →
+    // `/private/tmp`, `/var` → `/private/var`) yields `by_file` keys in BOTH
+    // spellings for the same file (the base scan canonicalizes per BUG-12,
+    // the deep collectors do not). See `canonical_scan_root`.
+    let path = &canonical_scan_root(path);
     let mut all_smells: Vec<SmellFinding> = Vec::new();
     let mut files_scanned: usize = 0;
     // v0.2.3 (#1.D): track findings excluded by the test-file filter so the
@@ -2825,6 +2839,26 @@ fn needs_tier2_analysis(smell_type: Option<SmellType>) -> bool {
                 | Some(SmellType::FeatureEnvy)
                 | Some(SmellType::InappropriateIntimacy)
         )
+}
+
+/// Shared-boundary path normalization for the smells scan roots
+/// (canonical-scan-root-v1, BATCH-B).
+///
+/// The base detectors and every deep sub-analyzer (cohesion, coupling, dead
+/// code, similarity, cognitive complexity, inheritance, call graph) walk
+/// their own file list off the scan root and copy the walked spelling into
+/// each finding's `file` field. When the caller spells the root through a
+/// symlink (macOS `/tmp/x` → `/private/tmp/x`, `/var` → `/private/var`),
+/// analyzers that canonicalize per BUG-12 emit the resolved spelling while
+/// the others emit the caller's spelling — and `by_file` ends up with TWO
+/// keys for the same file. Canonicalizing the root ONCE here, before any
+/// analyzer runs, gives every walker the same spelling at the source.
+///
+/// Error-tolerant by design: a canonicalization failure (broken symlink,
+/// racing delete) falls back to the literal spelling, preserving the
+/// previous behavior instead of failing the scan.
+fn canonical_scan_root(path: &Path) -> PathBuf {
+    dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn call_graph_context(path: &Path, needs_call_graph: bool) -> (&Path, String) {
@@ -7485,6 +7519,90 @@ export function Screenshot({
         assert_eq!(
             report.files_scanned, 3,
             "files_scanned must equal the count of unique files on disk"
+        );
+    }
+
+    /// canonical-scan-root-v1 (BATCH-B): the deep aggregation fans the scan
+    /// root out to analyzers with different canonicalization habits (the
+    /// base scan canonicalizes per BUG-12; the deep sub-analyzers —
+    /// cohesion, dead code, clones, cognitive complexity — copy the walked
+    /// spelling). Querying through a SYMLINKED root must therefore yield
+    /// ONE `by_file` key per file, every key spelled against the real
+    /// (canonical) root, and the same fixture queried through EITHER
+    /// spelling of the root must produce byte-identical key sets.
+    #[cfg(unix)]
+    #[test]
+    fn test_smells_deep_by_file_keys_agree_across_root_spellings() {
+        use std::collections::BTreeSet;
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let real_root = dir.path().join("real");
+        std::fs::create_dir_all(&real_root).unwrap();
+
+        // Base-detector bait: GodClass (>20 methods at default thresholds).
+        let mut god = String::from("class God:\n");
+        for i in 0..25 {
+            god.push_str(&format!("    def m{}(self): pass\n", i));
+        }
+        std::fs::write(real_root.join("god.py"), &god).unwrap();
+
+        // Deep-collector bait: a class with two attribute-disjoint methods
+        // has LCOM4 >= 2, so the cohesion sub-analyzer must fire too.
+        std::fs::write(
+            real_root.join("disjoint.py"),
+            "class Disjoint:\n    def a(self):\n        self.x = 1\n\n    def b(self):\n        self.y = 2\n",
+        )
+        .unwrap();
+
+        // Query the SAME fixture through two spellings: the real root and a
+        // symlink to it (the macOS `/tmp` -> `/private/tmp` shape).
+        let link = dir.path().join("linked");
+        symlink(&real_root, &link).unwrap();
+
+        let deep = |root: &std::path::Path| {
+            analyze_smells_aggregated_with_walker_opts(
+                root,
+                ThresholdPreset::Default,
+                None,
+                false,
+                SmellsWalkerOpts::default(),
+            )
+            .expect("deep smells scan must succeed")
+        };
+
+        let via_real = deep(&real_root);
+        let via_link = deep(&link);
+
+        assert!(
+            !via_real.by_file.is_empty(),
+            "fixture must produce smells (god class + low-cohesion bait)"
+        );
+
+        // ONE key per file: every key from the symlinked query must be
+        // spelled against the REAL root — no symlink spelling, no
+        // duplicated key under a second spelling.
+        let real_canonical = dunce::canonicalize(&real_root).unwrap();
+        for key in via_link.by_file.keys() {
+            assert!(
+                key.starts_with(&real_canonical),
+                "by_file key must use the canonical root spelling: {key:?}"
+            );
+        }
+
+        // The two spellings of the same fixture must agree byte-for-byte on
+        // the key set (and on the finding count).
+        let keys = |r: &SmellsReport| -> BTreeSet<String> {
+            r.by_file.keys().map(|k| k.display().to_string()).collect()
+        };
+        assert_eq!(
+            keys(&via_real),
+            keys(&via_link),
+            "the same fixture queried via two root spellings must yield ONE key per file"
+        );
+        assert_eq!(
+            via_real.summary.total_smells, via_link.summary.total_smells,
+            "finding counts must not depend on the root's spelling"
         );
     }
 }
