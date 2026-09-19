@@ -38,6 +38,7 @@
 //! - `start`: Daemon start command
 //! - `stop`: Daemon stop command
 //! - `status`: Daemon status command
+//! - `log`: Daemon log reader command (issue #67 residual)
 //! - `query`: Low-level query passthrough command
 //! - `notify`: File change notification command
 //! - `warm`: Cache warming command
@@ -55,6 +56,7 @@ pub mod daemon_registry;
 pub mod error;
 pub mod ipc;
 pub mod list;
+pub mod log;
 pub mod logging;
 pub mod notify;
 pub mod pid;
@@ -76,8 +78,9 @@ pub use ipc::{
     MAX_MESSAGE_SIZE, READ_TIMEOUT_SECS,
 };
 pub use logging::{
-    daemon_log_path, log_client_fallback, DaemonLogger, DAEMON_LOG_FILENAME, EVENT_ERROR,
-    EVENT_FALLBACK, EVENT_LIFECYCLE, EVENT_REQUEST, EVENT_RESPONSE, EVENT_SLOW, MAX_LOG_BYTES,
+    daemon_log_path, log_client_fallback, read_daemon_log, DaemonLogEntry, DaemonLogRead,
+    DaemonLogger, LogQuery, DAEMON_LOG_FILENAME, DEFAULT_LOG_TAIL, EVENT_ERROR, EVENT_FALLBACK,
+    EVENT_LIFECYCLE, EVENT_REQUEST, EVENT_RESPONSE, EVENT_SLOW, LOG_READ_CAP_BYTES, MAX_LOG_BYTES,
     SLOW_REQUEST_MS,
 };
 pub use pid::{
@@ -115,6 +118,7 @@ pub use daemon_impl::TLDRDaemon;
 pub use cache_clear::CacheClearArgs;
 pub use cache_stats::CacheStatsArgs;
 pub use list::DaemonListArgs;
+pub use log::DaemonLogArgs;
 pub use notify::DaemonNotifyArgs;
 pub use query::DaemonQueryArgs;
 pub use start::DaemonStartArgs;

@@ -140,8 +140,8 @@ pub use similar::SimilarArgs;
 
 // Daemon subsystem commands (Phase 5-6; v0.3.0 adds DaemonListArgs)
 pub use daemon::{
-    DaemonListArgs, DaemonNotifyArgs, DaemonQueryArgs, DaemonStartArgs, DaemonStatusArgs,
-    DaemonStopArgs,
+    DaemonListArgs, DaemonLogArgs, DaemonNotifyArgs, DaemonQueryArgs, DaemonStartArgs,
+    DaemonStatusArgs, DaemonStopArgs,
 };
 
 // Cache commands (Phase 9)

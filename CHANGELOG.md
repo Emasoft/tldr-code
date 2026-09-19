@@ -45,15 +45,43 @@
   - **Observability surface.** `tldr daemon status` gains additive
     `log_path` + `log_size_bytes` fields (JSON and text output; absent
     fields are skipped for back-compat, and old payloads deserialize as
-    `None`). No log-reading command (documented future work); cache
-    hit/miss remains observable through `FullStatus.salsa_stats` rather
-    than per-line log fields.
+    `None`). The log-reading command landed as `tldr daemon log` (next
+    bullet); cache hit/miss remains observable through
+    `FullStatus.salsa_stats` rather than per-line log fields.
   - **Tests.** Six new over-IPC contract tests in
     `tests/daemon_contract_coverage_test.rs` (request/response/lifecycle
     shape, injected-threshold slow marker, error context, cap rotation,
     status log fields, router fallback line), the extended idle-timeout
     test, and lib pins in `logging.rs` (schema, rotation, best-effort
     failure counting, fallback gate) and `daemon_impl::tests`.
+
+- **`tldr daemon log`: filterable reader for the persistent daemon log**
+  (closes the #67 residual "no log-reading command",
+  `crates/tldr-cli/src/commands/daemon/log.rs`). Reads
+  `<project>/.tldr/cache/daemon.log` through the same typed entry the
+  writer serializes (`DaemonLogEntry`, now the shared schema type in
+  `logging.rs` — writer and reader cannot drift).
+  - **Resolution & tail semantics.** Project resolution mirrors
+    `daemon status` (shared `resolve_default_project`, `--project`
+    override). Default prints the last 100 entries; `--tail N` the last N
+    after filtering (0 = all), so `--event error --tail 50` shows the last
+    50 errors. The read itself never loads more than `MAX_LOG_BYTES` from
+    the end of the file: an oversized (non-conforming) file contributes
+    only its last seek-based window, and the window's cut-off head
+    fragment is dropped without counting.
+  - **Filters & output.** `--event`/`--command` filter by exact
+    case-insensitive match. JSON mode (the `--format json|compact`
+    default, or the explicit `--json` override) emits a bare array of
+    schema-ordered entries; text mode emits one human line per entry
+    (`[ts] event command path? duration? status detail?`).
+  - **Edge cases.** Lines that are not valid log entries (garbage, or a
+    line truncated by a crash mid-write) are skipped silently but counted
+    in text output; a missing log gets a clean "No daemon log" message
+    with exit 0; an empty file prints empty output.
+  - **Tests.** New suite `tests/daemon_log_v1.rs` (direct-write via the
+    shared writer type for determinism, fabricated-oversized-file cap
+    test, and one in-process real-daemon smoke test read by the real
+    binary), plus reader lib pins in `logging.rs`.
 
 - **Native SQL schema-outline scanner: `.sql`/`.ddl` files now report their
   DDL structure and foreign-key edges**

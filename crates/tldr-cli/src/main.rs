@@ -39,14 +39,14 @@ use tldr_cli::commands::remaining::{ApiCheckArgs, VulnArgs};
 use tldr_cli::commands::{
     ApiSurfaceArgs, AvailableArgs, BodyArgs, BugbotCheckArgs, CacheClearArgs, CacheStatsArgs,
     CallsArgs, ChangeImpactArgs, ChopArgs, ChurnArgs, ClonesArgs, CognitiveArgs, ComplexityArgs,
-    ContextArgs, ContractsArgs, CoverageArgs, DaemonListArgs, DaemonNotifyArgs, DaemonQueryArgs,
-    DaemonStartArgs, DaemonStatusArgs, DaemonStopArgs, DeadArgs, DeadStoresArgs, DebtArgs,
-    DefinitionArgs, DepsArgs, DiagnosticsArgs, DiceArgs, DiffArgs, DoctorArgs, ExplainArgs,
-    ExtractArgs, FixArgs, HalsteadArgs, HealthArgs, HotspotsArgs, HubsArgs, ImpactArgs,
-    ImportersArgs, ImportsArgs, InheritanceArgs, InvariantsArgs, LocArgs, LogsArgs, OrderArgs,
-    PatternsArgs, ReachingDefsArgs, ReferencesArgs, SecureArgs, SliceArgs, SmartSearchArgs,
-    SmellsArgs, SpecsArgs, StatsArgs, StructureArgs, TaintArgs, TodoArgs, TreeArgs, VerifyArgs,
-    WarmArgs, WhatbreaksArgs,
+    ContextArgs, ContractsArgs, CoverageArgs, DaemonListArgs, DaemonLogArgs, DaemonNotifyArgs,
+    DaemonQueryArgs, DaemonStartArgs, DaemonStatusArgs, DaemonStopArgs, DeadArgs, DeadStoresArgs,
+    DebtArgs, DefinitionArgs, DepsArgs, DiagnosticsArgs, DiceArgs, DiffArgs, DoctorArgs,
+    ExplainArgs, ExtractArgs, FixArgs, HalsteadArgs, HealthArgs, HotspotsArgs, HubsArgs,
+    ImpactArgs, ImportersArgs, ImportsArgs, InheritanceArgs, InvariantsArgs, LocArgs, LogsArgs,
+    OrderArgs, PatternsArgs, ReachingDefsArgs, ReferencesArgs, SecureArgs, SliceArgs,
+    SmartSearchArgs, SmellsArgs, SpecsArgs, StatsArgs, StructureArgs, TaintArgs, TodoArgs,
+    TreeArgs, VerifyArgs, WarmArgs, WhatbreaksArgs,
 };
 // Pattern analysis commands
 use tldr_cli::commands::patterns::{
@@ -450,6 +450,10 @@ pub enum DaemonCommand {
 
     /// List all running daemons (multi-daemon registry, v0.3.0)
     List(DaemonListArgs),
+
+    /// Read the daemon's persistent JSONL request log
+    /// (.tldr/cache/daemon.log) with tail/filter options
+    Log(DaemonLogArgs),
 }
 
 /// Cache subcommands
@@ -571,6 +575,7 @@ fn command_name(cmd: &Command) -> &'static str {
             DaemonCommand::Query(_) => "daemon query",
             DaemonCommand::Notify(_) => "daemon notify",
             DaemonCommand::List(_) => "daemon list",
+            DaemonCommand::Log(_) => "daemon log",
         },
         Command::Cache(sub) => match sub {
             CacheCommand::Stats(_) => "cache stats",
@@ -696,6 +701,7 @@ fn run_command(cli: &Cli) -> Result<()> {
             DaemonCommand::Query(args) => args.run(cli.format, q),
             DaemonCommand::Notify(args) => args.run(cli.format, q),
             DaemonCommand::List(args) => args.run(cli.format, q),
+            DaemonCommand::Log(args) => args.run(cli.format, q),
         },
         // Cache management commands
         Command::Cache(cache_cmd) => match cache_cmd {

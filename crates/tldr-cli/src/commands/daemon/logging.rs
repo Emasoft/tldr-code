@@ -69,19 +69,23 @@
 //!
 //! # Out of scope (documented)
 //!
-//! - No log-reading command: `tldr daemon status` exposes `log_path` and
-//!   `log_size_bytes`; reading/filtering the log is future work.
+//! - The log-reading command EXISTS as of the #67 residual close-out:
+//!   `tldr daemon log` (`super::log`) reads this file through the SAME
+//!   [`DaemonLogEntry`] type the writer serializes, so the two sides cannot
+//!   drift. `tldr daemon status` still exposes `log_path` and
+//!   `log_size_bytes` for pointing humans at the file.
 //! - Per-request cache hit/miss markers (see the coverage matrix in
 //!   `daemon_contract_coverage_test.rs`) stay observable through
 //!   `FullStatus.salsa_stats`.
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 // =============================================================================
 // Constants
@@ -120,6 +124,233 @@ pub fn daemon_log_path(project: &Path) -> PathBuf {
         .join(".tldr")
         .join("cache")
         .join(DAEMON_LOG_FILENAME)
+}
+
+// =============================================================================
+// Log entry type — the single schema source shared by writer AND reader
+// =============================================================================
+
+/// One daemon-log line, typed.
+///
+/// This is the SINGLE source of truth for the on-disk JSONL schema: the
+/// writer ([`DaemonLogger::emit`] and [`log_client_fallback`]) serializes
+/// this struct, and the reader (`tldr daemon log`, [`read_daemon_log`])
+/// deserializes into it — the two sides cannot drift.
+///
+/// Field declaration order IS the documented wire order (`ts, pid, version,
+/// event, command, path?, duration_ms?, status, detail?`): serde_json
+/// serializes struct fields in declaration order.
+///
+/// Deserialization is tolerant in exactly one direction: unknown fields
+/// (a newer writer adding to the schema) are ignored, and the optional
+/// fields become `None` when absent. A line that lacks a required field or
+/// carries it with the wrong type is not a log line — the reader counts it
+/// as skipped instead of failing the whole read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DaemonLogEntry {
+    /// RFC 3339 instant of the write (`Utc::now().to_rfc3339()`).
+    pub ts: String,
+    /// Writing process id (daemon process, or CLI process for client-side
+    /// `fallback` lines).
+    pub pid: u32,
+    /// Crate version — exactly the value `tldr --version` prints.
+    pub version: String,
+    /// Closed-set event name (`request|response|lifecycle|slow|fallback|error`).
+    pub event: String,
+    /// Canonical snake_case command name (`ping`, `extract`, …) or `daemon`
+    /// for lifecycle lines.
+    pub command: String,
+    /// Request target path, when the command has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Request wall time in milliseconds, sub-ms precision (present on
+    /// `response` and `slow` lines).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<f64>,
+    /// `accepted` for `request`; `ok`/`error` otherwise.
+    pub status: String,
+    /// Free-form context (error text, shutdown reason, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl DaemonLogEntry {
+    /// Build an entry stamped with the current time, process id and crate
+    /// version — the three fields every writer path shares.
+    #[allow(clippy::too_many_arguments)]
+    pub fn now(
+        event: impl Into<String>,
+        command: impl Into<String>,
+        path: Option<String>,
+        duration_ms: Option<f64>,
+        status: impl Into<String>,
+        detail: Option<String>,
+    ) -> Self {
+        Self {
+            ts: Utc::now().to_rfc3339(),
+            pid: std::process::id(),
+            version: crate_version().to_string(),
+            event: event.into(),
+            command: command.into(),
+            path,
+            duration_ms,
+            status: status.into(),
+            detail,
+        }
+    }
+}
+
+/// Serialize one entry as a JSONL line (compact, with the trailing newline).
+///
+/// Best-effort like every write here: serialization of this struct is
+/// JSON-native (strings, `u32`, finite `f64` durations), so the `Err` arm
+/// is effectively unreachable — but a failure degrades to a dropped write,
+/// never a panic.
+pub fn serialize_entry_line(entry: &DaemonLogEntry) -> Option<String> {
+    let mut line = serde_json::to_string(entry).ok()?;
+    line.push('\n');
+    Some(line)
+}
+
+// =============================================================================
+// Log reader — the engine behind `tldr daemon log` (super::log)
+// =============================================================================
+
+/// Byte cap for one log read.
+///
+/// The writer rotates at [`MAX_LOG_BYTES`], so a conforming log never
+/// exceeds the cap by more than one trailing line. The reader still refuses
+/// to load more than the cap from disk: for an oversized (non-conforming or
+/// mid-rotation) file it seeks to `size - cap` and parses only the tail
+/// window. [`LOG_READ_CAP_BYTES`] is exactly the rotation cap — the whole
+/// file fits in memory whenever the writer's contract holds.
+pub const LOG_READ_CAP_BYTES: u64 = MAX_LOG_BYTES;
+
+/// Number of entries `tldr daemon log` prints when `--tail` is not given.
+pub const DEFAULT_LOG_TAIL: usize = 100;
+
+/// What to read out of the daemon log: a tail bound plus field filters.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LogQuery {
+    /// Print only the last N entries AFTER filtering; 0 = every entry.
+    pub tail: usize,
+    /// Exact, case-insensitive match on the `event` field.
+    pub event: Option<String>,
+    /// Exact, case-insensitive match on the `command` field.
+    pub command: Option<String>,
+}
+
+impl LogQuery {
+    /// Does `entry` pass both filters? (Exact match, ASCII
+    /// case-insensitive — `--event RESPONSE` selects `response` lines.)
+    pub fn matches(&self, entry: &DaemonLogEntry) -> bool {
+        if let Some(event) = &self.event {
+            if !entry.event.eq_ignore_ascii_case(event) {
+                return false;
+            }
+        }
+        if let Some(command) = &self.command {
+            if !entry.command.eq_ignore_ascii_case(command) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// The result of reading a daemon log.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DaemonLogRead {
+    /// Parsed entries (filtered + tail-bounded), oldest first.
+    pub entries: Vec<DaemonLogEntry>,
+    /// Non-empty fragments inside the read window that were not valid log
+    /// entries — garbage, or lines truncated by a crash mid-write — skipped
+    /// silently but counted. The window's cut-off HEAD fragment (only ever
+    /// present on a file larger than [`LOG_READ_CAP_BYTES`]) is NOT counted:
+    /// it is the unparseable tail of a line whose head lies before the
+    /// window, a boundary artifact rather than a corrupt line.
+    pub skipped: u64,
+}
+
+/// Read the daemon log at `path` according to `query`.
+///
+/// Total and graceful: a missing, unreadable or empty file yields zero
+/// entries and zero skipped lines — the CLI layer turns that into the clean
+/// "no daemon log" message (exit 0). At most [`LOG_READ_CAP_BYTES`] are
+/// loaded from the END of the file; everything newer wins, mirroring the
+/// writer's truncate-and-restart rotation.
+///
+/// The `skipped` counter covers the whole window, independent of the tail
+/// bound — it is a file-health signal, not an output-shape one.
+pub fn read_daemon_log(path: &Path, query: &LogQuery) -> DaemonLogRead {
+    let mut read = DaemonLogRead::default();
+
+    let Ok(meta) = std::fs::metadata(path) else {
+        return read;
+    };
+    let total = meta.len();
+    if total == 0 {
+        return read;
+    }
+
+    let window_start = total.saturating_sub(LOG_READ_CAP_BYTES);
+    let Ok(mut file) = File::open(path) else {
+        return read;
+    };
+
+    // Does the window open at a line boundary? Peek the byte before it: a
+    // newline (or window_start == 0) means the first fragment in the window
+    // is a complete line; anything else means it is the tail of a line
+    // whose head the cap cut off.
+    let mut at_line_boundary = window_start == 0;
+    if window_start > 0 {
+        let mut peek = [0u8; 1];
+        if file
+            .seek(SeekFrom::Start(window_start - 1))
+            .and_then(|_| file.read(&mut peek))
+            .map(|n| n == 1)
+            .unwrap_or(false)
+        {
+            at_line_boundary = peek[0] == b'\n';
+        }
+    }
+
+    if file.seek(SeekFrom::Start(window_start)).is_err() {
+        return read;
+    }
+    let window_len = usize::try_from(total - window_start).unwrap_or(usize::MAX);
+    let mut buf = Vec::with_capacity(window_len.min(8 * 1024 * 1024));
+    if file.take(window_len as u64).read_to_end(&mut buf).is_err() {
+        return read;
+    }
+
+    let raw = String::from_utf8_lossy(&buf);
+    let mut first = true;
+    for fragment in raw.split('\n') {
+        if first {
+            first = false;
+            if !at_line_boundary {
+                continue;
+            }
+        }
+        let line = fragment.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<DaemonLogEntry>(line) {
+            Ok(entry) => read.entries.push(entry),
+            Err(_) => read.skipped += 1,
+        }
+    }
+
+    if query.event.is_some() || query.command.is_some() {
+        read.entries.retain(|entry| query.matches(entry));
+    }
+    if query.tail > 0 && read.entries.len() > query.tail {
+        let excess = read.entries.len() - query.tail;
+        read.entries.drain(..excess);
+    }
+    read
 }
 
 // =============================================================================
@@ -176,8 +407,9 @@ impl DaemonLogger {
     /// propagates IO errors.
     ///
     /// `path`, `duration_ms` and `detail` are omitted from the line when
-    /// `None`. Field order follows the documented schema (serde_json is
-    /// built with `preserve_order`).
+    /// `None`. Field order follows the documented schema — the line is
+    /// serialized from the shared [`DaemonLogEntry`] type (declaration
+    /// order = wire order).
     #[allow(clippy::too_many_arguments)]
     pub fn emit(
         &self,
@@ -188,26 +420,15 @@ impl DaemonLogger {
         status: &str,
         detail: Option<&str>,
     ) {
-        let mut line = serde_json::Map::new();
-        line.insert("ts".into(), serde_json::json!(Utc::now().to_rfc3339()));
-        line.insert("pid".into(), serde_json::json!(std::process::id()));
-        line.insert("version".into(), serde_json::json!(crate_version()));
-        line.insert("event".into(), serde_json::json!(event));
-        line.insert("command".into(), serde_json::json!(command));
-        if let Some(p) = path {
-            line.insert("path".into(), serde_json::json!(p.to_string_lossy()));
-        }
-        if let Some(d) = duration_ms {
-            line.insert("duration_ms".into(), serde_json::json!(d));
-        }
-        line.insert("status".into(), serde_json::json!(status));
-        if let Some(d) = detail {
-            line.insert("detail".into(), serde_json::json!(d));
-        }
-
-        let mut serialized = serde_json::Value::Object(line).to_string();
-        serialized.push('\n');
-        self.write_line(&serialized);
+        let entry = DaemonLogEntry::now(
+            event,
+            command,
+            path.map(|p| p.to_string_lossy().into_owned()),
+            duration_ms,
+            status,
+            detail.map(str::to_string),
+        );
+        self.write_line(&entry);
     }
 
     /// Open (or reopen after rotation) the log file in append mode.
@@ -232,10 +453,18 @@ impl DaemonLogger {
             .ok()
     }
 
-    /// Serialize one line to disk. Locks the (lazily opened) file handle,
-    /// re-checks the size cap, appends, and lets the `File` drop-flush the
-    /// small write. Any error increments [`Self::dropped_writes`].
-    fn write_line(&self, line: &str) {
+    /// Serialize `entry` through the shared type, then lock the (lazily
+    /// opened) file handle, re-check the size cap, append, and let the
+    /// `File` drop-flush the small write. Any error increments
+    /// [`Self::dropped_writes`].
+    fn write_line(&self, entry: &DaemonLogEntry) {
+        let Some(serialized) = serialize_entry_line(entry) else {
+            // Not a panic risk in practice (JSON-native fields only); a
+            // serialization failure degrades to a dropped write.
+            self.dropped_writes.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+
         // Deleted-project guard, checked on EVERY emit: once the project
         // root is gone the logger must neither write nor recreate any
         // directory (the daemon's self-terminate check relies on the
@@ -271,7 +500,7 @@ impl DaemonLogger {
         // never restarts still honors the bound.
         let file = guard.as_mut().expect("handle opened above");
         if let Ok(meta) = file.metadata() {
-            if meta.len() + line.len() as u64 > MAX_LOG_BYTES {
+            if meta.len() + serialized.len() as u64 > MAX_LOG_BYTES {
                 match self.open_file() {
                     Some(f) => {
                         *guard = Some(f);
@@ -284,7 +513,10 @@ impl DaemonLogger {
             }
         }
         let file = guard.as_mut().expect("handle present");
-        match file.write_all(line.as_bytes()).and_then(|_| file.flush()) {
+        match file
+            .write_all(serialized.as_bytes())
+            .and_then(|_| file.flush())
+        {
             Ok(()) => {}
             Err(_) => {
                 // Force a reopen on the next write — the current handle
@@ -330,16 +562,17 @@ pub fn log_client_fallback(project: &Path, endpoint: &str, reason: &str) {
     if !path.exists() {
         return;
     }
-    let mut line = serde_json::Map::new();
-    line.insert("ts".into(), serde_json::json!(Utc::now().to_rfc3339()));
-    line.insert("pid".into(), serde_json::json!(std::process::id()));
-    line.insert("version".into(), serde_json::json!(crate_version()));
-    line.insert("event".into(), serde_json::json!(EVENT_FALLBACK));
-    line.insert("command".into(), serde_json::json!(endpoint));
-    line.insert("status".into(), serde_json::json!("ok"));
-    line.insert("detail".into(), serde_json::json!(reason));
-    let mut serialized = serde_json::Value::Object(line).to_string();
-    serialized.push('\n');
+    let entry = DaemonLogEntry::now(
+        EVENT_FALLBACK,
+        endpoint,
+        None,
+        None,
+        "ok",
+        Some(reason.to_string()),
+    );
+    let Some(serialized) = serialize_entry_line(&entry) else {
+        return;
+    };
 
     // One-shot open/append/drop: O_APPEND keeps concurrent writes from the
     // daemon process and this CLI process line-atomic for small writes.
@@ -594,5 +827,174 @@ mod tests {
         logger.emit(EVENT_REQUEST, "ping", None, None, "accepted", None);
         assert!(logger.log_size_bytes().unwrap_or(0) > 0);
         assert_eq!(logger.log_path(), daemon_log_path(&project));
+    }
+
+    // =========================================================================
+    // Reader (`read_daemon_log`) — lib-level pins. End-to-end CLI coverage
+    // (text formatting, --json shape, real-daemon smoke, window cap on an
+    // oversized fabricated file) lives in tests/daemon_log_v1.rs.
+    // =========================================================================
+
+    /// Write a hand-built entry straight into a log file (bypasses the
+    /// logger so the schema round-trip is exact).
+    fn write_entries(path: &Path, entries: &[DaemonLogEntry]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut raw = String::new();
+        for e in entries {
+            raw.push_str(&serialize_entry_line(e).expect("entry serializes"));
+        }
+        std::fs::write(path, raw).unwrap();
+    }
+
+    fn entry_at(event: &str, command: &str, status: &str, detail: Option<&str>) -> DaemonLogEntry {
+        DaemonLogEntry::now(
+            event,
+            command,
+            None,
+            None,
+            status,
+            detail.map(str::to_string),
+        )
+    }
+
+    fn all_query() -> LogQuery {
+        LogQuery {
+            tail: 0,
+            event: None,
+            command: None,
+        }
+    }
+
+    #[test]
+    fn shared_type_round_trips_the_documented_schema() {
+        // The exact struct the writer builds is what the reader gets back —
+        // the drift-proofing pin for the shared type.
+        let temp = TempDir::new().unwrap();
+        let path = daemon_log_path(temp.path());
+        let written = DaemonLogEntry {
+            ts: "2026-07-18T12:00:00.123456+00:00".to_string(),
+            pid: 4242,
+            version: "0.4.1-fork.1".to_string(),
+            event: EVENT_RESPONSE.to_string(),
+            command: "extract".to_string(),
+            path: Some("/abs/file.py".to_string()),
+            duration_ms: Some(12.345),
+            status: "ok".to_string(),
+            detail: None,
+        };
+        write_entries(&path, &[written.clone()]);
+
+        let read = read_daemon_log(&path, &all_query());
+        assert_eq!(read.entries, vec![written]);
+        assert_eq!(read.skipped, 0);
+    }
+
+    #[test]
+    fn reader_missing_and_empty_files_are_graceful() {
+        let temp = TempDir::new().unwrap();
+        let missing = daemon_log_path(temp.path());
+        let read = read_daemon_log(&missing, &all_query());
+        assert!(read.entries.is_empty());
+        assert_eq!(read.skipped, 0);
+
+        std::fs::create_dir_all(missing.parent().unwrap()).unwrap();
+        std::fs::write(&missing, b"").unwrap();
+        let read = read_daemon_log(&missing, &all_query());
+        assert!(read.entries.is_empty());
+        assert_eq!(read.skipped, 0);
+    }
+
+    #[test]
+    fn reader_keeps_log_order_and_skips_garbage_counting_it() {
+        let temp = TempDir::new().unwrap();
+        let path = daemon_log_path(temp.path());
+        let entries = [
+            entry_at(EVENT_REQUEST, "extract", "accepted", Some("a")),
+            entry_at(EVENT_RESPONSE, "extract", "ok", Some("b")),
+            entry_at(EVENT_LIFECYCLE, "daemon", "ok", Some("c")),
+        ];
+        write_entries(&path, &entries);
+        // Crash-mid-write artifacts: a garbage line and a truncated tail.
+        {
+            let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+            f.write_all(b"not json at all\n{\"ts\": \"2026-").unwrap();
+        }
+
+        let read = read_daemon_log(&path, &all_query());
+        let details: Vec<Option<&str>> = read.entries.iter().map(|e| e.detail.as_deref()).collect();
+        assert_eq!(details, vec![Some("a"), Some("b"), Some("c")]);
+        assert_eq!(read.skipped, 2, "garbage + truncated tail are counted");
+    }
+
+    #[test]
+    fn reader_valid_json_that_is_not_a_log_line_is_skipped() {
+        let temp = TempDir::new().unwrap();
+        let path = daemon_log_path(temp.path());
+        write_entries(&path, &[entry_at(EVENT_REQUEST, "ping", "accepted", None)]);
+        {
+            let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+            // Valid JSON, wrong schema: not a log line.
+            f.write_all(b"{\"unrelated\": true}\n").unwrap();
+        }
+        let read = read_daemon_log(&path, &all_query());
+        assert_eq!(read.entries.len(), 1);
+        assert_eq!(read.skipped, 1);
+    }
+
+    #[test]
+    fn reader_tail_applies_after_filters() {
+        let temp = TempDir::new().unwrap();
+        let path = daemon_log_path(temp.path());
+        // 4 pings interleaved with 2 extracts; tail must pick the LAST N
+        // MATCHING entries, not matching entries among the last N.
+        let entries = [
+            entry_at(EVENT_REQUEST, "ping", "accepted", Some("p1")),
+            entry_at(EVENT_REQUEST, "extract", "accepted", Some("e1")),
+            entry_at(EVENT_REQUEST, "ping", "accepted", Some("p2")),
+            entry_at(EVENT_REQUEST, "ping", "accepted", Some("p3")),
+            entry_at(EVENT_REQUEST, "extract", "accepted", Some("e2")),
+            entry_at(EVENT_REQUEST, "ping", "accepted", Some("p4")),
+        ];
+        write_entries(&path, &entries);
+
+        let query = LogQuery {
+            tail: 2,
+            event: None,
+            command: Some("ping".to_string()),
+        };
+        let read = read_daemon_log(&path, &query);
+        let details: Vec<Option<&str>> = read.entries.iter().map(|e| e.detail.as_deref()).collect();
+        assert_eq!(details, vec![Some("p3"), Some("p4")]);
+
+        let query = LogQuery {
+            tail: 100,
+            event: None,
+            command: Some("EXTRACT".to_string()),
+        };
+        let read = read_daemon_log(&path, &query);
+        assert_eq!(read.entries.len(), 2, "case-insensitive exact match");
+        assert_eq!(read.entries[0].detail.as_deref(), Some("e1"));
+    }
+
+    #[test]
+    fn reader_tail_zero_means_everything_and_tail_bounds_match_exactly() {
+        let temp = TempDir::new().unwrap();
+        let path = daemon_log_path(temp.path());
+        let entries: Vec<DaemonLogEntry> = (0..5)
+            .map(|i| entry_at(EVENT_REQUEST, "ping", "accepted", Some(&i.to_string())))
+            .collect();
+        write_entries(&path, &entries);
+
+        assert_eq!(read_daemon_log(&path, &all_query()).entries.len(), 5);
+        let read = read_daemon_log(
+            &path,
+            &LogQuery {
+                tail: 3,
+                event: None,
+                command: None,
+            },
+        );
+        let details: Vec<Option<&str>> = read.entries.iter().map(|e| e.detail.as_deref()).collect();
+        assert_eq!(details, vec![Some("2"), Some("3"), Some("4")]);
     }
 }
