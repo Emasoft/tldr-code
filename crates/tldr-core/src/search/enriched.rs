@@ -28,7 +28,16 @@ use crate::TldrResult;
 ///
 /// Controls how initial matches are discovered before tree-sitter enrichment.
 /// BM25 uses tokenized relevance ranking; Regex uses pattern matching.
-#[derive(Debug, Clone, Default)]
+///
+/// daemon-enriched-search-v1 (issue #65): the daemon wire protocol now
+/// carries the mode verbatim (`DaemonCommand::EnrichedSearch.search_mode`),
+/// so the type derives `Serialize`/`Deserialize` with snake_case variant
+/// names (`"bm25"`, `{"regex": "..."}`, `{"hybrid": {"query": ..,
+/// "pattern": ..}}`). The derives are additive — nothing about the
+/// in-memory semantics changes, and the CLI keeps constructing the same
+/// values it always did.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SearchMode {
     /// BM25 tokenized relevance ranking (current default).
     /// Tokenizes query into terms, scores documents by BM25 formula.

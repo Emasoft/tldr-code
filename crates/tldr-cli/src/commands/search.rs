@@ -9,8 +9,11 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Args;
 
-use tldr_core::{enriched_search, EnrichedSearchOptions, Language, SearchMode};
+use tldr_core::{
+    enriched_search, EnrichedSearchOptions, EnrichedSearchReport, Language, SearchMode,
+};
 
+use crate::commands::daemon_router::{params_for_enriched_search, try_daemon_route};
 use crate::output::{format_enriched_search_text, OutputFormat, OutputWriter};
 
 /// Enriched search: BM25 search with function-level context cards.
@@ -124,17 +127,74 @@ impl SmartSearchArgs {
             search_mode,
         };
 
-        // Run enriched search
+        // Issue #65: route through the daemon FIRST (same pattern as
+        // imports/context). The daemon computes the SAME core
+        // `enriched_search` this binary would run (one code path — no drift)
+        // and memoizes the report keyed by every query-affecting parameter
+        // with project-root input hashes, so the expensive per-invocation
+        // BM25/call-graph work is paid once per project state instead of
+        // once per query. Any failure — daemon not running, IPC error,
+        // unparseable/deserializing response — yields `None` and the router
+        // appends the issue-#67 `fallback` line; we then compute directly,
+        // exactly as before this route existed (a project with no daemon
+        // ever sees zero behavior change beyond the failed route attempt).
+        //
+        // Socket discovery follows the established convention: the search
+        // root when it is a directory (the common case — the served project
+        // root), the file's parent when the user searched a single file.
+        // A subdirectory root simply finds no daemon and falls back, which
+        // is the same conservative behavior every other routed command has.
+        let canonical_root = self
+            .path
+            .canonicalize()
+            .unwrap_or_else(|_| self.path.clone());
+        let project_for_daemon = if canonical_root.is_file() {
+            canonical_root
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .to_path_buf()
+        } else {
+            canonical_root.clone()
+        };
+        if let Some(report) = try_daemon_route::<EnrichedSearchReport>(
+            &project_for_daemon,
+            "enriched_search",
+            params_for_enriched_search(
+                &canonical_root,
+                &self.query,
+                Some(language.as_str()),
+                self.top_k,
+                !self.no_callgraph,
+                &options.search_mode,
+            ),
+        ) {
+            return write_enriched_report(&writer, &report);
+        }
+
+        // Fallback to direct compute (client-local, as before issue #65).
         let report = enriched_search(&self.query, &self.path, language, options)?;
 
         // Output based on format
-        if writer.is_text() {
-            let text = format_enriched_search_text(&report);
-            writer.write_text(&text)?;
-        } else {
-            writer.write(&report)?;
-        }
+        write_enriched_report(&writer, &report)?;
 
         Ok(())
     }
+}
+
+/// Emit an enriched-search report through the CLI writer.
+///
+/// Shared by the daemon route and the direct-compute fallback so both paths
+/// produce byte-identical output (same formatter for text, same serde
+/// serialization for JSON).
+fn write_enriched_report(
+    writer: &OutputWriter,
+    report: &EnrichedSearchReport,
+) -> anyhow::Result<()> {
+    if writer.is_text() {
+        let text = format_enriched_search_text(report);
+        writer.write_text(&text)?;
+    } else {
+        writer.write(report)?;
+    }
+    Ok(())
 }

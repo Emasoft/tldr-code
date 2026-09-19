@@ -20,8 +20,8 @@
 //! | Baseline daemon health (`status` reports running) | [existing] `issue83_daemon_language_test.rs::daemon_serves_rust_language_for_all_five_commands_without_explicit_lang`; [new] `daemon_test.rs::daemon_end_to_end_start_status_query_stop` |
 //! | Repeated search avoids recomputing (daemon `Search` path) | [existing] `daemon_impl::tests::test_daemon_search_caches_result` (hits ≥ 1); [new] `repeat_search_hits_cache_and_different_patterns_do_not_cross_contaminate` (exact miss→hit→fresh-miss deltas + payload identity, via real IPC) |
 //! | Search hit/miss externally observable (not timing) | [new] `search_stats_are_visible_through_the_status_response` (`FullStatus.salsa_stats` over IPC) |
-//! | `tldr search` (enriched/callgraph) uses the daemon | [gap] the CLI enriched search (`commands/search.rs::SmartSearchArgs::run`) computes **client-local** via `enriched_search` and has no daemon route at all — documenting this is the ask ("tests document whether enrichment is daemon-backed, warm-cache-backed, or client-local": it is client-local) |
-//! | Search fallback visible when daemon is down | [gap→pinned at the level that exists] full search has no daemon fallback to expose (client-local by construction); the daemon-adjacent commands DO fail loudly — [new] `daemon_test.rs::test_daemon_query_without_running_daemon_reports_clear_error` |
+//! | `tldr search` (enriched/callgraph) uses the daemon | [IMPLEMENTED — was a gap] `SmartSearchArgs::run` now routes through `try_daemon_route("enriched_search")` first; the daemon computes the SAME core `enriched_search` the CLI fallback calls (one code path — no drift) and memoizes the report keyed by every query-affecting parameter (root, query, mode, top_k, callgraph toggle, language) with project-root input hashes — enrichment is **daemon-backed** for the same result shape, **client-local** on any route failure. Tests: [new] `enriched_search_daemon_payload_matches_direct_compute_on_the_same_fixture` (parity pin), `repeat_enriched_search_hits_cache_and_query_params_do_not_cross_contaminate` (counters, not timing), `enriched_search_invalidation_cycle_reflects_file_edits_over_ipc` (edit → Notify → fresh), `enriched_search_cli_command_uses_the_running_daemon_cache` (the real CLI command, daemon up) |
+//! | Search fallback visible when daemon is down | [IMPLEMENTED] `SmartSearchArgs::run` falls back to direct compute through the shared router choke point (issue #67 helper) — [new] `enriched_search_cli_command_falls_back_to_direct_compute_and_logs_when_daemon_is_down` (`fallback` line with `command: "enriched_search"` in daemon.log); the daemon-adjacent `daemon_test.rs::test_daemon_query_without_running_daemon_reports_clear_error` still covers the explicit-error surface |
 //! | Search cache invalidation on file change (#51 root-hash) | FIXED by the #51 follow-up: the `Search` handler now registers the project-root input hashes like every other project-wide arm — [new] `search_invalidation_cycle_reflects_file_edits_over_ipc` (real-IPC search → edit → Notify → re-query cycle, plus the in-process pins `test_daemon_search_cache_invalidated_on_notify` and its Tree/Context/Structure/warmed-file-structure siblings in `daemon_impl::tests`) |
 //!
 //! ## Issue #66 — CLI command routing / daemon reuse
@@ -47,7 +47,7 @@
 //! | Idle shutdown observable in a testable config | [new] `idle_timeout_self_terminates_the_daemon` (converts the ignored `test_daemon_idle_timeout` placeholder); [log] same test suite asserts the `idle_timeout` lifecycle line shape via the lib pins in `daemon_impl::tests` |
 //! | Startup metadata: project/pid/socket persisted | [existing] registry + discovery records (`val003_daemon_registry_test.rs`, `daemon_active.rs` lib tests); [new] e2e start output carries `pid` + `socket` |
 //! | Persistent `.tldr/cache/daemon.log` with per-request traces, slow/error markers, version metadata | [IMPLEMENTED — was a gap] `commands/daemon/logging.rs` writes append-only JSONL `{ts, pid, version, event, command, path?, duration_ms?, status, detail?}` next to `salsa_stats.json`, capped at `MAX_LOG_BYTES` (truncate-and-restart), best-effort (write failures counted, never fatal). Tests: `daemon_log_records_request_response_lifecycle_and_shutdown_shape_over_ipc`, `slow_marker_fires_when_the_threshold_is_injected`, `error_events_carry_request_context_in_the_log_over_ipc`, `log_is_truncated_when_it_exceeds_the_cap`, `status_response_exposes_log_path_and_log_size_bytes`, plus lib pins in `logging.rs` and `daemon_impl::tests` |
-//! | Local fallback visibility | [IMPLEMENTED at the shared choke point] `try_daemon_route_async` appends a `fallback` line through the SAME shared helper (`logging::log_client_fallback`) — `client_fallback_is_logged_by_the_shared_router_helper`. Commands WITHOUT a daemon route (client-local enriched search) remain out of the log's scope: there is no shared choke point to hook, documented in `logging.rs` |
+//! | Local fallback visibility | [IMPLEMENTED at the shared choke point] `try_daemon_route_async` appends a `fallback` line through the SAME shared helper (`logging::log_client_fallback`) — `client_fallback_is_logged_by_the_shared_router_helper`. Since issue #65 the enriched search routes through the same choke point, so its fallbacks land in the log too: `enriched_search_cli_command_falls_back_to_direct_compute_and_logs_when_daemon_is_down` |
 //! | Cache hit/miss per line | [documented, out of scope] the log records per-request command/status/duration; hit/miss stays observable through `FullStatus.salsa_stats` (counters) — a `cache: hit|miss` log field would require threading per-request cache outcomes out of every handler arm (future work) |
 //!
 //! ## Issue #68 — ignored placeholder cleanup (lifecycle)
@@ -88,6 +88,12 @@ use tempfile::TempDir;
 use tldr_cli::commands::daemon::{
     check_socket_alive, send_command, DaemonCommand, DaemonConfig, DaemonResponse, DaemonResult,
     IpcListener, TLDRDaemon,
+};
+use tldr_cli::commands::SmartSearchArgs;
+use tldr_cli::output::OutputFormat;
+use tldr_core::{
+    enriched_search as direct_enriched_search, EnrichedSearchOptions, EnrichedSearchReport,
+    Language, SearchMode,
 };
 
 /// A deterministic two-file Python project with one call edge (main → helper).
@@ -498,8 +504,9 @@ async fn notify_invalidation_is_visible_through_the_status_response() {
 /// A repeat search is served from the cache (hit counter moves, payload is
 /// byte-identical) while a different pattern is a fresh miss producing a
 /// different payload — the daemon `Search` reuse contract without any
-/// timing assertion. (The CLI enriched-search path has no daemon route at
-/// all; see the coverage matrix — that gap is documented, not pinned here.)
+/// timing assertion. (This pins the daemon's plain `Search` command; the
+/// CLI enriched-search command has its OWN daemon route and contract tests
+/// since issue #65 — see the enriched-search section below.)
 #[tokio::test]
 async fn repeat_search_hits_cache_and_different_patterns_do_not_cross_contaminate() {
     let temp = project_dir("dc-search-");
@@ -703,6 +710,500 @@ async fn search_invalidation_cycle_reflects_file_edits_over_ipc() {
         .expect("daemon exits after shutdown")
         .expect("run task must not panic")
         .expect("graceful shutdown returns Ok");
+}
+
+// =============================================================================
+// Issue #65 — enriched search daemon route (CLI `tldr search`)
+// =============================================================================
+//
+// The CLI enriched search (`SmartSearchArgs::run`) used to compute strictly
+// client-local: the BM25 index was rebuilt over the project on EVERY
+// invocation. Since the route landed, the daemon computes the SAME core
+// `enriched_search` (one code path — no drift) and memoizes the report keyed
+// by every query-affecting parameter with project-root input hashes.
+// These tests pin that contract over the real IPC transport.
+
+/// A deterministic two-file Python project with one call edge
+/// (alpha_caller → alpha_search_fn) so call-graph enrichment has content.
+fn write_enriched_fixture(dir: &Path) {
+    std::fs::write(
+        dir.join("alpha.py"),
+        "def alpha_search_fn():\n    return 1\n\n\ndef alpha_caller():\n    alpha_search_fn()\n",
+    )
+    .expect("write alpha.py");
+    std::fs::write(dir.join("beta.py"), "def beta_other_fn():\n    return 2\n")
+        .expect("write beta.py");
+}
+
+/// Deterministic view of an enriched report for parity comparison:
+///
+/// 1. Cards are sorted by (file, name, line_start) — the pipeline's dedup
+///    map does not guarantee card ORDER across two identical
+///    recomputations.
+/// 2. Scores are quantized to 10 decimal places — BM25 accumulates
+///    per-term scores in HashMap iteration order (randomly seeded per index
+///    build), so two fresh computations of the SAME query can differ by one
+///    ulp (~1e-15 relative). This is pre-existing core behavior, not route
+///    drift: a direct-vs-direct comparison differs the same way. The
+///    daemon-side cache makes repeat queries byte-identical (pinned by
+///    `repeat_enriched_search_hits_cache_...`); parity here pins identical
+///    cards/fields/enrichment with fp-reassembly tolerance on scores.
+fn normalized_report(report: &EnrichedSearchReport) -> EnrichedSearchReport {
+    let mut r = report.clone();
+    r.results.sort_by(|a, b| {
+        (&a.file, &a.name, a.line_range.0).cmp(&(&b.file, &b.name, b.line_range.0))
+    });
+    for card in &mut r.results {
+        card.score = (card.score * 1e10).round() / 1e10;
+    }
+    r
+}
+
+/// Wire params for one enriched-search request against `project`.
+fn enriched_request(
+    project: &Path,
+    query: &str,
+    top_k: usize,
+    include_callgraph: bool,
+) -> DaemonCommand {
+    DaemonCommand::EnrichedSearch {
+        query: query.to_string(),
+        root: Some(project.to_path_buf()),
+        language: Some(Language::Python),
+        top_k: Some(top_k),
+        include_callgraph: Some(include_callgraph),
+        search_mode: SearchMode::default(),
+    }
+}
+
+/// (a) PARITY PIN: the daemon's enriched-search payload and a direct
+/// `enriched_search` call on the same fixture are the same report — same
+/// shape (`query`/`results`/`total_results`/`total_files_searched`/
+/// `search_mode`), same cards, same enrichment (the callgraph card carries
+/// its caller). The daemon handler calls the exact core function the CLI
+/// fallback calls, so any drift between daemon-mode and direct-mode output
+/// is a regression this test catches. (Scores compare at fp-reassembly
+/// tolerance — see `normalized_report`; card order is normalized too.)
+#[tokio::test]
+async fn enriched_search_daemon_payload_matches_direct_compute_on_the_same_fixture() {
+    let temp = project_dir("dc-enrich-parity-");
+    let project = temp.path().canonicalize().unwrap();
+    write_enriched_fixture(&project);
+
+    // Direct compute — the EXACT call the CLI's direct-compute path makes.
+    let direct = direct_enriched_search(
+        "alpha_search_fn",
+        &project,
+        Language::Python,
+        EnrichedSearchOptions {
+            top_k: 10,
+            include_callgraph: true,
+            search_mode: SearchMode::default(),
+        },
+    )
+    .expect("direct enriched search");
+    assert!(
+        !direct.results.is_empty(),
+        "fixture sanity: the query must match the fixture"
+    );
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    let response = send_command(
+        &project,
+        &enriched_request(&project, "alpha_search_fn", 10, true),
+    )
+    .await
+    .expect("enriched_search round-trip");
+
+    let value = match response {
+        DaemonResponse::Result(value) => value,
+        DaemonResponse::Error { error, .. } => {
+            panic!("EnrichedSearch handler errored on a valid project: {error}")
+        }
+        other => panic!("expected a Result response, got {other:?}"),
+    };
+
+    // Wire shape pin: the report fields a client (the CLI writer included)
+    // depends on must all be present.
+    for key in [
+        "query",
+        "results",
+        "total_results",
+        "total_files_searched",
+        "search_mode",
+    ] {
+        assert!(
+            value.get(key).is_some(),
+            "enriched payload must carry `{key}`; got {value}"
+        );
+    }
+    assert_eq!(
+        value["total_results"],
+        value["results"].as_array().expect("results array").len()
+    );
+
+    // THE parity pin: the wire payload decodes into the report type and is
+    // the same report direct compute produced.
+    let wire: EnrichedSearchReport = serde_json::from_value(value).expect(
+        "the daemon's enriched payload must deserialize into EnrichedSearchReport — \
+         a failure here means `tldr search` can never use the daemon cache",
+    );
+    assert_eq!(
+        serde_json::to_string(&normalized_report(&wire)).unwrap(),
+        serde_json::to_string(&normalized_report(&direct)).unwrap(),
+        "daemon-mode enriched search must equal direct compute on the same fixture"
+    );
+
+    // Enrichment sanity: the matched card is callgraph-enriched (its caller
+    // from the fixture's call edge is attached), proving the daemon path
+    // runs the FULL enriched pipeline, not a bare match list.
+    let card = wire
+        .results
+        .iter()
+        .find(|c| c.name == "alpha_search_fn")
+        .expect("the matched function card must be present");
+    assert!(
+        card.callers.iter().any(|c| c == "alpha_caller"),
+        "the alpha_search_fn card must carry its fixture caller via callgraph \
+         enrichment, got callers={:?}",
+        card.callers
+    );
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+}
+
+/// (b) CACHE-HIT PIN + cache-key separation: an identical repeat is served
+/// from the slot (hit counter moves, payload byte-identical), while a
+/// request differing ONLY in `top_k` or in the callgraph toggle is a fresh
+/// miss — every query-affecting parameter is part of the cache key, so no
+/// param-shape can be served another param-shape's slot. Counters (exact
+/// deltas through the Status response) make this a state assertion, not a
+/// timing one.
+#[tokio::test]
+async fn repeat_enriched_search_hits_cache_and_query_params_do_not_cross_contaminate() {
+    let temp = project_dir("dc-enrich-hit-");
+    let project = temp.path().canonicalize().unwrap();
+    write_enriched_fixture(&project);
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    let run = |query: &'static str, top_k: usize, cg: bool| {
+        let project = project.clone();
+        async move { send_command(&project, &enriched_request(&project, query, top_k, cg)).await }
+    };
+
+    // 1st: miss. "alpha" matches both alpha.py functions → ≥ 2 cards, so a
+    // top_k=1 request below has genuinely different content to serve.
+    let first = match run("alpha", 10, true).await.expect("first query") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("first query must return a Result, got {other:?}"),
+    };
+    assert!(
+        first["results"].as_array().expect("results").len() >= 2,
+        "fixture sanity: 'alpha' must match at least two cards, got {first}"
+    );
+    // 2nd: identical repeat → hit.
+    let repeat = match run("alpha", 10, true).await.expect("repeat query") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("repeat query must return a Result, got {other:?}"),
+    };
+    assert_eq!(
+        serde_json::to_string(&first).unwrap(),
+        serde_json::to_string(&repeat).unwrap(),
+        "the identical repeat must be served the cached payload unchanged"
+    );
+    // 3rd: same query, top_k=1 → FRESH slot (truncated payload).
+    let top1 = match run("alpha", 1, true).await.expect("top_k=1 query") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("top_k=1 query must return a Result, got {other:?}"),
+    };
+    assert_eq!(
+        top1["results"].as_array().expect("results").len(),
+        1,
+        "top_k must be honored: got {top1}"
+    );
+    // 4th: same query/limit, callgraph OFF → FRESH slot (no callers).
+    let nocg = match run("alpha", 10, false).await.expect("no-callgraph query") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("no-callgraph query must return a Result, got {other:?}"),
+    };
+    let cards = nocg["results"].as_array().expect("results");
+    assert!(
+        cards.iter().all(|c| c["callers"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true)),
+        "a no-callgraph request must not be served the callgraph-enriched slot: {nocg}"
+    );
+
+    // Counter pin: exactly misses=3 (fresh query, top_k, no-cg) + hits=1
+    // (identical repeat), zero invalidations.
+    let status = send_command(&project, &DaemonCommand::Status { session: None })
+        .await
+        .expect("status round-trip");
+    match status {
+        DaemonResponse::FullStatus { salsa_stats, .. } => assert_eq!(
+            (
+                salsa_stats.misses,
+                salsa_stats.hits,
+                salsa_stats.invalidations
+            ),
+            (3, 1, 0),
+            "cache-key separation must show up as exact counter deltas"
+        ),
+        other => panic!("expected FullStatus response, got {:?}", other),
+    }
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+}
+
+/// (c) CACHE CORRECTNESS: enriched results must reflect file edits — the
+/// query → edit → Notify → re-query cycle over the real IPC transport.
+/// The handler registers the project ROOT's input hashes (conservative
+/// never-stale: ANY file edit drops ALL project-wide slots, the same
+/// tradeoff every #51 project-wide arm made), so the renamed token must
+/// appear and the removed token must vanish.
+#[tokio::test]
+async fn enriched_search_invalidation_cycle_reflects_file_edits_over_ipc() {
+    let temp = project_dir("dc-enrich-inval-");
+    let project = temp.path().canonicalize().unwrap();
+    let alpha = project.join("alpha.py");
+    write_enriched_fixture(&project);
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    let run = |query: &'static str| {
+        let project = project.clone();
+        async move { send_command(&project, &enriched_request(&project, query, 10, true)).await }
+    };
+
+    // 1. Populate: the original token is found, and the repeat is a HIT.
+    let first = match run("alpha_search_fn").await.expect("first query") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("first query must return a Result, got {other:?}"),
+    };
+    let first_str = serde_json::to_string(&first).unwrap();
+    assert!(
+        first_str.contains("alpha_search_fn"),
+        "precondition: the original token must be found, got {first_str}"
+    );
+    let repeat = match run("alpha_search_fn").await.expect("repeat query") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("repeat query must return a Result, got {other:?}"),
+    };
+    assert_eq!(
+        first_str,
+        serde_json::to_string(&repeat).unwrap(),
+        "precondition: the repeat must be a cache hit"
+    );
+
+    // 2. Edit: the token is renamed project-wide.
+    std::fs::write(
+        &alpha,
+        "def gammafn():\n    return 1\n\n\ndef gamma_caller():\n    gammafn()\n",
+    )
+    .expect("edit alpha.py");
+
+    // 3. Notify over IPC.
+    let notify = send_command(
+        &project,
+        &DaemonCommand::Notify {
+            file: alpha.clone(),
+        },
+    )
+    .await
+    .expect("notify round-trip");
+    match notify {
+        DaemonResponse::NotifyResponse { status, .. } => assert_eq!(status, "ok"),
+        other => panic!("expected NotifyResponse, got {other:?}"),
+    }
+
+    // 4. Re-query the OLD token: the slot must have been dropped. A stale
+    //    hit would still surface the pre-edit card; a fresh compute finds
+    //    nothing (the token is gone from the project).
+    let stale_check = match run("alpha_search_fn").await.expect("stale check") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("stale check must return a Result, got {other:?}"),
+    };
+    let stale_cards = serde_json::to_string(&stale_check["results"]).unwrap();
+    assert_eq!(
+        stale_cards, "[]",
+        "after Notify the re-queried search must not surface the removed \
+         token — a stale cached result was served: {stale_cards}"
+    );
+
+    // 5. The renamed token must be findable (fresh-compute sanity).
+    let renamed = match run("gammafn").await.expect("renamed query") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("renamed query must return a Result, got {other:?}"),
+    };
+    let renamed_str = serde_json::to_string(&renamed).unwrap();
+    assert!(
+        renamed_str.contains("gammafn") && !renamed_str.contains("alpha_search_fn"),
+        "the renamed token must be found after the edit + Notify, got {renamed_str}"
+    );
+
+    // 6. Externally observable: at least one invalidation moved the counter.
+    let status = send_command(&project, &DaemonCommand::Status { session: None })
+        .await
+        .expect("status round-trip");
+    match status {
+        DaemonResponse::FullStatus { salsa_stats, .. } => assert!(
+            salsa_stats.invalidations >= 1,
+            "the Notify must have invalidated at least one enriched-search \
+             entry (observed through the Status wire response), got {}",
+            salsa_stats.invalidations
+        ),
+        other => panic!("expected FullStatus response, got {:?}", other),
+    }
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+}
+
+/// (d) FALLBACK, at the CLI-command level: with the daemon DOWN, the REAL
+/// `SmartSearchArgs::run` must still succeed (direct compute — behavior
+/// unchanged from before the route existed) AND the failed route must leave
+/// the issue-#67 `fallback` line in the project's daemon.log (the fallback
+/// is never silent).
+///
+/// Plain `#[test]` (not `#[tokio::test]`): the CLI command builds its own
+/// blocking runtime for the route attempt, which must not run inside another
+/// runtime's worker context. Daemon lifecycle phases are block_on'd on this
+/// test-owned runtime; the CLI runs happen between them, outside it.
+#[test]
+fn enriched_search_cli_command_falls_back_to_direct_compute_and_logs_when_daemon_is_down() {
+    let temp = project_dir("dc-enrich-fb-");
+    let project = temp.path().canonicalize().unwrap();
+    write_enriched_fixture(&project);
+
+    let rt = tokio::runtime::Runtime::new().expect("test runtime");
+
+    // Phase 1: a daemon ran once (so the persistent log exists), then stopped.
+    rt.block_on(async {
+        let handle = start_in_process_daemon(&project, default_config()).await;
+        send_command(&project, &DaemonCommand::Shutdown)
+            .await
+            .expect("shutdown acknowledged");
+        tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("daemon exits after shutdown")
+            .expect("run task must not panic")
+            .expect("graceful shutdown returns Ok");
+        assert!(
+            !check_socket_alive(&project).await,
+            "precondition: the daemon is down"
+        );
+    });
+
+    // Phase 2: the REAL CLI command with the daemon down — direct compute.
+    let args = SmartSearchArgs {
+        query: "alpha_search_fn".to_string(),
+        path: project.clone(),
+        lang: Some(Language::Python),
+        top_k: 10,
+        no_callgraph: true,
+        regex: false,
+        hybrid: None,
+    };
+    args.run(OutputFormat::Json, true)
+        .expect("fallback direct compute must succeed with the daemon down");
+
+    // Phase 3: the fallback is visible in the shared project log.
+    let log = read_log(&project);
+    let fallbacks: Vec<&serde_json::Value> = log
+        .iter()
+        .filter(|l| l["event"] == "fallback" && l["command"] == "enriched_search")
+        .collect();
+    assert_eq!(
+        fallbacks.len(),
+        1,
+        "the failed enriched-search route must leave exactly one fallback line: {log:?}"
+    );
+    let detail = fallbacks[0]["detail"].as_str().unwrap_or("");
+    assert!(
+        detail.contains("daemon"),
+        "the fallback line says WHY the daemon route failed: {detail}"
+    );
+}
+
+/// (d, cont.) ROUTE PROOF at the CLI-command level: with a daemon RUNNING
+/// for the project, two identical `SmartSearchArgs::run` invocations move
+/// the daemon's salsa counters (1 miss + 1 hit) — the only way those
+/// counters move is through the daemon's query cache, so this pins that the
+/// CLI command actually routes (and that the route caches), not merely that
+/// some payload shape decodes.
+#[test]
+fn enriched_search_cli_command_uses_the_running_daemon_cache() {
+    let temp = project_dir("dc-enrich-cli-");
+    let project = temp.path().canonicalize().unwrap();
+    write_enriched_fixture(&project);
+
+    let rt = tokio::runtime::Runtime::new().expect("test runtime");
+    rt.block_on(async {
+        start_in_process_daemon(&project, default_config()).await;
+    });
+
+    let args = SmartSearchArgs {
+        query: "alpha_search_fn".to_string(),
+        path: project.clone(),
+        lang: Some(Language::Python),
+        top_k: 10,
+        no_callgraph: false,
+        regex: false,
+        hybrid: None,
+    };
+    args.run(OutputFormat::Json, true)
+        .expect("first CLI search must succeed through the daemon route");
+    args.run(OutputFormat::Json, true)
+        .expect("second CLI search must succeed through the daemon route");
+
+    rt.block_on(async {
+        let status = send_command(&project, &DaemonCommand::Status { session: None })
+            .await
+            .expect("status round-trip");
+        match status {
+            DaemonResponse::FullStatus { salsa_stats, .. } => assert_eq!(
+                (salsa_stats.misses, salsa_stats.hits),
+                (1, 1),
+                "two identical CLI searches against a running daemon must be \
+                 exactly one miss (compute) + one hit (cache) — anything else \
+                 means the CLI command is not routing through the daemon"
+            ),
+            other => panic!("expected FullStatus response, got {:?}", other),
+        }
+
+        send_command(&project, &DaemonCommand::Shutdown)
+            .await
+            .expect("shutdown acknowledged");
+        // (The socket-release and join-handle contract is pinned by
+        // `ipc_lifecycle_serves_ping_and_shuts_down`; not re-asserted here.)
+    });
+
+    // Dropping the runtime ends the in-process daemon task — structural
+    // hygiene: no lingering process or socket outside the test.
+    drop(rt);
 }
 
 // =============================================================================

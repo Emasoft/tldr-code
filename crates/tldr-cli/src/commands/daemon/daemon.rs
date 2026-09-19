@@ -40,10 +40,10 @@ use super::types::DEFAULT_REINDEX_THRESHOLD;
 use tldr_core::semantic::{BuildOptions, CacheConfig, IndexSearchOptions, SemanticIndex};
 use tldr_core::{
     architecture_analysis, build_project_call_graph, change_impact, collect_all_functions,
-    dead_code_analysis, detect_or_parse_language, extract_file, find_importers, get_cfg_context,
-    get_code_structure, get_dfg_context, get_file_tree, get_imports, get_relevant_context,
-    get_slice, impact_analysis, search as tldr_search, CodeStructure, FileTree, Language, NodeType,
-    SliceDirection,
+    dead_code_analysis, detect_or_parse_language, enriched_search, extract_file, find_importers,
+    get_cfg_context, get_code_structure, get_dfg_context, get_file_tree, get_imports,
+    get_relevant_context, get_slice, impact_analysis, search as tldr_search, CodeStructure,
+    EnrichedSearchOptions, FileTree, Language, NodeType, SliceDirection,
 };
 
 // =============================================================================
@@ -102,6 +102,40 @@ fn dfg_query_key(file: &Path, function: &str, language: Language) -> QueryKey {
     QueryKey::new(
         "dfg",
         hash_str_args(&[&file.to_string_lossy(), function]),
+        language,
+    )
+}
+
+/// Build the `QueryKey` the `EnrichedSearch` handler constructs for a
+/// request (issue #65).
+///
+/// daemon-enriched-search-v1: the cached value IS the answer to THIS query
+/// shape, so every query-affecting parameter is part of the args hash — the
+/// search root, the raw query, the serialized `SearchMode` (which embeds the
+/// regex pattern for `regex`/`hybrid` requests), the card limit and the
+/// call-graph toggle. A `--top-k 5` request must not be served the 10-card
+/// slot a default request warmed, and a `--no-callgraph` request must not be
+/// served a callgraph-enriched slot (same rationale as `calls_query_key`'s
+/// `max_items`). The language rides on `QueryKey.language` like every other
+/// slot.
+fn enriched_search_query_key(
+    root: &Path,
+    query: &str,
+    search_mode: &tldr_core::SearchMode,
+    top_k: usize,
+    include_callgraph: bool,
+    language: Language,
+) -> QueryKey {
+    let mode_json = serde_json::to_string(search_mode).unwrap_or_default();
+    QueryKey::new(
+        "enriched_search",
+        hash_str_args(&[
+            &root.to_string_lossy(),
+            query,
+            &mode_json,
+            &top_k.to_string(),
+            if include_callgraph { "cg" } else { "nocg" },
+        ]),
         language,
     )
 }
@@ -338,6 +372,10 @@ fn describe_command(cmd: &DaemonCommand) -> (String, Option<String>) {
         DaemonCommand::Warm { .. } => ("warm".to_string(), None),
         DaemonCommand::Semantic { .. } => ("semantic".to_string(), None),
         DaemonCommand::Search { .. } => ("search".to_string(), None),
+        DaemonCommand::EnrichedSearch { root, .. } => (
+            "enriched_search".to_string(),
+            root.as_ref().map(|p| p.to_string_lossy().to_string()),
+        ),
         DaemonCommand::Extract { file, .. } => ("extract".to_string(), path_of(file)),
         DaemonCommand::Tree { path } => (
             "tree".to_string(),
@@ -1117,6 +1155,61 @@ impl TLDRDaemon {
                         // can invalidate the slot (pre-fix an empty dep list
                         // made stale results survive file edits forever).
                         let deps = project_input_hashes(&self.project, &self.project);
+                        self.cache.insert(key, &val, deps);
+                        DaemonResponse::Result(val)
+                    }
+                    Err(e) => DaemonResponse::Error {
+                        status: "error".to_string(),
+                        error: e.to_string(),
+                    },
+                }
+            }
+
+            // Enriched search (issue #65): the same core `enriched_search`
+            // pipeline the CLI's direct-compute path calls — one code path,
+            // no drift — memoized per query shape.
+            DaemonCommand::EnrichedSearch {
+                query,
+                root,
+                language,
+                top_k,
+                include_callgraph,
+                search_mode,
+            } => {
+                let search_root = root.unwrap_or_else(|| self.project.clone());
+                let lang = resolve_language_from_root(language, &search_root);
+                let k = top_k.unwrap_or(10);
+                let with_callgraph = include_callgraph.unwrap_or(true);
+
+                let key = enriched_search_query_key(
+                    &search_root,
+                    &query,
+                    &search_mode,
+                    k,
+                    with_callgraph,
+                    lang,
+                );
+                if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
+                    return DaemonResponse::Result(cached);
+                }
+                let options = EnrichedSearchOptions {
+                    top_k: k,
+                    include_callgraph: with_callgraph,
+                    search_mode,
+                };
+                match enriched_search(&query, &search_root, lang, options) {
+                    Ok(report) => {
+                        let val = serde_json::to_value(&report).unwrap_or_default();
+                        // Issue #65 (mirrors the #51 project-wide arms): the
+                        // BM25 index is built over the search root's whole
+                        // tree, so the result depends on EVERY file under it
+                        // — register the ROOT input hashes (served root
+                        // included, so `handle_notify` reaches the slot no
+                        // matter which root spelling the client searched).
+                        // Conservative-never-stale: ANY file edit drops all
+                        // project-wide slots; the cache cannot distinguish an
+                        // "unrelated" edit, by design.
+                        let deps = project_input_hashes(&self.project, &search_root);
                         self.cache.insert(key, &val, deps);
                         DaemonResponse::Result(val)
                     }

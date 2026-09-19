@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tldr_core::search::enriched::SearchMode;
 use tldr_core::Language;
 
 // =============================================================================
@@ -357,6 +358,43 @@ pub enum DaemonCommand {
     Search {
         pattern: String,
         max_results: Option<usize>,
+    },
+
+    /// Enriched search (issue #65): BM25/regex search whose result cards are
+    /// enriched with structure + call-graph context.
+    ///
+    /// The daemon computes the SAME core `enriched_search` the CLI's direct
+    /// path calls (one code path — no drift) and memoizes the report keyed by
+    /// every query-affecting parameter (root, query, mode, top_k,
+    /// include_callgraph, language) with project-root input hashes, so a file
+    /// edit drops the slot (conservative-never-stale, issue #51 arm shape).
+    EnrichedSearch {
+        /// Search query (natural language or code terms; the regex pattern
+        /// itself when `search_mode` is `regex`).
+        query: String,
+        /// Search root — a directory or a single file (the CLI's positional
+        /// `path`). The CLI always sends the canonicalized spelling; `None`
+        /// means the daemon's served project root.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root: Option<PathBuf>,
+        /// Optional language override. Falls back to auto-detection from the
+        /// root when `None` (issue-83 convention shared with the seven
+        /// root-projected variants). Accepts the legacy `lang` key.
+        #[serde(default, alias = "lang", skip_serializing_if = "Option::is_none")]
+        language: Option<Language>,
+        /// Maximum number of enriched cards (`--top-k`). `None` = core
+        /// default (10).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        top_k: Option<usize>,
+        /// Call-graph enrichment toggle (`--no-callgraph` inverts it).
+        /// `None` = true (the core default).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        include_callgraph: Option<bool>,
+        /// How initial matches are discovered. `#[serde(default)]` →
+        /// [`SearchMode::Bm25`], so older clients that omit the field keep
+        /// today's BM25 behavior byte-for-byte.
+        #[serde(default)]
+        search_mode: SearchMode,
     },
 
     /// Extract file information

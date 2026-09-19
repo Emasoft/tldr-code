@@ -71,9 +71,9 @@
 //!
 //! - No log-reading command: `tldr daemon status` exposes `log_path` and
 //!   `log_size_bytes`; reading/filtering the log is future work.
-//! - Client-side fallbacks in commands that do NOT route through
-//!   `try_daemon_route_async` (e.g. the client-local enriched search) are
-//!   not logged here — there is no shared choke point for them.
+//! - Per-request cache hit/miss markers (see the coverage matrix in
+//!   `daemon_contract_coverage_test.rs`) stay observable through
+//!   `FullStatus.salsa_stats`.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;

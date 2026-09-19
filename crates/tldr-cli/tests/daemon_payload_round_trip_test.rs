@@ -27,7 +27,7 @@ use tempfile::TempDir;
 
 use tldr_cli::commands::daemon::types::{DaemonCommand, DaemonConfig, DaemonResponse};
 use tldr_cli::commands::daemon::TLDRDaemon;
-use tldr_core::DeadCodeReport;
+use tldr_core::{DeadCodeReport, EnrichedSearchReport, SearchMode};
 
 fn write_python_project(dir: &std::path::Path) {
     std::fs::write(
@@ -231,4 +231,185 @@ async fn calls_payload_matches_the_cli_output_shape() {
         "edge files must be project-relative like direct compute emits, got {src}"
     );
     let _root: PathBuf = serde_json::from_value(value["root"].clone()).expect("root is a path");
+}
+
+/// daemon-enriched-search-v1 (issue #65): the new `EnrichedSearch` command's
+/// REQUEST and RESPONSE payloads both round-trip.
+///
+/// Request side: the command serializes with the `enriched_search` wire tag
+/// and reconstructs with every field intact — including a `SearchMode` that
+/// carries data (hybrid's query/pattern pair) — and an older client that
+/// omits `search_mode` entirely deserializes to the BM25 default (wire
+/// back-compat).
+///
+/// Response side: the daemon handler drives the REAL core `enriched_search`
+/// (the exact function the CLI's direct-compute path calls), and its wire
+/// payload must deserialize into `EnrichedSearchReport` — the precondition
+/// for `tldr search`'s `try_daemon_route` to ever accept a daemon answer —
+/// and the cache-hit payload must decode identically.
+#[tokio::test]
+async fn enriched_search_payload_round_trips_into_enriched_search_report() {
+    let temp = TempDir::new().expect("temp project");
+    write_python_project(temp.path());
+    let daemon = make_daemon(temp.path());
+
+    // ---- REQUEST round-trip (wire shape, defaults, data-carrying mode) ----
+    let cmd = DaemonCommand::EnrichedSearch {
+        query: "helper".to_string(),
+        root: None,
+        language: Some(tldr_core::Language::Python),
+        top_k: Some(5),
+        include_callgraph: Some(false),
+        search_mode: SearchMode::Hybrid {
+            query: "helper".to_string(),
+            pattern: "def helper".to_string(),
+        },
+    };
+    let json = serde_json::to_string(&cmd).expect("request serializes");
+    assert!(
+        json.contains(r#""cmd":"enriched_search""#),
+        "the wire tag must be the snake_case command name, got {json}"
+    );
+    let back: DaemonCommand = serde_json::from_str(&json).expect("request deserializes");
+    match back {
+        DaemonCommand::EnrichedSearch {
+            query,
+            root,
+            language,
+            top_k,
+            include_callgraph,
+            search_mode,
+        } => {
+            assert_eq!(query, "helper");
+            assert_eq!(root, None, "no root means the served project");
+            assert_eq!(language, Some(tldr_core::Language::Python));
+            assert_eq!(top_k, Some(5));
+            assert_eq!(include_callgraph, Some(false));
+            match search_mode {
+                SearchMode::Hybrid { query, pattern } => {
+                    assert_eq!(query, "helper");
+                    assert_eq!(pattern, "def helper");
+                }
+                other => panic!("hybrid mode must round-trip, got {other:?}"),
+            }
+        }
+        other => panic!("expected EnrichedSearch, got {other:?}"),
+    }
+
+    // Back-compat: a request WITHOUT `search_mode` (and without the optional
+    // knobs) deserializes to the BM25 default — old clients keep today's
+    // behavior byte-for-byte.
+    let legacy: DaemonCommand =
+        serde_json::from_str(r#"{"cmd":"enriched_search","query":"helper"}"#)
+            .expect("a bare request must deserialize");
+    match legacy {
+        DaemonCommand::EnrichedSearch {
+            root,
+            language,
+            top_k,
+            include_callgraph,
+            search_mode,
+            ..
+        } => {
+            assert!(matches!(search_mode, SearchMode::Bm25), "default is BM25");
+            assert_eq!(
+                (root, language, top_k, include_callgraph),
+                (None, None, None, None)
+            );
+        }
+        other => panic!("expected EnrichedSearch, got {other:?}"),
+    }
+
+    // ---- RESPONSE round-trip through the REAL handler ----
+    let response = daemon
+        .handle_command(DaemonCommand::EnrichedSearch {
+            query: "helper".to_string(),
+            root: None,
+            language: Some(tldr_core::Language::Python),
+            top_k: Some(10),
+            include_callgraph: Some(true),
+            search_mode: SearchMode::Bm25,
+        })
+        .await;
+
+    let value = match response {
+        DaemonResponse::Result(value) => value,
+        DaemonResponse::Error { error, .. } => {
+            panic!("EnrichedSearch handler errored on a valid project: {error}")
+        }
+        other => panic!("expected a Result response, got {other:?}"),
+    };
+
+    for key in [
+        "query",
+        "results",
+        "total_results",
+        "total_files_searched",
+        "search_mode",
+    ] {
+        assert!(
+            value.get(key).is_some(),
+            "enriched payload must carry `{key}` (EnrichedSearchReport shape); got {value}"
+        );
+    }
+
+    // THE regression guard: the daemon's payload decodes into the CLI's
+    // report type. Pre-route, nothing guaranteed this; if it breaks,
+    // `try_daemon_route::<EnrichedSearchReport>` returns None on EVERY call
+    // and `tldr search` silently degrades to client-local compute forever.
+    let report: EnrichedSearchReport = serde_json::from_value(value).expect(
+        "the daemon's EnrichedSearch payload must deserialize into \
+         EnrichedSearchReport",
+    );
+    assert_eq!(report.query, "helper");
+    assert!(
+        !report.results.is_empty(),
+        "fixture sanity: 'helper' must match the two-file project"
+    );
+    assert_eq!(report.total_results, report.results.len());
+    let card = report
+        .results
+        .iter()
+        .find(|c| c.name == "helper")
+        .expect("the `helper` function card must be present");
+    assert_eq!(card.kind, "function");
+    assert!(
+        card.signature.contains("def helper"),
+        "the card signature must survive the round-trip, got {:?}",
+        card.signature
+    );
+
+    // Cache-hit payload still decodes (mirrors the Dead test above).
+    let hits_after_first = daemon.cache_stats().hits;
+    let second = daemon
+        .handle_command(DaemonCommand::EnrichedSearch {
+            query: "helper".to_string(),
+            root: None,
+            language: Some(tldr_core::Language::Python),
+            top_k: Some(10),
+            include_callgraph: Some(true),
+            search_mode: SearchMode::Bm25,
+        })
+        .await;
+    let second_value = match second {
+        DaemonResponse::Result(value) => value,
+        other => panic!("second EnrichedSearch request must succeed, got {other:?}"),
+    };
+    assert!(
+        daemon.cache_stats().hits > hits_after_first,
+        "the second identical EnrichedSearch query must be a CACHE HIT — \
+         pre-route the CLI could never decode the payload, so the cache was \
+         useless for search"
+    );
+    let second_report: EnrichedSearchReport =
+        serde_json::from_value(second_value).expect("cache-hit payload decodes");
+    assert_eq!(
+        second_report.total_results, report.total_results,
+        "cache hit must serve the same analysis"
+    );
+    assert_eq!(
+        second_report.results.len(),
+        report.results.len(),
+        "cache hit must serve the same result set"
+    );
 }

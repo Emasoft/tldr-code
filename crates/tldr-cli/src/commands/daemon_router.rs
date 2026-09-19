@@ -343,6 +343,42 @@ pub fn params_with_path_lang(path: &Path, lang: Option<&str>) -> serde_json::Val
     serde_json::Value::Object(obj)
 }
 
+/// Build JSON params for the enriched-search daemon command (issue #65).
+///
+/// `root` is the CANONICALIZED search root — the daemon resolves a relative
+/// path against ITS OWN cwd, which is not the CLI's, so the CLI must send an
+/// absolute spelling for the daemon to search the same tree the user asked
+/// for (and for the cache key to be stable across cwds).
+///
+/// `mode` is serialized verbatim into `search_mode` (`"bm25"`,
+/// `{"regex": ..}`, `{"hybrid": {query, pattern}}`); the daemon reconstructs
+/// the exact `SearchMode` from it, so the two sides share one definition.
+pub fn params_for_enriched_search(
+    root: &Path,
+    query: &str,
+    lang: Option<&str>,
+    top_k: usize,
+    include_callgraph: bool,
+    mode: &tldr_core::SearchMode,
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("root".to_string(), serde_json::json!(root));
+    obj.insert("query".to_string(), serde_json::json!(query));
+    if let Some(l) = lang {
+        obj.insert("language".to_string(), serde_json::json!(l));
+    }
+    obj.insert("top_k".to_string(), serde_json::json!(top_k));
+    obj.insert(
+        "include_callgraph".to_string(),
+        serde_json::Value::Bool(include_callgraph),
+    );
+    obj.insert(
+        "search_mode".to_string(),
+        serde_json::to_value(mode).unwrap_or(serde_json::json!("bm25")),
+    );
+    serde_json::Value::Object(obj)
+}
+
 /// Build JSON params for the `smells` command.
 ///
 /// v0.2.3 (#1.D): the smells command supports a repeatable `--files` flag and
