@@ -4,16 +4,30 @@
 //! OCaml functor bodies, OCaml module-wrapper interface naming, and
 //! Elixir mix-project deps + PDG slicing.
 //!
-//! Each test is gated on the presence of an upstream sample under
-//! `/tmp/repos/<name>`. Where the fixture is missing the test exits
-//! early with `return` — there is no `cfg` skip, so CI runs them
-//! whenever the corpora are present (no-op otherwise).
+//! # Corpus gating (tightened)
 //!
-//! These tests follow the no-synthetic-fixtures-v1 architecture: every
-//! assertion runs against a real upstream repository, never a
-//! TempDir-with-inline-source fixture. Synthetic fixtures hide the
-//! exact AST shapes (functor parameters, multi-clause defs, `app.method
-//! = function name() {}`) the bugs depend on.
+//! Every test here is a true big-repo audit: the assertions are calibrated
+//! to a specific upstream checkout (`/tmp/repos/<name>`), and the AST
+//! shapes the bugs depend on (functor parameters, multi-clause defs,
+//! `app.method = function name() {}`) cannot be served by synthetic
+//! fixtures without re-creating the upstream repo by hand. The historical
+//! "silently `return` when the path is missing" skip hid that dependency;
+//! each test now carries a precise `#[ignore = "needs /tmp/repos/<name>
+//! checkout; see <bug-id>"]` reason instead.
+//!
+//! Recipe to run the audits locally:
+//!
+//! ```sh
+//! mkdir -p /tmp/repos
+//! git clone --depth 1 https://github.com/ocaml/dune        /tmp/repos/ocaml-dune
+//! git clone --depth 1 https://github.com/expressjs/express /tmp/repos/express
+//! git clone --depth 1 https://github.com/elixir-plug/plug  /tmp/repos/elixir-plug
+//! cargo test -p tldr-cli --test language_adapters_completeness_v1 -- --ignored
+//! ```
+//!
+//! The path-existence gates are kept as a second line of defence: invoking
+//! the suite with `--ignored` on a machine without the corpus degrades to a
+//! no-op instead of a false failure.
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -46,6 +60,7 @@ fn require_repo(path: &str) -> bool {
 /// same file. The fix: include every defined function as a node in the
 /// call-graph output, not only ones that participate in resolved edges.
 #[test]
+#[ignore = "needs /tmp/repos/ocaml-dune checkout; see BUG-AGG12-4 (recipe: module header)"]
 fn test_calls_ocaml_functor_body_resolved() {
     let repo = "/tmp/repos/ocaml-dune/src/dag";
     if !require_repo(repo) {
@@ -72,6 +87,7 @@ fn test_calls_ocaml_functor_body_resolved() {
 /// reported nodes=2 vs structure_funcs=24 — the call graph was lying
 /// about which functions exist.
 #[test]
+#[ignore = "needs /tmp/repos/ocaml-dune checkout; see BUG-AGG12-4 (recipe: module header)"]
 fn test_calls_ocaml_functor_baseline_consistent() {
     let dir = "/tmp/repos/ocaml-dune/src/dag";
     let file = "/tmp/repos/ocaml-dune/src/dag/dag.ml";
@@ -128,6 +144,7 @@ fn test_calls_ocaml_functor_baseline_consistent() {
 /// `assignment_expression > function_expression` and the resolver's
 /// global fuzzy fallback rejected non-method funcs.
 #[test]
+#[ignore = "needs /tmp/repos/express checkout; see BUG-AGG12-7 (recipe: module header)"]
 fn test_impact_js_commonjs_method_assignment() {
     let repo = "/tmp/repos/express";
     if !require_repo(repo) {
@@ -167,6 +184,7 @@ fn test_impact_js_commonjs_method_assignment() {
 /// `explain` feed off the same call-graph IR; a divergence means one
 /// path failed to recognize a CommonJS-method definition.
 #[test]
+#[ignore = "needs /tmp/repos/express checkout; see BUG-AGG12-7 (recipe: module header)"]
 fn test_explain_js_commonjs_callers() {
     let app_file = "/tmp/repos/express/lib/application.js";
     if !Path::new(app_file).exists() {
@@ -220,6 +238,7 @@ fn test_explain_js_commonjs_callers() {
 /// the canonical `Plug.Conn` module name when the relative path began
 /// with `lib/` or `test/` — and `tldr deps lib` strips that prefix.
 #[test]
+#[ignore = "needs /tmp/repos/elixir-plug checkout; see BUG-AGG12-8 (recipe: module header)"]
 fn test_deps_elixir_resolves_alias() {
     let repo = "/tmp/repos/elixir-plug/lib";
     if !require_repo(repo) {
@@ -245,6 +264,7 @@ fn test_deps_elixir_resolves_alias() {
 /// line 316 is a one-line-body pipeline that exercises the elixir DFG
 /// extractor's `match_operator` recognition.
 #[test]
+#[ignore = "needs /tmp/repos/elixir-plug checkout; see BUG-AGG12-8 (recipe: module header)"]
 fn test_slice_elixir_returns_lines() {
     let file = "/tmp/repos/elixir-plug/lib/plug/conn.ex";
     if !Path::new(file).exists() {
@@ -273,6 +293,7 @@ fn test_slice_elixir_returns_lines() {
 /// P11's BUG-AGG-8 fix only touched `value_definition` / `let_binding`,
 /// missing the `module_definition > module_binding > module_name` path.
 #[test]
+#[ignore = "needs /tmp/repos/ocaml-dune checkout; see BUG-AGG12-9 (recipe: module header)"]
 fn test_interface_ocaml_module_name_populated() {
     let file = "/tmp/repos/ocaml-dune/src/dag/dag.ml";
     if !Path::new(file).exists() {
@@ -314,6 +335,7 @@ fn test_interface_ocaml_module_name_populated() {
 /// `type_definition`; verify io_buffer.ml continues to populate a
 /// non-empty class name.
 #[test]
+#[ignore = "needs /tmp/repos/ocaml-dune checkout; see BUG-AGG12-9 / P11 BUG-AGG-8 (recipe: module header)"]
 fn test_interface_ocaml_io_buffer_unchanged() {
     let file = "/tmp/repos/ocaml-dune/src/rpc/io_buffer.ml";
     if !Path::new(file).exists() {

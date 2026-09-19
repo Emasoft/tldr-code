@@ -1,9 +1,18 @@
 //! quality-metrics-and-schema-v1 — regression tests for the P13.AGG13
 //! (round C) milestone.
 //!
-//! All tests use real repos under `/tmp/repos/<repo>` and gate on
-//! existence so they're skipped silently when the corpus isn't checked
-//! out (per the no-synthetic-fixtures-v1 strategy).
+//! Test gating, two kinds:
+//!
+//! - **AGG13-17 is HERMETIC**: it generates its per-language fixtures in a
+//!   tempdir and has no external dependency. It used to iterate real repos
+//!   under `/tmp/repos/<repo>` and FAIL whenever none was checked out (the
+//!   `tested >= 1` assertion) — a spurious failure on every machine without
+//!   the corpus.
+//! - All other tests use real repos under `/tmp/repos/<repo>` and gate on
+//!   existence so they're skipped silently when the corpus isn't checked
+//!   out (per the no-synthetic-fixtures-v1 strategy). These are true
+//!   big-repo audits: their assertions are calibrated to specific upstream
+//!   material and cannot be served by synthetic fixtures.
 //!
 //! Bugs covered (8 total — 6 implemented, 2 already-fixed and only
 //! pinned with regression tests):
@@ -65,8 +74,10 @@
 //! - **AGG13-17** (LOW): C `tldr smells` returned `summary: null` for
 //!   `/tmp/repos/c-sds`. **Already-fixed** by a prior milestone (the
 //!   summary now reports `total_smells`, `by_type`,
-//!   `avg_smells_per_file`); a regression pin verifies the summary
-//!   stays populated across C/cpp/Java/PHP/JS.
+//!   `avg_smells_per_file`); the regression pin verifies the summary
+//!   stays populated across C/cpp/Java/PHP/JS using HERMETIC tempdir
+//!   fixtures (the original five-repo `/tmp/repos` gate made the pin
+//!   fail spuriously whenever the corpus was absent).
 //!
 //! - **AGG13-18** (LOW, deferral_elevated): PHP `tldr patterns`
 //!   flagged `__construct`, `__invoke`, `__toString` as snake_case
@@ -420,51 +431,196 @@ fn agg13_15_java_reaching_defs_no_import_or_method_fps() {
 
 // =============================================================================
 // AGG13-17: smells summary populated across languages (regression pin —
-// already-fixed)
+// already-fixed; HERMETIC — tempdir fixtures, no /tmp/repos dependency)
 // =============================================================================
 
-/// `tldr smells <c-repo>` must emit a non-null `summary` object with
-/// at least `total_smells` and `by_type` populated. Pre-fix C
-/// returned `summary: null`. Already-fixed; this regression pin
-/// also verifies cpp/java/php/js to catch any future reintroduction.
+// Minimal per-language smell fixtures for the hermetic AGG13-17 pin. Each
+// file carries an 8-parameter function plus a 12-branch classifier — enough
+// to trip the LongParameterList / LongMethod detectors under the default
+// threshold preset in every language below (verified per language), so the
+// `total_smells >= 1` assertion is meaningful rather than vacuous.
+const FIXTURE_C: &str = r#"#include <stdlib.h>
+
+int store_put(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
+    return a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8;
+}
+
+int store_classify(int value) {
+    if (value == 1) return 1;
+    if (value == 2) return 2;
+    if (value == 3) return 3;
+    if (value == 4) return 4;
+    if (value == 5) return 5;
+    if (value == 6) return 6;
+    if (value == 7) return 7;
+    if (value == 8) return 8;
+    if (value == 9) return 9;
+    if (value == 10) return 10;
+    if (value == 11) return 11;
+    if (value == 12) return 12;
+    return 0;
+}
+"#;
+
+const FIXTURE_CPP: &str = r#"class Store {
+public:
+    int put(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
+        return a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8;
+    }
+    int classify(int value) {
+        if (value == 1) return 1;
+        if (value == 2) return 2;
+        if (value == 3) return 3;
+        if (value == 4) return 4;
+        if (value == 5) return 5;
+        if (value == 6) return 6;
+        if (value == 7) return 7;
+        if (value == 8) return 8;
+        if (value == 9) return 9;
+        if (value == 10) return 10;
+        if (value == 11) return 11;
+        if (value == 12) return 12;
+        return 0;
+    }
+};
+"#;
+
+const FIXTURE_JAVA: &str = r#"public class Store {
+    public int put(int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8) {
+        return a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8;
+    }
+
+    public int classify(int value) {
+        if (value == 1) return 1;
+        if (value == 2) return 2;
+        if (value == 3) return 3;
+        if (value == 4) return 4;
+        if (value == 5) return 5;
+        if (value == 6) return 6;
+        if (value == 7) return 7;
+        if (value == 8) return 8;
+        if (value == 9) return 9;
+        if (value == 10) return 10;
+        if (value == 11) return 11;
+        if (value == 12) return 12;
+        return 0;
+    }
+}
+"#;
+
+const FIXTURE_PHP: &str = r#"<?php
+function store_put($a1, $a2, $a3, $a4, $a5, $a6, $a7, $a8) {
+    return $a1 + $a2 + $a3 + $a4 + $a5 + $a6 + $a7 + $a8;
+}
+
+function store_classify($value) {
+    if ($value == 1) return 1;
+    if ($value == 2) return 2;
+    if ($value == 3) return 3;
+    if ($value == 4) return 4;
+    if ($value == 5) return 5;
+    if ($value == 6) return 6;
+    if ($value == 7) return 7;
+    if ($value == 8) return 8;
+    if ($value == 9) return 9;
+    if ($value == 10) return 10;
+    if ($value == 11) return 11;
+    if ($value == 12) return 12;
+    return 0;
+}
+"#;
+
+const FIXTURE_JS: &str = r#"function storePut(a1, a2, a3, a4, a5, a6, a7, a8) {
+  return a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8;
+}
+
+function storeClassify(value) {
+  if (value === 1) return 1;
+  if (value === 2) return 2;
+  if (value === 3) return 3;
+  if (value === 4) return 4;
+  if (value === 5) return 5;
+  if (value === 6) return 6;
+  if (value === 7) return 7;
+  if (value === 8) return 8;
+  if (value === 9) return 9;
+  if (value === 10) return 10;
+  if (value === 11) return 11;
+  if (value === 12) return 12;
+  return 0;
+}
+"#;
+
+/// `tldr smells <project>` must emit a non-null `summary` object with
+/// `total_smells` and `by_type` populated. Pre-fix C returned
+/// `summary: null`. Already-fixed; this regression pin also verifies
+/// cpp/java/php/js to catch any future reintroduction.
+///
+/// Hermetic by construction (val003-adjacent hardening): the original pin
+/// iterated five real checkouts under `/tmp/repos/*` and FAILED whenever
+/// none of them was checked out (`tested >= 1`), so the suite broke
+/// spuriously on every machine without the corpus. The intent — the summary
+/// SHAPE the AGG13-17 fix guarantees, across the same five languages — is
+/// fully served by minimal tempdir projects, so the fixture is generated
+/// in-test and the external-repo dependency is gone.
 #[test]
 fn agg13_17_smells_summary_populated_multi_lang() {
-    let repos = [
-        "/tmp/repos/c-sds",
-        "/tmp/repos/cpp-tinyxml2",
-        "/tmp/repos/spring-petclinic/src",
-        "/tmp/repos/php-symfony-string",
-        "/tmp/repos/express",
+    let fixtures: &[(&str, &str, &str)] = &[
+        ("c", "store.c", FIXTURE_C),
+        ("cpp", "store.cpp", FIXTURE_CPP),
+        ("java", "Store.java", FIXTURE_JAVA),
+        ("php", "store.php", FIXTURE_PHP),
+        ("js", "store.js", FIXTURE_JS),
     ];
-    let mut tested = 0;
-    for repo in &repos {
-        if !Path::new(repo).exists() {
-            eprintln!("[skip] {} not present", repo);
-            continue;
-        }
-        let report = run_json(&["smells", repo, "--format", "json"]);
+    for (lang, filename, source) in fixtures {
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("agg13-17-{lang}-"))
+            .tempdir()
+            .expect("tempdir fixture project");
+        std::fs::write(dir.path().join(filename), source).expect("write fixture file");
+
+        let out = tldr_cmd()
+            .arg("smells")
+            .arg(dir.path())
+            .args(["--format", "json"])
+            .output()
+            .expect("spawn tldr smells");
+        assert!(
+            out.status.success(),
+            "{lang}: tldr smells exited non-zero: stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let report: Value = serde_json::from_str(&stdout)
+            .unwrap_or_else(|e| panic!("{lang}: parse smells JSON: {e}\nstdout: {stdout}"));
+
         let summary = &report["summary"];
         assert!(
             !summary.is_null(),
-            "{}: summary is null (AGG13-17 regression)",
-            repo
+            "{lang}: summary is null (AGG13-17 regression)"
         );
         assert!(
             summary.get("total_smells").is_some(),
-            "{}: summary missing total_smells field",
-            repo
+            "{lang}: summary missing total_smells field"
         );
         assert!(
             summary.get("by_type").is_some(),
-            "{}: summary missing by_type field",
-            repo
+            "{lang}: summary missing by_type field"
         );
-        tested += 1;
+        // Non-vacuous (the d09c63e1 lesson): the fixture must actually scan
+        // a file and trip the detectors, so the summary carries real
+        // content — a shape-only assert over an empty scan proves nothing.
+        let total = summary["total_smells"].as_u64().unwrap_or(0);
+        assert!(
+            total >= 1,
+            "{lang}: total_smells ({total}) must be >= 1 — the fixture is \
+             designed to produce LongParameterList/LongMethod findings"
+        );
+        assert!(
+            report["files_scanned"].as_u64().unwrap_or(0) >= 1,
+            "{lang}: files_scanned must be >= 1"
+        );
     }
-    assert!(
-        tested >= 1,
-        "no repos available for AGG13-17 multi-language summary check"
-    );
 }
 
 // =============================================================================

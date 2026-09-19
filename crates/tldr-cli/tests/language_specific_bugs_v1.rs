@@ -2,9 +2,36 @@
 //! surfaced by the phase-14 audit but not addressed by P14-A
 //! (cross-language resolver) or P14-B (sibling-resolver gaps).
 //!
-//! Each test gates on `/tmp/repos/<repo>` existence per the
-//! no-synthetic-fixtures-v1 strategy. All assertions are `≥ 1` style
-//! with numeric thresholds the canonical real-repo material guarantees.
+//! # Corpus gating (tightened)
+//!
+//! Every test here is a true big-repo audit: thresholds are numeric
+//! guarantees of specific upstream material (`/tmp/repos/<name>`) — e.g.
+//! ripgrep's globset `impl GlobSet` block (≥10 methods), spring-petclinic's
+//! 13 `@Test` methods — and cannot be served by synthetic fixtures without
+//! re-creating the upstream repo by hand. The historical "silently `return`
+//! when the path is missing" skip hid that dependency; each test now
+//! carries a precise `#[ignore = "needs /tmp/repos/<name> checkout; see
+//! <bug-id>"]` reason instead.
+//!
+//! Recipe to run the audits locally:
+//!
+//! ```sh
+//! mkdir -p /tmp/repos
+//! git clone --depth 1 https://github.com/spring-projects/spring-petclinic /tmp/repos/spring-petclinic
+//! git clone --depth 1 https://github.com/BurntSushi/ripgrep               /tmp/repos/ripgrep
+//! git clone --depth 1 https://github.com/julienschmidt/httprouter         /tmp/repos/go-httprouter
+//! git clone --depth 1 https://github.com/typelevel/cats-effect            /tmp/repos/scala-cats-effect
+//! git clone --depth 1 https://github.com/pallets/flask                    /tmp/repos/flask
+//! git clone --depth 1 https://github.com/symfony/string                   /tmp/repos/php-symfony-string
+//! # ts-dom-gen and lua-lsp are corpus samples without a canonical upstream
+//! # URL recorded in this repo; materialize them from your corpus mirror
+//! # (each test's doc comment states the exact shape its assertions need).
+//! cargo test -p tldr-cli --test language_specific_bugs_v1 -- --ignored
+//! ```
+//!
+//! The path-existence gates are kept as a second line of defence: invoking
+//! the suite with `--ignored` on a machine without the corpus degrades to a
+//! no-op instead of a false failure.
 //!
 //! Bugs covered:
 //!
@@ -57,6 +84,7 @@ fn parse_json(out: &str) -> serde_json::Value {
 // ============================================================================
 
 #[test]
+#[ignore = "needs /tmp/repos/spring-petclinic checkout; see AGG14-2 (recipe: module header)"]
 fn java_mockmvc_specs_from_tests() {
     let path = "/tmp/repos/spring-petclinic/src/test/java/org/springframework/samples/petclinic/owner/OwnerControllerTests.java";
     if !Path::new(path).exists() {
@@ -86,6 +114,7 @@ fn java_mockmvc_specs_from_tests() {
 // ============================================================================
 
 #[test]
+#[ignore = "needs /tmp/repos/ts-dom-gen checkout; see AGG14-7 (recipe: module header)"]
 fn typescript_call_graph_under_src_build() {
     let path = "/tmp/repos/ts-dom-gen";
     if !Path::new(path).exists() {
@@ -113,6 +142,7 @@ fn typescript_call_graph_under_src_build() {
 // ============================================================================
 
 #[test]
+#[ignore = "needs /tmp/repos/ripgrep checkout; see AGG14-9 (recipe: module header)"]
 fn rust_specs_inline_test_module() {
     let path = "/tmp/repos/ripgrep/crates/globset/src/lib.rs";
     if !Path::new(path).exists() {
@@ -140,6 +170,7 @@ fn rust_specs_inline_test_module() {
 // ============================================================================
 
 #[test]
+#[ignore = "needs /tmp/repos/ripgrep checkout; see AGG14-10 (recipe: module header)"]
 fn rust_interface_impl_methods() {
     let path = "/tmp/repos/ripgrep/crates/globset/src/lib.rs";
     if !Path::new(path).exists() {
@@ -177,6 +208,7 @@ fn rust_interface_impl_methods() {
 // ============================================================================
 
 #[test]
+#[ignore = "needs /tmp/repos/scala-cats-effect checkout; see AGG14-11 (recipe: module header)"]
 fn scala_importers_fqcn_subpath() {
     let path = "/tmp/repos/scala-cats-effect";
     if !Path::new(path).exists() {
@@ -201,6 +233,7 @@ fn scala_importers_fqcn_subpath() {
 // ============================================================================
 
 #[test]
+#[ignore = "needs /tmp/repos/spring-petclinic checkout; see AGG14-12 (recipe: module header)"]
 fn java_reaching_defs_no_class_field_fp() {
     let path = "/tmp/repos/spring-petclinic/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java";
     if !Path::new(path).exists() {
@@ -231,6 +264,7 @@ fn java_reaching_defs_no_class_field_fp() {
 // ============================================================================
 
 #[test]
+#[ignore = "needs /tmp/repos/spring-petclinic checkout; see AGG14-15 (recipe: module header)"]
 fn java_api_check_no_null_comparison_fp() {
     let path = "/tmp/repos/spring-petclinic/src/main/java";
     if !Path::new(path).exists() {
@@ -261,6 +295,7 @@ fn java_api_check_no_null_comparison_fp() {
 // ============================================================================
 
 #[test]
+#[ignore = "needs /tmp/repos/spring-petclinic checkout; see AGG14-16 (recipe: module header)"]
 fn java_explain_callees_and_caller_line() {
     let path = "/tmp/repos/spring-petclinic/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java";
     if !Path::new(path).exists() {
@@ -304,6 +339,7 @@ fn java_explain_callees_and_caller_line() {
 // ============================================================================
 
 #[test]
+#[ignore = "needs /tmp/repos/spring-petclinic checkout; see AGG14-17 (recipe: module header)"]
 fn java_interface_flattens_methods_to_functions() {
     let path = "/tmp/repos/spring-petclinic/src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java";
     if !Path::new(path).exists() {
@@ -330,6 +366,7 @@ fn java_interface_flattens_methods_to_functions() {
 // ============================================================================
 
 #[test]
+#[ignore = "needs /tmp/repos/go-httprouter checkout; see P12 non-regression pin (recipe: module header)"]
 fn nonreg_go_specs_still_works() {
     let path = "/tmp/repos/go-httprouter";
     if !Path::new(path).exists() {
@@ -343,6 +380,7 @@ fn nonreg_go_specs_still_works() {
 }
 
 #[test]
+#[ignore = "needs /tmp/repos/php-symfony-string checkout; see P12 non-regression pin (recipe: module header)"]
 fn nonreg_php_specs_still_works() {
     let path = "/tmp/repos/php-symfony-string";
     if !Path::new(path).exists() {
@@ -356,6 +394,7 @@ fn nonreg_php_specs_still_works() {
 }
 
 #[test]
+#[ignore = "needs /tmp/repos/flask checkout; see P12 non-regression pin (recipe: module header)"]
 fn nonreg_python_interface_still_works() {
     let path = "/tmp/repos/flask/src/flask/app.py";
     if !Path::new(path).exists() {
@@ -382,6 +421,7 @@ fn nonreg_python_interface_still_works() {
 }
 
 #[test]
+#[ignore = "needs /tmp/repos/lua-lsp checkout; see P12 non-regression pin (recipe: module header)"]
 fn nonreg_lua_smells_kind_populated() {
     let path = "/tmp/repos/lua-lsp/script";
     if !Path::new(path).exists() {
@@ -408,6 +448,7 @@ fn nonreg_lua_smells_kind_populated() {
 }
 
 #[test]
+#[ignore = "needs /tmp/repos/ts-dom-gen checkout; see P12 non-regression pin (recipe: module header)"]
 fn nonreg_ts_interface_free_functions_still_flat() {
     let path = "/tmp/repos/ts-dom-gen/src/build/emitter.ts";
     if !Path::new(path).exists() {
