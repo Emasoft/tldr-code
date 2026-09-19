@@ -434,8 +434,15 @@ impl InheritanceGraph {
     }
 
     /// Find root classes (no parents in the graph)
+    ///
+    /// Deterministic emission (issue #74): the result is a SET-like query
+    /// over `nodes`, which is a `HashMap` — unsorted key iteration would
+    /// leak hash order into the report (and from there into the text, DOT
+    /// and JSON output) differently on every run. Emitted in sorted name
+    /// order.
     pub fn find_roots(&self) -> Vec<String> {
-        self.nodes
+        let mut roots: Vec<String> = self
+            .nodes
             .keys()
             .filter(|name| {
                 self.parents
@@ -443,12 +450,18 @@ impl InheritanceGraph {
                     .is_none_or(|parents| parents.is_empty())
             })
             .cloned()
-            .collect()
+            .collect();
+        roots.sort();
+        roots
     }
 
     /// Find leaf classes (no children in the graph)
+    ///
+    /// Deterministic emission (issue #74): sorted, same rationale as
+    /// [`InheritanceGraph::find_roots`].
     pub fn find_leaves(&self) -> Vec<String> {
-        self.nodes
+        let mut leaves: Vec<String> = self
+            .nodes
             .keys()
             .filter(|name| {
                 self.children
@@ -456,7 +469,9 @@ impl InheritanceGraph {
                     .is_none_or(|children| children.is_empty())
             })
             .cloned()
-            .collect()
+            .collect();
+        leaves.sort();
+        leaves
     }
 }
 

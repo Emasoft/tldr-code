@@ -65,7 +65,7 @@ use walkdir::WalkDir;
 use crate::ast::parser::ParserPool;
 use crate::error::TldrError;
 use crate::types::{
-    BaseResolution, InheritanceEdge, InheritanceGraph, InheritanceReport, Language,
+    BaseResolution, InheritanceEdge, InheritanceGraph, InheritanceNode, InheritanceReport, Language,
 };
 use crate::TldrResult;
 
@@ -191,7 +191,7 @@ pub fn extract_inheritance(
     }
 
     // Detect patterns unless disabled
-    let diamonds = if options.no_patterns {
+    let mut diamonds = if options.no_patterns {
         Vec::new()
     } else {
         // Detect ABC/Protocol/Interface
@@ -210,14 +210,39 @@ pub fn extract_inheritance(
     };
 
     // Build report
+    //
+    // Deterministic emission (issue #74): every report Vec is a projection
+    // of a HASH structure (`languages_seen` is a HashSet, `graph.nodes` /
+    // `graph.parents` are HashMaps), so collecting them unsorted leaked
+    // hash iteration order into the report — and from there into the text
+    // renderer (Languages/Roots/Leaves/Hierarchy/Mixins sections), the DOT
+    // renderer (node + edge statement order) and the JSON serializer
+    // (nodes/languages/roots/leaves arrays) — differently on every run.
+    // Each Vec is emitted in a canonical order:
+    //   languages -> sorted by the displayed (Debug, lowercased) spelling;
+    //   nodes     -> sorted by name (the graph's unique node key);
+    //   diamonds  -> sorted by (class_name, common_ancestor) — the pair
+    //                `detect_diamonds` produces one pattern for;
+    //   edges     -> sorted per child inside `build_edges` below;
+    //   roots/leaves -> sorted inside `find_roots`/`find_leaves`.
     let mut report = InheritanceReport::new(path.to_path_buf());
     report.count = filtered_graph.nodes.len();
-    report.languages = languages_seen.into_iter().collect();
+    let mut languages: Vec<Language> = languages_seen.into_iter().collect();
+    languages.sort_by_key(|l| format!("{l:?}").to_lowercase());
+    report.languages = languages;
     report.scan_time_ms = start.elapsed().as_millis() as u64;
+
+    diamonds.sort_by(|a, b| {
+        a.class_name
+            .cmp(&b.class_name)
+            .then_with(|| a.common_ancestor.cmp(&b.common_ancestor))
+    });
     report.diamonds = diamonds;
 
     // Convert graph to edges and nodes for report
-    report.nodes = filtered_graph.nodes.values().cloned().collect();
+    let mut nodes: Vec<InheritanceNode> = filtered_graph.nodes.values().cloned().collect();
+    nodes.sort_by(|a, b| a.name.cmp(&b.name));
+    report.nodes = nodes;
     report.edges = build_edges(&filtered_graph, path);
     report.roots = filtered_graph.find_roots();
     report.leaves = filtered_graph.find_leaves();
@@ -299,7 +324,16 @@ fn build_edges(graph: &InheritanceGraph, _project_root: &Path) -> Vec<Inheritanc
     let mut edges = Vec::new();
     let mut seen_edges: HashSet<(String, String, Option<PathBuf>)> = HashSet::new();
 
-    for (child_name, parents) in &graph.parents {
+    // Deterministic emission (issue #74): `graph.parents` is a HashMap, so
+    // iterating it directly emitted edge statements in hash order (random
+    // per process) into the JSON edges array and the DOT edge list. Walk
+    // the children in sorted name order; within one child the parents keep
+    // their extraction (declaration) order, which is itself deterministic
+    // because `collect_source_files` sorts the walk.
+    let mut child_names: Vec<&String> = graph.parents.keys().collect();
+    child_names.sort();
+    for child_name in child_names {
+        let parents = &graph.parents[child_name];
         let child_node = match graph.nodes.get(child_name) {
             Some(n) => n,
             None => continue,

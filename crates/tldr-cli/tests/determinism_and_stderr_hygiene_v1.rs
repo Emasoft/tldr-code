@@ -30,6 +30,14 @@
 //!   `truncate(limit)`, so the kept subset is the canonically-first N. The
 //!   test pins byte-equality AND that the kept prefix equals the first N of
 //!   the unlimited run.
+//! - `tldr inheritance` — report assembly iterated HASH structures
+//!   (`languages_seen` HashSet, `graph.nodes`/`graph.parents` HashMaps via
+//!   `find_roots`/`find_leaves`/`values()`/`build_edges`), so the text
+//!   renderer's Languages/Roots/Leaves/Hierarchy/Mixins sections (and the
+//!   JSON/DOT renderers through the shared report) came out in a different
+//!   order every run. Report Vecs are now emitted sorted (issue-#74
+//!   convention); the pin proves repeat-run byte-equality of the full text
+//!   report (modulo the wall-clock `Scan time:` line) plus sorted sections.
 //!
 //! The tests build a minimal Python project in a tempdir (so they don't
 //! depend on `/tmp/repos/<x>` being checked out) with enough surface to
@@ -1110,5 +1118,223 @@ fn bm25_index_enumeration_order_is_sorted_and_byte_stable() {
         got_docs, expected,
         "bm25 document enumeration order must follow the sorted directory walk \
          (walk-determinism-v2): from_project's walkdir must sort by full path"
+    );
+}
+
+// =============================================================================
+// issue #74 (inheritance ripple): `tldr inheritance` report assembly order
+// =============================================================================
+
+/// Build a fixture that exercises EVERY ordering-sensitive section of the
+/// inheritance renderers at once:
+///
+/// - multi-language scan (`Languages:` — assembled from the `languages_seen`
+///   HashSet, whose iteration order is random per process)
+/// - 5 roots / 5 leaves spread over two Python files and one TS file
+///   (`Roots:`/`Leaves:` — `InheritanceGraph::find_roots`/`find_leaves`
+///   iterate the graph's `nodes` HashMap)
+/// - a real diamond, `Griffon -> Dog/Cat -> Animal` (`!!! Diamond ... !!!`
+///   section — `detect_diamonds` walks `multi_parent_classes()`, a HashMap
+///   iterator, and a HashSet of common ancestors)
+/// - two `*Mixin` classes (`Mixins:` — collected from `report.nodes`, which
+///   was assembled from `graph.nodes.values()`)
+///
+/// Names were chosen to interleave across files so any hash-ordered
+/// emission scrambles the output run-to-run.
+fn make_inheritance_fixture() -> TempDir {
+    let dir = TempDir::new().expect("tempdir");
+    write(
+        &dir.path().join("a.py"),
+        r#"class Animal:
+    def speak(self):
+        return "..."
+
+class Dog(Animal):
+    def speak(self):
+        return "woof"
+
+class Cat(Animal):
+    def speak(self):
+        return "meow"
+
+class Griffon(Dog, Cat):
+    def speak(self):
+        return "grrr"
+
+class Standalone:
+    def ping(self):
+        return 1
+"#,
+    );
+    write(
+        &dir.path().join("b.py"),
+        r#"class LoggingMixin:
+    def log(self, msg):
+        return msg
+
+class SerializableMixin:
+    def serialize(self):
+        return "{}"
+"#,
+    );
+    write(
+        &dir.path().join("c.ts"),
+        r#"class Base {
+    ping(): number { return 1; }
+}
+
+class Impl extends Base {
+    ping(): number { return 2; }
+}
+"#,
+    );
+    dir
+}
+
+/// Run `tldr inheritance --format text` and normalize the only inherently
+/// variable line. `Scan time: {}ms` is wall-clock (same convention as
+/// `run_clones_strip_timing` above: byte-equality must capture CONTENT
+/// determinism, and scan latency was never claimed stable).
+fn run_inheritance_text(dir: &Path) -> String {
+    let output = tldr_cmd()
+        .arg("inheritance")
+        .arg(dir)
+        .arg("--format")
+        .arg("text")
+        .arg("--quiet")
+        .output()
+        .expect("invoke tldr inheritance");
+    assert!(
+        output.status.success(),
+        "tldr inheritance (text) failed: stderr=\n{}\nstdout=\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout),
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "--quiet text mode must keep stderr empty (BUG-18 contract); got:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.starts_with("Scan time: "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Extract the trimmed entries of a `format_text` section: everything from
+/// the header line up to the first blank line.
+fn section_entries(report: &str, header: &str) -> Vec<String> {
+    let mut lines = report.lines().skip_while(|line| !line.starts_with(header));
+    lines.next(); // consume the header itself
+    lines
+        .take_while(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_string())
+        .collect()
+}
+
+/// `tldr inheritance` assembled its report by iterating HASH structures:
+/// `report.languages` came from a `HashSet`, `report.nodes` from
+/// `graph.nodes.values()`, `report.roots`/`report.leaves` from
+/// `find_roots`/`find_leaves` (HashMap key iteration), and `build_edges`
+/// walked `graph.parents` — so the text renderer's `Languages:`, `Roots:`,
+/// `Leaves:`, `Hierarchy:` (per-root tree order) and `Mixins:` sections came
+/// out in a different order on every run, and the JSON/DOT renderers
+/// inherited the same randomness through the shared report. All report
+/// Vecs are now emitted in canonical order (sorted — the #74 convention for
+/// set-like fields), so the full text report must be byte-stable across
+/// runs (modulo the wall-clock Scan time line) and its sections must be
+/// sorted.
+#[test]
+fn inheritance_text_output_is_byte_stable() {
+    let dir = make_inheritance_fixture();
+    let path = dir.path();
+
+    let t1 = run_inheritance_text(path);
+    let t2 = run_inheritance_text(path);
+    let t3 = run_inheritance_text(path);
+
+    assert_eq!(
+        t1, t2,
+        "inheritance text run #1 vs #2 differs (issue #74 report-assembly order)"
+    );
+    assert_eq!(
+        t2, t3,
+        "inheritance text run #2 vs #3 differs (issue #74 report-assembly order)"
+    );
+
+    // The fixture must exercise the multi-language path for the Languages
+    // pin to be meaningful (HashSet iteration order is the pre-fix bug).
+    assert!(
+        t1.contains("Languages: python, typescript"),
+        "Languages must be emitted in sorted display order; got:\n{t1}"
+    );
+
+    // Diamond section must survive the ordering fix (content, not just order).
+    assert!(
+        t1.contains("Griffon has multiple paths to Animal"),
+        "fixture must produce the Griffon->Animal diamond; got:\n{t1}"
+    );
+
+    // Sections must be emitted in SORTED order, not merely stable — the
+    // pre-fix bug was HashMap/HashSet iteration order leaking through
+    // find_roots/find_leaves/nodes.values()/languages_seen.
+    for (header, what) in [
+        ("Roots (no project parents):", "roots"),
+        ("Leaves (no children):", "leaves"),
+        ("Mixins:", "mixins"),
+    ] {
+        let entries = section_entries(&t1, header);
+        assert!(
+            !entries.is_empty(),
+            "fixture must produce a non-empty {what} section; got:\n{t1}"
+        );
+        let mut sorted = entries.clone();
+        sorted.sort();
+        assert_eq!(
+            entries, sorted,
+            "{what} section must be emitted in sorted order (issue #74)"
+        );
+    }
+
+    // JSON shares the same report Vecs; pin their canonical order too.
+    let output = tldr_cmd()
+        .arg("inheritance")
+        .arg(path)
+        .arg("--format")
+        .arg("json")
+        .arg("--quiet")
+        .output()
+        .expect("invoke tldr inheritance (json)");
+    assert!(
+        output.status.success(),
+        "tldr inheritance (json) failed: stderr=\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let report: Value = serde_json::from_str(&String::from_utf8_lossy(&output.stdout))
+        .expect("inheritance stdout must be JSON");
+    let node_names: Vec<&str> = report["nodes"]
+        .as_array()
+        .expect("nodes array")
+        .iter()
+        .map(|n| n["name"].as_str().expect("node name"))
+        .collect();
+    let mut sorted_names = node_names.clone();
+    sorted_names.sort();
+    assert_eq!(
+        node_names, sorted_names,
+        "JSON nodes[] must be emitted in sorted name order (issue #74)"
+    );
+    let languages: Vec<&str> = report["languages"]
+        .as_array()
+        .expect("languages array")
+        .iter()
+        .map(|l| l.as_str().expect("language string"))
+        .collect();
+    let mut sorted_langs = languages.clone();
+    sorted_langs.sort();
+    assert_eq!(
+        languages, sorted_langs,
+        "JSON languages[] must be emitted in sorted order (issue #74)"
     );
 }
