@@ -445,9 +445,32 @@ fn run_smells_json(dir: &Path) -> Value {
 /// distinct `by_type` orders over 4 runs). Both fields are now `BTreeMap`s,
 /// so the full report must be byte-stable across runs AND its keys must be
 /// sorted.
+///
+/// Fixture history (canonical-scan-root-v1 regression): this test originally
+/// relied on the `make_python_fixture()` fixture alone and its `>= 2 files`
+/// sanity check passed only VACUOUSLY — the --deep aggregation then emitted
+/// `by_file` keys in TWO path spellings for the same file (the caller-spelled
+/// `/var/...` from the deep sub-analyzers vs the BUG-12-canonicalized
+/// `/private/var/...` from the base scan), so `a.py` counted twice. Fixing
+/// that production bug (T4, `canonical_scan_root`: ONE key per file, every
+/// key canonical) collapsed `by_file` to its single true key, because the
+/// fixture's `b.py` produces no smells of its own (no classes, small
+/// functions; every clone pair is attributed to `func_a` in `a.py`). The
+/// contract under test is unchanged — sorted keys AND byte-stability — so
+/// the FIX is on the fixture side: `c.py` adds a >5-parameter function,
+/// which the per-file `LongParameterList` detector flags deterministically,
+/// so `by_file` genuinely spans two files and the sorted-key assertion below
+/// stays meaningful.
 #[test]
 fn smells_output_is_byte_stable() {
     let dir = make_python_fixture();
+    // See the doc comment: give the fixture a second smell-bearing file so
+    // the `by_file` sorted-order assertion is meaningful now that smells
+    // emits exactly one canonical key per file.
+    write(
+        &dir.path().join("c.py"),
+        "def wide_signature(a, b, c, d, e, f):\n    return a + b + c + d + e + f\n",
+    );
     let path = dir.path();
 
     let r1 = run_smells_json(path);
