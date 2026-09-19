@@ -462,10 +462,16 @@ pub fn scan_vulnerabilities(
     let mut findings = Vec::new();
 
     // Collect files to scan
+    // walk-determinism-v2 (T5 ripple of 1491e826): sort by full path so the
+    // scan runs in lexicographic order instead of OS readdir order. The rayon
+    // `par_iter().map().collect()` below preserves input order, and
+    // `format_vuln_text` renders findings unsorted, so the report row order
+    // was filesystem-dependent before this sort.
     let files: Vec<PathBuf> = if path.is_file() {
         vec![path.to_path_buf()]
     } else {
         WalkDir::new(path)
+            .sort_by(|a, b| a.path().cmp(b.path()))
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())

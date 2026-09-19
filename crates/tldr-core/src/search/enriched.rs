@@ -460,6 +460,9 @@ fn do_regex_search(
     // a second directory walk. For the report, this is acceptable.
     let unique_files: HashSet<&PathBuf> = matches.iter().map(|m| &m.file).collect();
     // Walk the directory to get the actual file count (same extensions filter)
+    // walk-determinism-v2 audit (T5 ripple of 1491e826): left UNSORTED on
+    // purpose — this walk is consumed by `.count()` only, so the result is
+    // invariant to visit order.
     let total_files = walkdir::WalkDir::new(root)
         .follow_links(false)
         .into_iter()

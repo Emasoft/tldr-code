@@ -87,8 +87,13 @@ pub fn search(
     let mut files_searched = 0;
 
     // Walk directory tree
+    // walk-determinism-v2 (T5 ripple of 1491e826): sort by full path so the
+    // walk yields lexicographic order instead of OS readdir order. Both the
+    // `max_files` cap (which files get searched at all) and the match row
+    // order below break mid-walk, so visit order was user-observable.
     for entry in WalkDir::new(&canonical_root)
         .follow_links(false)
+        .sort_by(|a, b| a.path().cmp(b.path()))
         .into_iter()
         .filter_entry(|e| should_include_entry(e, ignore_spec))
         .filter_map(|e| e.ok())

@@ -245,8 +245,14 @@ fn collect_source_files(path: &Path, lang: Option<Language>) -> Vec<PathBuf> {
     }
 
     // Walk directory
+    // walk-determinism-v2 (T5 ripple of 1491e826): sort by full path so the
+    // walk yields lexicographic order instead of OS readdir order. The file
+    // sequence feeds `graph.add_node`, whose HashMap insert is LAST-wins —
+    // when two files define a same-named class, WHICH definition survives
+    // was filesystem-dependent before this sort.
     for entry in WalkDir::new(path)
         .follow_links(true)
+        .sort_by(|a, b| a.path().cmp(b.path()))
         .into_iter()
         .filter_map(|e| e.ok())
     {
@@ -407,6 +413,44 @@ mod tests {
         };
 
         assert!(options.validate().is_ok());
+    }
+
+    /// walk-determinism-v2 (T5 ripple of 1491e826): `collect_source_files`
+    /// feeds `graph.add_node`, whose HashMap insert is LAST-wins — when two
+    /// files define a same-named class, the walk order decided which
+    /// definition survived. The walk now sorts by full path; this pin holds
+    /// the contract with a fixture created in REVERSE lexical order.
+    #[test]
+    fn test_collect_source_files_walk_order_is_sorted() {
+        let dir = TempDir::new().unwrap();
+        let mut names: Vec<String> = (0..6).map(|i| format!("f_{i:02}.py")).collect();
+        names.push("dir_a/a_00.py".to_string());
+        names.push("dir_b/b_00.py".to_string());
+        names.sort();
+        // Create in REVERSE lexical order — creation order != walk contract.
+        for rel in names.iter().rev() {
+            create_test_file(
+                &dir,
+                rel,
+                "class Base:\n    pass\n\nclass Child(Base):\n    pass\n",
+            );
+        }
+
+        let files = collect_source_files(dir.path(), None);
+        let got: Vec<String> = files
+            .iter()
+            .map(|p| {
+                p.strip_prefix(dir.path())
+                    .unwrap_or(p)
+                    .display()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            got, names,
+            "collect_source_files must yield files in sorted path order \
+             (walk-determinism-v2)"
+        );
     }
 
     #[test]

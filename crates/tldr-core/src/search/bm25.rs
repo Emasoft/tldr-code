@@ -305,8 +305,14 @@ impl Bm25Index {
         let mut index = Self::default();
         let extensions: HashSet<&str> = language.extensions().iter().copied().collect();
 
+        // walk-determinism-v2 (T5 ripple of 1491e826): sort by full path so
+        // documents are indexed in lexicographic order instead of OS readdir
+        // order. `search()`'s stable score sort keeps document order on ties,
+        // and `truncate(top_k)` cuts mid-walk — so before this sort, WHICH
+        // results survived a tie at the cut was filesystem-dependent.
         for entry in WalkDir::new(root)
             .follow_links(false)
+            .sort_by(|a, b| a.path().cmp(b.path()))
             .into_iter()
             .filter_entry(|e| {
                 // VAL-018: never reject the WalkDir root (depth 0). The

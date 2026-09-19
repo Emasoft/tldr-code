@@ -915,3 +915,177 @@ fn references_and_structure_are_byte_stable_on_walked_fixture() {
         r.get("total_references")
     );
 }
+
+// =============================================================================
+// walk-determinism-v2 (T5 ripple of 1491e826): the ADJACENT walkdir-based
+// walkers R1 flagged as follow-ups. `scan_secrets` (security/secrets.rs) and
+// `Bm25Index::from_project` (search/bm25.rs) both keep the directory walk's
+// visit order in their public results (findings rows / index document order
+// under score ties), so an unsorted walkdir made them filesystem-dependent.
+// The fix adds `.sort_by(|a, b| a.path().cmp(b.path()))` to those walks;
+// these pins hold the contract at the exact fix sites (library level, so the
+// masking done by downstream CLI sorts cannot hide a regression).
+// =============================================================================
+
+/// Reverse-creation-order fixture with ONE structural secret per file (AWS
+/// access key pattern — never placeholder-suppressed). Creation order is the
+/// exact reverse of lexical order to maximize visibility of any walk-order
+/// regression.
+fn make_reverse_creation_secrets_fixture() -> TempDir {
+    let dir = TempDir::new().expect("tempdir");
+    let mut names: Vec<String> = (0..10).map(|i| format!("f_{i:02}.py")).collect();
+    for (d, letter) in [("dir_a", "a"), ("dir_b", "b"), ("dir_c", "c")] {
+        for i in 0..4 {
+            names.push(format!("{d}/{letter}_{i:02}.py"));
+        }
+    }
+    names.sort();
+    for rel in names.iter().rev() {
+        write(
+            &dir.path().join(rel),
+            "# config module\naws_key = \"AKIAIOSFODNN7EXAMPLE\"\nregion = \"us-east-1\"\n",
+        );
+    }
+    dir
+}
+
+/// walk-determinism-v2: `scan_secrets` findings must be byte-stable across
+/// repeated runs AND their file order must be the sorted directory walk order.
+/// The CLI `secrets` surface is archived, but `SecretsReport.findings` is a
+/// public library contract (output.rs renders rows in report order with no
+/// downstream sort), so a walk-order regression flips user-visible row order.
+#[test]
+fn secrets_findings_walk_order_is_sorted_and_byte_stable() {
+    use tldr_core::security::secrets::scan_secrets;
+
+    let dir = make_reverse_creation_secrets_fixture();
+    let path = dir.path();
+
+    let run = || -> Vec<String> {
+        let report = scan_secrets(path, 4.5, false, None).expect("scan_secrets");
+        assert!(
+            !report.findings.is_empty(),
+            "fixture must produce findings (AWS access key pattern per file)"
+        );
+        report
+            .findings
+            .iter()
+            .map(|f| format!("{}:{}:{}", f.file.display(), f.line, f.pattern))
+            .collect::<Vec<_>>()
+    };
+
+    let r1 = run();
+    let r2 = run();
+    let r3 = run();
+    assert_eq!(
+        r1, r2,
+        "secrets run #1 vs #2 differs (walk order, walk-determinism-v2)"
+    );
+    assert_eq!(
+        r2, r3,
+        "secrets run #2 vs #3 differs (walk order, walk-determinism-v2)"
+    );
+
+    // Exact-order pin: one AWS-key finding per file, so first-occurrence file
+    // order must equal the lexicographically sorted fixture names.
+    let mut got_files: Vec<String> = Vec::new();
+    for row in &r1 {
+        let file = row.split(':').next().unwrap_or_default().to_string();
+        if !got_files.contains(&file) {
+            got_files.push(file);
+        }
+    }
+    let expected: Vec<String> = fixture_sorted_names()
+        .iter()
+        .map(|rel| dir.path().join(rel).display().to_string())
+        .collect();
+    assert_eq!(
+        got_files, expected,
+        "secrets findings file order must follow the sorted directory walk \
+         (walk-determinism-v2): the walkdir scan must sort by full path"
+    );
+}
+
+/// Reverse-creation-order fixture where every file has IDENTICAL content, so
+/// every document gets an identical BM25 score and `Bm25Index::search` result
+/// order collapses to pure index insertion (= walk) order — maximally
+/// sensitive to any walk-order regression in `from_project`.
+fn make_reverse_creation_bm25_fixture() -> TempDir {
+    let dir = TempDir::new().expect("tempdir");
+    let mut names: Vec<String> = (0..6).map(|i| format!("f_{i:02}.py")).collect();
+    names.push("dir_a/a_00.py".to_string());
+    names.push("dir_b/b_00.py".to_string());
+    names.sort();
+    let body = "def fetch_data(handle):\n    rows = load(handle)\n    return [fetch_data(r) for r in rows]\n\n"
+        .repeat(4);
+    for rel in names.iter().rev() {
+        write(&dir.path().join(rel), &body);
+    }
+    dir
+}
+
+/// Sorted relative names of the BM25 fixture (subset contract of
+/// `fixture_sorted_names`).
+fn bm25_fixture_sorted_names() -> Vec<String> {
+    let mut names: Vec<String> = (0..6).map(|i| format!("f_{i:02}.py")).collect();
+    names.push("dir_a/a_00.py".to_string());
+    names.push("dir_b/b_00.py".to_string());
+    names.sort();
+    names
+}
+
+/// walk-determinism-v2: `Bm25Index::from_project` inserts documents in walk
+/// order and `Bm25Index::search`'s stable score sort keeps insertion order on
+/// ties, with `truncate(top_k)` cutting mid-walk — so with identical documents
+/// (equal scores) the enumeration order of the index IS the walk order. Pin
+/// byte-stability across runs AND lexicographic document order.
+#[test]
+fn bm25_index_enumeration_order_is_sorted_and_byte_stable() {
+    use tldr_core::search::bm25::Bm25Index;
+    use tldr_core::Language;
+
+    let dir = make_reverse_creation_bm25_fixture();
+    let path = dir.path();
+
+    let run = || -> Vec<String> {
+        let index = Bm25Index::from_project(path, Language::Python).expect("from_project");
+        let results = index.search("fetch_data", 100);
+        assert!(
+            !results.is_empty(),
+            "fixture must produce BM25 results for 'fetch_data'"
+        );
+        results
+            .iter()
+            .map(|r| format!("{}:{}:{}", r.file_path.display(), r.line_start, r.line_end))
+            .collect::<Vec<_>>()
+    };
+
+    let r1 = run();
+    let r2 = run();
+    let r3 = run();
+    assert_eq!(
+        r1, r2,
+        "bm25 run #1 vs #2 differs (index insertion order, walk-determinism-v2)"
+    );
+    assert_eq!(
+        r2, r3,
+        "bm25 run #2 vs #3 differs (index insertion order, walk-determinism-v2)"
+    );
+
+    // Exact-order pin: identical content => identical scores => the stable
+    // sort keeps walk order, so first-occurrence document order must be the
+    // sorted fixture names.
+    let mut got_docs: Vec<String> = Vec::new();
+    for row in &r1 {
+        let file = row.split(':').next().unwrap_or_default().to_string();
+        if !got_docs.contains(&file) {
+            got_docs.push(file);
+        }
+    }
+    let expected: Vec<String> = bm25_fixture_sorted_names();
+    assert_eq!(
+        got_docs, expected,
+        "bm25 document enumeration order must follow the sorted directory walk \
+         (walk-determinism-v2): from_project's walkdir must sort by full path"
+    );
+}

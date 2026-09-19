@@ -3810,8 +3810,14 @@ fn resolve_cross_file_walk(
     let extensions = language.extensions();
     let current_canonical = fs::canonicalize(current_file).ok();
 
+    // walk-determinism-v2 (T5 ripple of 1491e826): sort by full path so the
+    // probe walk runs in lexicographic order instead of OS readdir order.
+    // This loop returns on the FIRST file containing the symbol, so before
+    // this sort, which file a symbol resolved to when defined in several
+    // places was filesystem-dependent.
     let walker = walkdir::WalkDir::new(project_root)
         .follow_links(false)
+        .sort_by(|a, b| a.path().cmp(b.path()))
         .into_iter()
         .filter_entry(|e| !is_skipped_dir(e.path()));
 

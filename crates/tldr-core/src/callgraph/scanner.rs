@@ -331,6 +331,9 @@ pub fn scan_project_files(
         let lang_for_filter = language.to_string();
         // why: needs `mut` + manual `.next()` loop (not `for entry in walker`) so we can
         // call `walker.skip_current_dir()` below — see the symlink-cycle comment.
+        // walk-determinism-v2 audit (T5 ripple of 1491e826): left UNSORTED here
+        // on purpose — the collected `files` are fully sorted by path just
+        // before return (N2 comment below), so the walk order never escapes.
         let mut walker = WalkDir::new(&scan_root)
             .follow_links(true) // Follow symlinks, but detect cycles
             .into_iter()
