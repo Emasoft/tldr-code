@@ -186,6 +186,40 @@ pub fn remove_active_for_project(project: &Path) -> bool {
     }
 }
 
+/// Remove the active-daemon record ONLY when it names `project` AND its
+/// recorded PID is dead.
+///
+/// This is the stale-record self-heal counterpart of
+/// [`remove_active_for_project`]: that one runs POST-STOP, where the PID is
+/// dead by construction, so it needs no liveness gate. The self-heal path
+/// runs while the world is in an unknown state (a crashed/killed daemon, a
+/// daemon still starting up), so a live PID must keep the record: it may
+/// belong to a daemon that has registered but is not reachable through its
+/// socket yet. Returns `true` when a matching stale record was found and
+/// removed.
+pub fn remove_stale_active_for_project(project: &Path) -> bool {
+    let canon = project
+        .canonicalize()
+        .unwrap_or_else(|_| project.to_path_buf());
+    match read_active_record() {
+        Some(active) => {
+            // Canonicalize the RECORDED path too (issue #38: v0.2.x-era
+            // writers may have stored a non-canonical spelling; macOS
+            // resolves `/var` → `/private/var`).
+            let recorded = active
+                .project
+                .canonicalize()
+                .unwrap_or_else(|_| active.project.clone());
+            if recorded == canon && !is_pid_alive(active.pid) {
+                remove_active().is_ok()
+            } else {
+                false
+            }
+        }
+        None => false,
+    }
+}
+
 /// Best-effort liveness probe.
 ///
 /// On Unix, sends signal 0 to `pid`. The signal-0 kernel path validates the

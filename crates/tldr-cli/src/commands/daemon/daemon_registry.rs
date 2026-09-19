@@ -348,6 +348,86 @@ pub fn remove_entry(project: &Path) -> std::io::Result<()> {
     write_registry_atomic(&registry)
 }
 
+// =============================================================================
+// Stale-record self-heal (val003 flake hardening)
+// =============================================================================
+
+/// Probe the daemon records for `project` and purge the PROVABLY-stale ones.
+///
+/// Background (val003 flake): the test harness SIGKILLs long bash calls, but
+/// `daemon start` launches its worker with `setsid` — a detached daemon
+/// SURVIVES the kill of the process group that started it. A daemon that dies
+/// without cleanup (SIGKILL, crash, OOM) leaves every record behind: the
+/// socket file (which makes the next `IpcListener::bind` fail with
+/// `AddressInUse`), the registry entry, the legacy discovery record and the
+/// PID file. Pre-fix, `daemon start` cleaned only the socket file and
+/// `daemon status`/`daemon stop` surfaced the ghosts (`not_running` next to
+/// live-looking records) instead of healing them.
+///
+/// Liveness rules — a LIVE daemon is never disturbed:
+///
+/// 1. **Socket connectable ⇒ alive (primary signal).** If the project's IPC
+///    socket accepts a connection, a daemon owns these records and NOTHING
+///    is touched — not the socket file, not the registry entry, not the
+///    discovery record, not the PID file. This is deliberately stronger than
+///    the PID check: a PID can be reused by an unrelated process, and a
+///    daemon that just bound its socket may not have registered yet.
+/// 2. **Socket not connectable ⇒ the IPC endpoint is dead weight:**
+///    - the socket-shaped file at the computed path can no longer serve any
+///      client and would block the next `bind` with `AddressInUse` ⇒ removed
+///      (the cleanup refuses symlinks; a hostile link is left for the
+///      security check at bind time to surface);
+///    - the registry entry for the project is pruned when its recorded PID
+///      is DEAD (**secondary signal**). `find_entry` runs the registry's
+///      prune-on-read, so a surviving entry has a live PID — kept, because
+///      it may belong to a daemon that is still starting up (flock held,
+///      registration done, socket momentarily unreachable). That entry
+///      self-heals on a later read once its PID dies;
+///    - the legacy v0.2.x discovery record is removed only when it names
+///      THIS project AND its PID is dead (`remove_stale_active_for_project`
+///      — a record naming another project belongs to that daemon, issue #38);
+///    - the PID file is removed only when its recorded PID is dead
+///      (`cleanup_stale_pid`).
+///
+/// The purge is best-effort and idempotent: individual removal failures are
+/// ignored (the caller's operation — start/status — proceeds and surfaces a
+/// real error where it must, e.g. at bind time), and running it twice (two
+/// concurrent starts) is harmless because every step keys on provable
+/// staleness. Returns `true` when at least one artifact was removed.
+pub async fn purge_stale_records(project: &Path) -> bool {
+    // Rule 1 — connectable socket: a live daemon owns these records.
+    if super::ipc::check_socket_alive(project).await {
+        return false;
+    }
+
+    let mut purged = false;
+
+    // Rule 2a — dead IPC endpoint: remove the socket-shaped file.
+    let socket_path = super::ipc::compute_socket_path(project);
+    if socket_path.exists() && super::ipc::cleanup_socket(project).is_ok() && !socket_path.exists()
+    {
+        purged = true;
+    }
+
+    // Rule 2b — registry entry: find_entry's prune-on-read drops entries
+    // whose recorded PID is dead and writes the registry back under the
+    // registry lock. (An entry whose PID is alive survives — see the rules.)
+    let _ = find_entry(project);
+
+    // Rule 2c — legacy discovery record, project- and liveness-guarded.
+    if super::daemon_active::remove_stale_active_for_project(project) {
+        purged = true;
+    }
+
+    // Rule 2d — PID file, liveness-guarded.
+    let pid_path = super::pid::compute_pid_path(project);
+    if super::pid::cleanup_stale_pid(&pid_path).unwrap_or(false) {
+        purged = true;
+    }
+
+    purged
+}
+
 /// One-shot migration from v0.2.x `daemon-active.json`.
 ///
 /// Triggered on first registry access. If a legacy daemon-active.json exists
@@ -755,5 +835,201 @@ mod tests {
             PathBuf::from("/cache-root/tldr/daemon-registry.json")
         );
         assert!(composed.is_absolute());
+    }
+
+    // =========================================================================
+    // val003 self-heal: stale-record purge on the start/discovery path
+    // =========================================================================
+
+    /// Spawn `true` and reap it — a PID that is PROVABLY dead (same helper
+    /// pattern as `dead_pid_entries_are_pruned_on_read` above).
+    #[cfg(unix)]
+    fn reaped_dead_pid() -> u32 {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let pid = child.id();
+        let _ = child.wait();
+        pid
+    }
+
+    /// The stale-socket scenario behind the val003 flake: a daemon that died
+    /// without cleanup (the harness SIGKILLs long bash calls; a
+    /// setsid-detached daemon killed this way can never run its exit
+    /// cleanup) leaves a socket-shaped file, a registry entry, a legacy
+    /// discovery record and a PID file behind — all pointing at the dead
+    /// daemon. The purge must remove ALL of them so the next `daemon start`
+    /// binds cleanly instead of surfacing `AddressInUse` / ghost records.
+    #[cfg(unix)]
+    #[test]
+    fn purge_stale_records_heals_dead_socket_and_records() {
+        use super::super::daemon_active::{active_file_path, write_active};
+        use super::super::ipc::compute_socket_path;
+        use super::super::pid::compute_pid_path;
+
+        with_isolated_discovery(|dir| {
+            let project = dir.join("selfheal-stale");
+            std::fs::create_dir_all(&project).unwrap();
+            let canon = project.canonicalize().unwrap();
+            let socket_path = compute_socket_path(&canon);
+            let pid_path = compute_pid_path(&canon);
+            let dead_pid = reaped_dead_pid();
+
+            // A REAL stale socket: bind + drop leaves the file behind while
+            // nothing listens — connects fail with ECONNREFUSED, exactly the
+            // artifact a SIGKILLed daemon leaves at its socket path.
+            let listener =
+                std::os::unix::net::UnixListener::bind(&socket_path).expect("bind stale socket");
+            drop(listener);
+            assert!(socket_path.exists(), "precondition: socket file present");
+
+            add_entry(&canon, dead_pid, &socket_path).expect("add stale entry");
+            write_active(&canon, dead_pid, &socket_path).expect("write stale discovery record");
+            std::fs::write(&pid_path, dead_pid.to_string()).expect("write stale pid file");
+
+            // Pre-state sanity, read from the RAW files (a registry read
+            // would prune on the spot and pre-heal the very state under
+            // test).
+            let raw = std::fs::read_to_string(registry_file_path()).unwrap();
+            assert!(
+                raw.contains(&dead_pid.to_string()),
+                "precondition: dead-PID entry present in registry file"
+            );
+            assert!(
+                active_file_path().exists(),
+                "precondition: legacy discovery record present"
+            );
+
+            let purged = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async { purge_stale_records(&canon).await });
+            assert!(purged, "at least one stale artifact must have been removed");
+
+            // All four ghost artifacts are gone.
+            assert!(!socket_path.exists(), "dead socket file must be removed");
+            assert!(
+                find_entry(&canon).is_none(),
+                "dead-PID registry entry must be pruned"
+            );
+            assert!(
+                !active_file_path().exists(),
+                "dead-PID discovery record must be removed"
+            );
+            assert!(!pid_path.exists(), "stale PID file must be removed");
+        });
+    }
+
+    /// Control: a LIVE daemon (socket CONNECTABLE — the primary liveness
+    /// signal) must never be disturbed. No socket removal, no registry
+    /// entry removal, no discovery-record removal, no PID-file removal.
+    #[cfg(unix)]
+    #[test]
+    fn purge_stale_records_never_disturbs_live_daemon() {
+        use super::super::daemon_active::{active_file_path, write_active};
+        use super::super::ipc::compute_socket_path;
+        use super::super::pid::compute_pid_path;
+
+        with_isolated_discovery(|dir| {
+            let project = dir.join("selfheal-live");
+            std::fs::create_dir_all(&project).unwrap();
+            let canon = project.canonicalize().unwrap();
+            let socket_path = compute_socket_path(&canon);
+            let pid_path = compute_pid_path(&canon);
+            let our_pid = std::process::id();
+
+            // The daemon side: a real, LISTENING socket at the computed
+            // path. `check_socket_alive` only needs the connect to succeed;
+            // the kernel completes connects against the listen backlog even
+            // while nobody accepts.
+            let listener =
+                std::os::unix::net::UnixListener::bind(&socket_path).expect("bind live socket");
+
+            add_entry(&canon, our_pid, &socket_path).expect("add live entry");
+            write_active(&canon, our_pid, &socket_path).expect("write live discovery record");
+            std::fs::write(&pid_path, our_pid.to_string()).expect("write live pid file");
+
+            let purged = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async { purge_stale_records(&canon).await });
+            assert!(
+                !purged,
+                "a connectable socket means a LIVE daemon — nothing may be purged"
+            );
+
+            assert!(socket_path.exists(), "live daemon's socket must survive");
+            assert!(
+                find_entry(&canon).is_some(),
+                "live daemon's registry entry must survive"
+            );
+            assert!(
+                active_file_path().exists(),
+                "live daemon's discovery record must survive"
+            );
+            assert!(pid_path.exists(), "live daemon's PID file must survive");
+
+            // Test hygiene: close the listener and remove the artifacts the
+            // purge deliberately left (they live in the SHARED temp dir,
+            // keyed by this unique project path).
+            drop(listener);
+            let _ = std::fs::remove_file(&socket_path);
+            let _ = std::fs::remove_file(&pid_path);
+        });
+    }
+
+    /// The conservative middle case: socket NOT connectable but the recorded
+    /// PIDs are ALIVE (a daemon possibly still starting up — registered but
+    /// momentarily unreachable — or a reused PID). Only the dead socket file
+    /// may go; every record with a live PID stays so a starting daemon is
+    /// never sabotaged mid-registration. Those records self-heal on a later
+    /// purge/read once the PID dies.
+    #[cfg(unix)]
+    #[test]
+    fn purge_stale_records_keeps_records_with_live_pids() {
+        use super::super::daemon_active::{active_file_path, write_active};
+        use super::super::ipc::compute_socket_path;
+        use super::super::pid::compute_pid_path;
+
+        with_isolated_discovery(|dir| {
+            let project = dir.join("selfheal-live-pid");
+            std::fs::create_dir_all(&project).unwrap();
+            let canon = project.canonicalize().unwrap();
+            let socket_path = compute_socket_path(&canon);
+            let pid_path = compute_pid_path(&canon);
+            let our_pid = std::process::id();
+
+            // Dead IPC endpoint (bind + drop), live PID records.
+            let listener =
+                std::os::unix::net::UnixListener::bind(&socket_path).expect("bind stale socket");
+            drop(listener);
+            assert!(socket_path.exists(), "precondition: socket file present");
+
+            add_entry(&canon, our_pid, &socket_path).expect("add entry");
+            write_active(&canon, our_pid, &socket_path).expect("write discovery record");
+            std::fs::write(&pid_path, our_pid.to_string()).expect("write pid file");
+
+            let purged = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(async { purge_stale_records(&canon).await });
+            assert!(
+                purged,
+                "the dead socket file is stale by definition and must be removed"
+            );
+            assert!(!socket_path.exists(), "dead socket file must be removed");
+            assert!(
+                find_entry(&canon).is_some(),
+                "a live-PID registry entry must survive an unreachable socket"
+            );
+            assert!(
+                active_file_path().exists(),
+                "a live-PID discovery record must survive an unreachable socket"
+            );
+            assert!(
+                pid_path.exists(),
+                "a live-PID PID file must survive an unreachable socket"
+            );
+
+            // Test hygiene (shared temp dir, unique project hash).
+            let _ = std::fs::remove_file(&pid_path);
+        });
     }
 }

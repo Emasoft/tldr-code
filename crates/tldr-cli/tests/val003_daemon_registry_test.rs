@@ -359,3 +359,248 @@ fn concurrent_daemon_starts_all_register() {
         n, stdout
     );
 }
+
+// =============================================================================
+// val003 self-heal: stale records after a SIGKILLed daemon
+// =============================================================================
+
+/// Read the RAW registry file (no CLI read — a registry read prunes
+/// dead-PID entries on the spot, which would pre-heal the state under
+/// test).
+fn read_raw_registry(registry_dir: &Path) -> serde_json::Value {
+    let raw = std::fs::read_to_string(registry_dir.join("daemon-registry.json"))
+        .expect("daemon-registry.json must exist");
+    serde_json::from_str(&raw).expect("parse daemon-registry.json")
+}
+
+/// Spawn `kill -9 <pid>` — the exact artifact the test harness leaves
+/// behind when it SIGKILLs a long bash call whose setsid-detached daemon
+/// can never run its exit cleanup.
+fn kill_9(pid: u32) {
+    let out = Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .output()
+        .expect("spawn kill");
+    assert!(
+        out.status.success(),
+        "kill -9 {} failed: {}",
+        pid,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Poll until `pid` is provably dead (`kill -0` fails), capped at `timeout`.
+/// The SIGKILLed daemon is an orphan (its parent CLI already exited), so it
+/// is reaped by init/launchd and no zombie holds the PID.
+fn wait_pid_dead(pid: u32, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        let alive = Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !alive {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+/// Start a real daemon for `project`, wait until reachable, then SIGKILL it
+/// and wait until the PID is dead. Returns the daemon's PID and socket path
+/// — the stale artifacts the restart must self-heal.
+fn start_then_sigkill_daemon(registry_dir: &Path, project: &Path) -> (u32, std::path::PathBuf) {
+    let start = Command::new(bin())
+        .env("TLDR_DAEMON_REGISTRY_DIR", registry_dir)
+        .args(["daemon", "start", "--project"])
+        .arg(project)
+        .output()
+        .expect("start spawn");
+    assert!(
+        start.status.success(),
+        "daemon start failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&start.stdout),
+        String::from_utf8_lossy(&start.stderr)
+    );
+    assert!(
+        wait_for_daemon_running(registry_dir, project, Duration::from_secs(10)),
+        "daemon never became reachable"
+    );
+
+    // Read the entry from the RAW registry (pre-kill state) — the entry
+    // carries the daemon PID and its socket path.
+    let parsed = read_raw_registry(registry_dir);
+    let entry = parsed["daemons"]
+        .as_array()
+        .expect("daemons array")
+        .iter()
+        .find(|e| e["project"].as_str() == Some(project.to_str().unwrap()))
+        .expect("registry entry for the started daemon")
+        .clone();
+    let pid = entry["pid"].as_u64().expect("entry.pid") as u32;
+    let socket = std::path::PathBuf::from(entry["socket"].as_str().expect("entry.socket"));
+
+    kill_9(pid);
+    assert!(
+        wait_pid_dead(pid, Duration::from_secs(10)),
+        "daemon pid {} did not die after SIGKILL",
+        pid
+    );
+    (pid, socket)
+}
+
+/// The val003 flake scenario, end to end: a daemon SIGKILLed mid-flight
+/// (harness kill of a long bash call — the setsid-detached daemon survives
+/// its process group and cannot run exit cleanup) leaves the socket file and
+/// ghost records behind. A subsequent `daemon start` for the same project
+/// must SELF-HEAL: succeed cleanly and re-register a live daemon, instead
+/// of surfacing `Address already in use` / ghost entries.
+#[test]
+fn stale_daemon_records_self_heal_on_restart() {
+    let cache_root = tempfile::Builder::new()
+        .prefix("val003-selfheal-restart-")
+        .tempdir()
+        .expect("tempdir cache");
+    let cache_path = cache_root.path().to_path_buf();
+    let project = tempfile::Builder::new()
+        .prefix("val003-selfheal-restart-proj-")
+        .tempdir()
+        .expect("tempdir project");
+    let path = project.path().canonicalize().expect("canon project");
+
+    let _guard = StopAllGuard {
+        registry_dir: cache_path.clone(),
+    };
+
+    let (dead_pid, socket_path) = start_then_sigkill_daemon(&cache_path, &path);
+
+    // Precondition: the SIGKILL left the stale socket file behind (no
+    // cleanup ran) and the registry still holds the dead daemon's record.
+    assert!(
+        socket_path.exists(),
+        "precondition: the SIGKILLed daemon must leave its socket file at {}",
+        socket_path.display()
+    );
+    let raw = read_raw_registry(&cache_path);
+    assert!(
+        raw["daemons"]
+            .as_array()
+            .expect("daemons array")
+            .iter()
+            .any(|e| e["pid"].as_u64() == Some(u64::from(dead_pid))),
+        "precondition: the dead daemon's registry entry must still be present"
+    );
+
+    // The restart must succeed — pre-hardening this is where a stale socket
+    // surfaced as a bind failure and ghost records lingered.
+    let restart = Command::new(bin())
+        .env("TLDR_DAEMON_REGISTRY_DIR", &cache_path)
+        .args(["daemon", "start", "--project"])
+        .arg(&path)
+        .output()
+        .expect("restart spawn");
+    assert!(
+        restart.status.success(),
+        "daemon start must self-heal stale records and succeed: stdout={} stderr={}",
+        String::from_utf8_lossy(&restart.stdout),
+        String::from_utf8_lossy(&restart.stderr)
+    );
+
+    // The new daemon is live and registered.
+    assert!(
+        wait_for_daemon_running(&cache_path, &path, Duration::from_secs(10)),
+        "restarted daemon never became reachable"
+    );
+    let list_out = Command::new(bin())
+        .env("TLDR_DAEMON_REGISTRY_DIR", &cache_path)
+        .args(["--format", "json", "daemon", "list"])
+        .output()
+        .expect("list spawn");
+    let stdout = String::from_utf8_lossy(&list_out.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("parse list json");
+    let daemons = parsed["daemons"].as_array().expect("daemons array");
+    assert_eq!(
+        daemons.len(),
+        1,
+        "the registry must hold exactly the restarted daemon (the dead \
+         daemon's ghost entry must be gone); payload={}",
+        stdout
+    );
+    assert_ne!(
+        daemons[0]["pid"].as_u64(),
+        Some(u64::from(dead_pid)),
+        "the surviving entry must be the NEW daemon, not the SIGKILLed ghost"
+    );
+}
+
+/// Status-side self-heal: with a SIGKILLed daemon's ghost state on disk,
+/// `daemon status` must report `not_running` AND purge the provably-stale
+/// artifacts (dead socket file, dead-PID records) instead of leaving them
+/// to surface as connect errors on the next start.
+#[test]
+fn stale_daemon_records_self_heal_on_status_discovery() {
+    let cache_root = tempfile::Builder::new()
+        .prefix("val003-selfheal-status-")
+        .tempdir()
+        .expect("tempdir cache");
+    let cache_path = cache_root.path().to_path_buf();
+    let project = tempfile::Builder::new()
+        .prefix("val003-selfheal-status-proj-")
+        .tempdir()
+        .expect("tempdir project");
+    let path = project.path().canonicalize().expect("canon project");
+
+    let _guard = StopAllGuard {
+        registry_dir: cache_path.clone(),
+    };
+
+    let (_dead_pid, socket_path) = start_then_sigkill_daemon(&cache_path, &path);
+    assert!(
+        socket_path.exists(),
+        "precondition: the SIGKILLed daemon must leave its socket file at {}",
+        socket_path.display()
+    );
+
+    let status_out = Command::new(bin())
+        .env("TLDR_DAEMON_REGISTRY_DIR", &cache_path)
+        .args(["daemon", "status", "--project"])
+        .arg(&path)
+        .output()
+        .expect("status spawn");
+    assert!(
+        status_out.status.success(),
+        "status must succeed on a stale daemon: stderr={}",
+        String::from_utf8_lossy(&status_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&status_out.stdout);
+    assert!(
+        stdout.contains("not_running"),
+        "status must report not_running for a dead daemon, got: {}",
+        stdout
+    );
+
+    // Self-heal: the dead socket file is gone, and a registry read now
+    // yields no entries for the dead daemon.
+    assert!(
+        !socket_path.exists(),
+        "status discovery must purge the dead socket file at {}",
+        socket_path.display()
+    );
+    let list_out = Command::new(bin())
+        .env("TLDR_DAEMON_REGISTRY_DIR", &cache_path)
+        .args(["--format", "json", "daemon", "list"])
+        .output()
+        .expect("list spawn");
+    let stdout = String::from_utf8_lossy(&list_out.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("parse list json");
+    assert_eq!(
+        parsed["daemons"].as_array().unwrap().len(),
+        0,
+        "the dead daemon's ghost entry must be gone after the purge; payload={}",
+        stdout
+    );
+}

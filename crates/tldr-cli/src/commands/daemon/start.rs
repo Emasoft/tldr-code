@@ -89,15 +89,17 @@ impl DaemonStartArgs {
         // TOCTOU window from issue #14 (two concurrent starts could both
         // pass the staleness check before either acquired the lock).
 
-        // Check for stale socket and clean up. The socket-side TOCTOU is
-        // additionally guarded by `IpcListener::bind_unix`, which now treats
-        // an existing socket as `AddressInUse` rather than silently
-        // unlink-and-rebind (issue #14).
-        let socket_path = compute_socket_path(&project);
-        if socket_path.exists() && !check_socket_alive(&project).await {
-            // Socket exists but daemon is not responding - stale
-            cleanup_socket(&project)?;
-        }
+        // val003 self-heal: before deciding how to start, purge the
+        // PROVABLY-stale records for this project — a dead socket-shaped
+        // file (which would make the bind below fail with `AddressInUse`),
+        // a registry entry whose daemon died without cleanup, a stale
+        // legacy discovery record, a stale PID file. A LIVE daemon
+        // (connectable socket) is never disturbed — see
+        // `daemon_registry::purge_stale_records` for the liveness rules.
+        // Pre-fix only the socket file was cleaned here, so a harness
+        // SIGKILL that orphaned a setsid-detached daemon left ghost
+        // records that later surfaced as connect errors.
+        let _purged = super::daemon_registry::purge_stale_records(&project).await;
 
         if self.foreground {
             // Run in foreground

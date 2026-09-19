@@ -2127,6 +2127,41 @@ impl TLDRDaemon {
 // Daemon Control Functions
 // =============================================================================
 
+/// Daemon fd hygiene (val003 flake, second half of the root cause): close
+/// every descriptor above stderr in the pre-exec child so the detached
+/// daemon starts with a CLEAN descriptor table (stdio 0/1/2 only).
+///
+/// `Stdio::null()` only replaces fds 0/1/2 — an fd >= 3 that leaked into
+/// the CLI process WITHOUT close-on-exec (e.g. a test-harness/parent pipe
+/// write-end, as observed live during the val003 flake: the daemon was
+/// caught holding its spawner's stdout pipe at fd 10) is exec'd straight
+/// into the daemon. The daemon then keeps that pipe open for its whole
+/// idle timeout, so whoever spawned the CLI via `Command::output()` blocks
+/// reading a pipe that never hits EOF — the >60 s hang observed in
+/// `val003_daemon_registry_test`, followed by the harness SIGKILL that
+/// orphans this very daemon and leaves its socket/records behind.
+///
+/// Closing everything >= 3 here is safe at this exact point: std's
+/// `do_exec` has already dup2'd the requested stdio onto 0/1/2 and runs
+/// pre-exec closures BEFORE `execvp`, and `close()` is
+/// async-signal-safe. Closing unopened fds is a harmless EBADF.
+///
+/// Trade-off: std's exec-error reporting pipe is also >= 3, so a FAILED
+/// exec now surfaces as a successful spawn followed by `wait_for_daemon`
+/// timing out ("Daemon failed to start within timeout"), not as the exec
+/// errno — still a loud, actionable error, and only on the already-broken
+/// path where the executable itself cannot be exec'd.
+#[cfg(unix)]
+fn close_all_inherited_fds() -> std::io::Result<()> {
+    // Bound well above any plausible soft NOFILE (macOS default 256);
+    // closing an unopened fd is a no-op EBADF, so the upper bound only
+    // costs a handful of syscalls per daemon START.
+    for fd in 3..4096 {
+        unsafe { libc::close(fd) };
+    }
+    Ok(())
+}
+
 /// Start a daemon in the background for the given project.
 ///
 /// Returns the PID of the daemon process.
@@ -2152,7 +2187,8 @@ pub async fn start_daemon_background(project: &std::path::Path) -> DaemonResult<
                 .pre_exec(|| {
                     // Create new session (detach from terminal)
                     libc::setsid();
-                    Ok(())
+                    // Daemon fd hygiene — see [`close_all_inherited_fds`].
+                    close_all_inherited_fds()
                 })
                 .spawn()
                 .map_err(DaemonError::Io)?
@@ -2210,6 +2246,83 @@ pub async fn wait_for_daemon(project: &std::path::Path, timeout_secs: u64) -> Da
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// val003 flake regression pin for daemon fd hygiene: a
+    /// NON-close-on-exec descriptor above stderr (exactly the shape of a
+    /// leaked harness pipe write-end) must NOT reach the daemonize child
+    /// when [`close_all_inherited_fds`] runs in pre_exec. The control run
+    /// WITHOUT the closure proves the fixture actually leaks (the pipe
+    /// ends are visible in the child's /dev/fd), so the assertion is not
+    /// vacuous.
+    #[cfg(unix)]
+    #[test]
+    fn daemonize_pre_exec_closes_inherited_fds() {
+        use std::os::unix::process::CommandExt;
+
+        // A raw pipe(): on macOS (no pipe2) and Linux alike, neither end
+        // carries close-on-exec — exactly what a leaked descriptor looks
+        // like. The child inherits these fds at the SAME fd numbers as
+        // this process (fork copies the descriptor table). The ends are
+        // dup'd to >= 10 (F_DUPFD clears close-on-exec, simulating the
+        // leak) so their numbers cannot collide with the few descriptors
+        // /bin/ls opens for itself.
+        let mut fds = [0 as libc::c_int; 2];
+        unsafe {
+            assert_eq!(libc::pipe(fds.as_mut_ptr()), 0, "pipe() failed");
+        }
+        let leak_read = unsafe { libc::fcntl(fds[0], libc::F_DUPFD, 10) };
+        let leak_write = unsafe { libc::fcntl(fds[1], libc::F_DUPFD, 10) };
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+        assert!(leak_read >= 10 && leak_write >= 10, "F_DUPFD failed");
+        let (leak_read, leak_write) = (leak_read as u32, leak_write as u32);
+
+        let listed = |hygiene: bool| -> Vec<u32> {
+            let mut cmd = std::process::Command::new("/bin/ls");
+            cmd.arg("/dev/fd");
+            if hygiene {
+                unsafe { cmd.pre_exec(close_all_inherited_fds) };
+            }
+            let out = cmd.output().expect("spawn /bin/ls");
+            assert!(
+                out.status.success(),
+                "/bin/ls /dev/fd failed: stderr={}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .filter_map(|token| token.parse::<u32>().ok())
+                .collect()
+        };
+
+        // Control: WITHOUT the hygiene closure the leaked descriptors are
+        // visible in the child's /dev/fd.
+        let with_leak = listed(false);
+        assert!(
+            with_leak.contains(&leak_read) && with_leak.contains(&leak_write),
+            "fixture broken: the non-CLOEXEC pipe ends ({leak_read}, \
+             {leak_write}) must be visible in the child's /dev/fd, got \
+             {with_leak:?}"
+        );
+
+        // With the daemonize hygiene the child's descriptor table is
+        // stdio + whatever /bin/ls opens for itself — the leaked ends are
+        // gone.
+        let hygienic = listed(true);
+        assert!(
+            !hygienic.contains(&leak_read) && !hygienic.contains(&leak_write),
+            "daemonize hygiene must close every inherited fd >= 3; the \
+             leaked pipe ends ({leak_read}, {leak_write}) are still \
+             visible: {hygienic:?}"
+        );
+
+        unsafe {
+            libc::close(leak_read as libc::c_int);
+            libc::close(leak_write as libc::c_int);
+        }
+    }
 
     #[test]
     fn test_daemon_new() {

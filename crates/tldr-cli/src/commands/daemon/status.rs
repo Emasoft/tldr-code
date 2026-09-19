@@ -116,6 +116,16 @@ impl DaemonStatusArgs {
         match send_command(&project, &cmd).await {
             Ok(response) => self.handle_response(response, format, quiet),
             Err(DaemonError::NotRunning) | Err(DaemonError::ConnectionRefused) => {
+                // val003 self-heal: the daemon for the resolved project is
+                // unreachable — purge its PROVABLY-stale records (dead
+                // socket-shaped file, dead-PID registry/legacy-discovery/PID
+                // records) so a ghost discovery state does not linger and
+                // later surfaces as connect errors. A LIVE daemon
+                // (connectable socket) is never disturbed — see
+                // `daemon_registry::purge_stale_records` for the liveness
+                // rules.
+                let _purged = super::daemon_registry::purge_stale_records(&project).await;
+
                 // Daemon not running
                 let output = DaemonStatusOutput {
                     status: "not_running".to_string(),
