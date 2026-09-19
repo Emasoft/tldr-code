@@ -238,6 +238,56 @@
   and the yaml chunk merger pass no host label and keep the pre-existing
   behavior.
 
+- **CSV/TSV cells now surface for EVERY record, under a deterministic
+  50,000-cell budget** (cell-budget-v1, `crates/tldr-core/src/ast/csvscan.rs`).
+  The CSV/TSV batch originally emitted `cell` definitions for the FIRST
+  record's fields only (the header convention) — a documented residual against
+  the user-facing "cell" extraction requirement. Every record's fields now
+  become `cell` definitions (each record's `record` row is immediately
+  followed by its cells — the same parent-before-children order the JSON/SQL
+  walkers use), because a data row is exactly as navigable as its header; the
+  record/cell → `DefinitionInfo` mapping moved from `extractor.rs` into
+  `ast::csvscan`, the `ast::toc`/`ast::sqlscan` precedent of a native scanner
+  mapping its own rows. A 100 MiB export can carry millions of fields, so the
+  surface is budgeted:
+  - **Budget.** At most `CSV_MAX_CELLS = 50_000` `cell` definitions per file,
+    consumed in strict source order (header cells first, then each record's
+    fields left-to-right, top-to-bottom — the cut may land mid-record).
+    Records are NEVER budgeted: every record keeps its exact `record` row and
+    region. When the file had more fields than the budget, ONE warning is
+    appended to the host `warnings` channel: `cell extraction capped at 50000
+    (file has more); records unaffected` (the number interpolates the active
+    budget; a fitting file never warns). The budget is an injectable argument
+    of `csvscan::csv_definitions` (the `EmbedBudget::limit` testability
+    precedent), so unit tests drive it at tiny values.
+  - **Naming.** Header cells keep the original naming: the field's unescaped
+    text, verbatim. Data-row cells name themselves after the field text
+    truncated to 60 characters with an ellipsis — the same shaping record
+    names get, so a 2.3 MB quoted field cannot become a multi-megabyte JSON
+    name — and an empty/whitespace field falls back to `col-N` (its 1-indexed
+    column number) instead of an unfindable empty name, the record `row-N`
+    fallback's analogue. Duplicate names are allowed and common; body-by-name
+    resolves the FIRST match in source order (the documented `tldr body`
+    rule), and a record always precedes its own cells — byte spans remain the
+    byte-exact route to one specific cell (every cell's region sits inside
+    its parent record's region).
+  - **Orientation.** Every cell's `signature` is `col N` (1-indexed column
+    number, matching the scanner's 1-indexed rows/lines), so a truncated or
+    duplicate name can still be placed in its row; record signatures stay
+    empty.
+  - **Tests.** `ast::csvscan` unit pins (budget consumed exactly at N with no
+    warning, one-warning truncation with the documented text, strict
+    source-order determinism incl. mid-record cuts, header cells count toward
+    the budget, `col N` signatures, record regions containing their cells',
+    the naming rules), `element_extraction_v1` (full small-fixture record/cell
+    sequence with byte-exact data-cell regions, a 60,001-cell fixture
+    truncating to exactly 50,000 cells + the single warning + all 60,001
+    records, byte-exact body-by-name on data-row cells), and the updated
+    `symbol_fidelity_v1` CSV pin (`csv_records_and_cells_are_elements`). The
+    100 MiB accuracy CSV/TSV fixtures carry ~190 cells each — far under the
+    budget, so no truncation, no warning, and their expectations are
+    unchanged.
+
 ### Fixed
 
 - **The bugbot timeout watchdog can no longer kill an unrelated process via a stale/recycled

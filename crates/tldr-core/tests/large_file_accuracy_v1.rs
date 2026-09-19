@@ -833,11 +833,17 @@ fn markdown_100mib_byte_exact() {
 }
 
 // =============================================================================
-// csv/tsv — ~2.3 MB records: a header prefix (its record + cells are the only
-// `cell` definitions), an embedded-newline record first, then wide quoted
-// records whose long field is packed with delimiters. Byte path throughout —
-// the record span spans its embedded line break and excludes only the
-// terminating newline. `UNANCHORED_LINE` marks the prefix-anchored probes.
+// csv/tsv — ~2.3 MB records: a header prefix, an embedded-newline record
+// first, then wide quoted records whose long field is packed with delimiters.
+// Byte path throughout — the record span spans its embedded line break and
+// excludes only the terminating newline. Every record's fields ALSO surface
+// as `cell` definitions (cell-budget-v1), but this fixture carries only ~4
+// cells per record (~190 total — far under the 50,000 budget, so no
+// truncation and the `warnings`-empty pin above holds). The probes pin
+// RECORDS and header cells: a record's row precedes its own cells (parent
+// before children), so an occurrence-0 name match still lands on the record,
+// and no data-cell name collides with a probed name. `UNANCHORED_LINE` marks
+// the prefix-anchored probes.
 // =============================================================================
 
 /// Tokens packed into each record's long quoted field (~2.3 MB with seps).
@@ -873,7 +879,8 @@ fn csv_unit(i: usize) -> (String, Probe) {
             Probe::byte("id", "id,wide,extra,tail", UNANCHORED_LINE),
         )
     } else if i == 2 {
-        // Probe a PREFIX header cell (cell kind — first record's fields only).
+        // Probe a PREFIX header cell (cell kind — the header's fields keep
+        // their verbatim text names, so `wide` collides with nothing).
         (
             wide_record(i, ','),
             Probe::byte("wide", "wide", UNANCHORED_LINE),

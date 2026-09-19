@@ -1691,7 +1691,7 @@ SEE ALSO:
     }
 }
 
-/// CSV PIN (`csv_records_and_header_cells_are_elements`, CSV/TSV batch):
+/// CSV PIN (`csv_records_and_cells_are_elements`, CSV/TSV batch):
 /// `.csv`/`.tsv` files never reach a tree-sitter tree — the only CSV grammar
 /// crate on crates.io (`tree-sitter-csv` 1.2.0) is unbuildable (its `cc
 /// ~1.0.82` build-dep semver-conflicts with the `cc ^1.2.10` the pinned ts
@@ -1699,13 +1699,18 @@ SEE ALSO:
 /// LanguageFns (root `Cargo.toml` audit note) — so the native, streaming RFC
 /// 4180 scanner in `ast::csvscan` is the ONLY source of CSV definitions. `tldr
 /// structure <file>.csv` must surface one `record` definition per record —
-/// named after the first field's text (else `row-N`) — plus `cell` definitions
-/// for the FIRST record's fields (the header convention), with exact byte
-/// spans (`source[byte_start..byte_end]` IS the record/cell region, quoted
-/// commas and embedded newlines included) and `definition_line` = the start
-/// line. Records must not split on delimiters/newlines INSIDE quoted fields.
+/// named after the first field's text (else `row-N`) — immediately followed by
+/// that record's `cell` definitions (parent before children): one per FIELD of
+/// EVERY record under the 50,000-cell budget (cell-budget-v1; this fixture's
+/// 12 cells fit, so no truncation and no warning). Header cells keep the
+/// field's verbatim text as their name, data cells truncate to 60 chars (else
+/// `col-N`), every cell's `signature` is `col N` (1-indexed column) while
+/// records keep an empty signature, all with exact byte spans
+/// (`source[byte_start..byte_end]` IS the record/cell region, quoted commas
+/// and embedded newlines included) and `definition_line` = the start line.
+/// Records must not split on delimiters/newlines INSIDE quoted fields.
 #[test]
-fn csv_records_and_header_cells_are_elements() {
+fn csv_records_and_cells_are_elements() {
     let fixture = "sku,product,notes\n\
                    A-1,Widget,\"round, blue\"\n\
                    A-2,Gadget,\"sells\n\
@@ -1730,7 +1735,7 @@ fn csv_records_and_header_cells_are_elements() {
     let defs = &structure.files[0].definitions;
 
     // EXACT sequence, source order — the header record with its cells, then
-    // one record per data row.
+    // each data record followed by ITS cells (parent before children).
     let sequence: Vec<(String, String)> = defs
         .iter()
         .map(|d| (d.kind.clone(), d.name.clone()))
@@ -1741,7 +1746,13 @@ fn csv_records_and_header_cells_are_elements() {
         ("cell", "product"),
         ("cell", "notes"),
         ("record", "A-1"),
+        ("cell", "A-1"),
+        ("cell", "Widget"),
+        ("cell", "round, blue"),
         ("record", "A-2"),
+        ("cell", "A-2"),
+        ("cell", "Gadget"),
+        ("cell", "sells\nwell, sometimes"),
     ]
     .iter()
     .map(|(k, n)| (k.to_string(), n.to_string()))
@@ -1749,6 +1760,11 @@ fn csv_records_and_header_cells_are_elements() {
     assert_eq!(
         sequence, expected,
         "symbol-fidelity-v1 [data.csv]: expected exact record/cell sequence, got {defs:#?}"
+    );
+    assert!(
+        structure.warnings.is_empty(),
+        "symbol-fidelity-v1 [data.csv]: a fitting cell budget never warns, got {:?}",
+        structure.warnings
     );
 
     // The quoted field's comma must NOT split record A-1, and its region is
@@ -1765,9 +1781,45 @@ fn csv_records_and_header_cells_are_elements() {
         "symbol-fidelity-v1 [data.csv]: record A-1 region = its exact source line"
     );
 
+    // A-1's data cells follow their record (parent before children) and their
+    // regions are the fields' RAW bytes inside the record's region — the
+    // quoted cell keeps both quotes (region ≠ display text).
+    let cell_widget = defs
+        .iter()
+        .find(|d| d.kind == "cell" && d.name == "Widget")
+        .unwrap_or_else(|| {
+            panic!("symbol-fidelity-v1 [data.csv]: cell Widget not found.\n{defs:#?}")
+        });
+    assert_eq!(
+        &fixture[cell_widget.byte_start.unwrap() as usize..cell_widget.byte_end.unwrap() as usize],
+        "Widget",
+        "symbol-fidelity-v1 [data.csv]: data cell region = the field's exact bytes"
+    );
+    assert_eq!(
+        cell_widget.signature, "col 2",
+        "symbol-fidelity-v1 [data.csv]: a cell's signature carries its column"
+    );
+    let cell_round = defs
+        .iter()
+        .find(|d| d.kind == "cell" && d.name == "round, blue")
+        .unwrap_or_else(|| {
+            panic!("symbol-fidelity-v1 [data.csv]: cell `round, blue` not found.\n{defs:#?}")
+        });
+    assert_eq!(
+        &fixture[cell_round.byte_start.unwrap() as usize..cell_round.byte_end.unwrap() as usize],
+        "\"round, blue\"",
+        "symbol-fidelity-v1 [data.csv]: a quoted cell's region keeps both quotes"
+    );
+    assert!(
+        a1.byte_start.unwrap() <= cell_round.byte_start.unwrap()
+            && cell_round.byte_end.unwrap() <= a1.byte_end.unwrap(),
+        "symbol-fidelity-v1 [data.csv]: a cell's region must sit inside its record's region"
+    );
+
     // The embedded newline inside A-2's quoted field must NOT split it into
     // two records: the record spans lines 3-4 and its byte region
-    // reconstructs both lines (comma and newline included).
+    // reconstructs both lines (comma and newline included); its `notes` cell
+    // spans the same two lines under the name of its unescaped text.
     let a2 = defs
         .iter()
         .find(|d| d.kind == "record" && d.name == "A-2")
@@ -1784,9 +1836,21 @@ fn csv_records_and_header_cells_are_elements() {
         "A-2,Gadget,\"sells\nwell, sometimes\"",
         "symbol-fidelity-v1 [data.csv]: record A-2 region = the exact two-line source region"
     );
+    let cell_sells = defs
+        .iter()
+        .find(|d| d.kind == "cell" && d.name == "sells\nwell, sometimes")
+        .unwrap_or_else(|| {
+            panic!("symbol-fidelity-v1 [data.csv]: cell `sells…` not found.\n{defs:#?}")
+        });
+    assert_eq!(
+        (cell_sells.line_start, cell_sells.line_end),
+        (3, 4),
+        "symbol-fidelity-v1 [data.csv]: the embedded-newline cell spans the same two lines"
+    );
 
-    // Every element: byte spans present + definition_line = start line +
-    // empty signature (a data row has nothing signature-shaped).
+    // Every element: byte spans present + definition_line = start line.
+    // Records keep an empty signature (a data row has nothing
+    // signature-shaped); every cell carries its `col N` orientation.
     for d in defs {
         assert!(
             d.byte_start.is_some() && d.byte_end.is_some(),
@@ -1801,12 +1865,20 @@ fn csv_records_and_header_cells_are_elements() {
             d.kind,
             d.name
         );
-        assert!(
-            d.signature.is_empty(),
-            "symbol-fidelity-v1 [data.csv]: {}:`{}` data rows have no signatures",
-            d.kind,
-            d.name
-        );
+        if d.kind == "record" {
+            assert!(
+                d.signature.is_empty(),
+                "symbol-fidelity-v1 [data.csv]: record:`{}` keeps no signature",
+                d.name
+            );
+        } else {
+            assert!(
+                matches!(d.signature.as_str(), "col 1" | "col 2" | "col 3"),
+                "symbol-fidelity-v1 [data.csv]: cell:`{}` must carry a `col N` signature, got {:?}",
+                d.name,
+                d.signature
+            );
+        }
     }
 }
 

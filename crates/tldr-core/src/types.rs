@@ -786,8 +786,8 @@ impl Language {
     /// are bare data exports present in projects of every implementation
     /// language (same false-dominance argument as the other formats). Fully
     /// supported per-file: `tldr structure data.csv` reports
-    /// `language: "csv"` and surfaces records + header cells as elements
-    /// (see `ast::csvscan`).
+    /// `language: "csv"` and surfaces records plus per-field cells for every
+    /// record under the 50,000-cell budget as elements (see `ast::csvscan`).
     ///
     /// Sites that MUST consult this predicate (kept consistent):
     /// - `Language::from_directory` Stage-1 extension tally (project

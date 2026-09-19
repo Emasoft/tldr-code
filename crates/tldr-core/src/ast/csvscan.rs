@@ -95,12 +95,69 @@
 //! - Blank lines (nothing but the terminator) are skipped — they emit no
 //!   record. The trailing newline at EOF therefore never fabricates a
 //!   phantom trailing record, and `a\n\nb\n` yields exactly records `a`, `b`.
+//!
+//! # Definition mapping — records, cells and the cell budget
+//!
+//! `tldr structure` maps scanned records onto [`DefinitionInfo`] rows through
+//! [`csv_definitions`]: one `record` definition per record, and one `cell`
+//! definition per FIELD of EVERY record — data rows included. (The original
+//! CSV/TSV batch surfaced `cell` definitions for the first (header) record
+//! only, a documented residual; the user-facing "cell" requirement asks for
+//! every field, and a data row is exactly as navigable as its header.)
+//!
+//! **The cell budget.** A 100 MiB export can carry millions of fields, so
+//! cells are budgeted: at most [`CSV_MAX_CELLS`] (50,000) `cell` definitions
+//! per file, consumed in STRICT source order — the header's cells first, then
+//! each record's fields left-to-right, top-to-bottom, so the cut may land
+//! MID-record (a boundary record can emit some of its fields and not the
+//! rest). Once the budget is exhausted, records keep emitting — every record
+//! is still a `record` definition with its exact region — but their fields no
+//! longer become cells. When truncation happened (the file had more fields
+//! than the budget) exactly ONE warning is appended to the host structure:
+//! `cell extraction capped at 50000 (file has more); records unaffected`
+//! (the number interpolates the active budget); a file that fits never
+//! warns. The budget is a plain argument of [`csv_definitions`], injected at
+//! tiny values by the unit tests (the `EmbedBudget::limit` testability
+//! precedent); production passes [`CSV_MAX_CELLS`] — large enough to cover
+//! the wide columns of a big export while keeping the definition JSON a few
+//! MiB at most.
+//!
+//! **Cell naming** ([`csv_cell_definition`]):
+//! - Header cells (the FIRST record's fields) keep the original batch's
+//!   naming: the field's unescaped text, verbatim.
+//! - Data-row cells name themselves after the field's unescaped text,
+//!   truncated to [`MAX_RECORD_NAME_CHARS`] characters with an ellipsis —
+//!   the same shaping [`record_name`] applies to records (a 2.3 MB quoted
+//!   field must not become a multi-megabyte JSON name).
+//! - A cell whose text is empty/whitespace (either record class) falls back
+//!   to `col-N` (the 1-indexed column number) instead of an unfindable empty
+//!   name — the same fallback idea as a record's `row-N`.
+//!
+//! Duplicate names are allowed and common (a column whose value repeats):
+//! body-by-name resolves the FIRST match in source order (the rule `tldr
+//! body` documents — definition producers emit pre-order, so vec order IS
+//! source order), and a record always precedes its own cells, so a name
+//! shared by a record and its first field resolves to the RECORD first. For
+//! byte-exact targeting of one specific cell use the byte spans: a cell's
+//! span is always contained in its parent record's span (both come straight
+//! from the scanner), so containment identifies the parent and the cell span
+//! slices the exact field bytes.
+//!
+//! **Orientation.** Every cell's `signature` is `col N` — the field's
+//! 1-indexed column number (matching the module's 1-indexed rows and lines)
+//! — so a truncated or duplicate name can still be placed in its row.
+//! Records keep an empty signature (a data row has nothing signature-shaped).
+//!
+//! **Ordering.** Parent before children: a record's `record` row is followed
+//! immediately by its emitted cells — the same convention the JSON/SQL
+//! element walkers use (outer key first, nested keys after).
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::types::DefinitionInfo;
 use crate::TldrResult;
 
 /// Streaming buffer size (1 MB — the `ast::jsonl`/`ast::logs` precedent).
@@ -551,8 +608,138 @@ where
 }
 
 // =============================================================================
-// Name helper (used by the structure mapping in ast::extractor)
+// Structure mapping — records, cells and the cell budget (used by the
+// structure dispatch in ast::extractor, the ast::toc/ast::sqlscan precedent
+// of a native scanner mapping its own DefinitionInfo rows)
 // =============================================================================
+
+/// Per-file cell-definition budget (cell-budget-v1): the maximum number of
+/// `cell` definitions the structure mapping emits for one CSV/TSV file,
+/// consumed in strict source order — see the module docs ("Definition
+/// mapping") for the full semantics. Records are NEVER budgeted.
+pub(crate) const CSV_MAX_CELLS: usize = 50_000;
+
+/// Map scanned records onto the definition channel (CSV/TSV batch).
+///
+/// Returns `(definitions, warnings)` in source order: one `record`
+/// definition per record, then — while the `max_cells` budget lasts — one
+/// `cell` definition per field of that record (the header's cells first;
+/// naming, the `col N` signature and the parent-before-children ordering are
+/// documented in the module docs). At most ONE warning is ever returned,
+/// when the file had more fields than the budget:
+/// `cell extraction capped at <budget> (file has more); records unaffected`.
+///
+/// `max_cells` is the injectable test hook (the `EmbedBudget::limit`
+/// precedent); production passes [`CSV_MAX_CELLS`].
+pub(crate) fn csv_definitions(
+    records: &[CsvRecord],
+    max_cells: usize,
+) -> (Vec<DefinitionInfo>, Vec<String>) {
+    let total_fields: usize = records.iter().map(|r| r.fields.len()).sum();
+    let truncated = total_fields > max_cells;
+
+    let mut definitions = Vec::with_capacity(records.len() + max_cells.min(total_fields));
+    let mut remaining = max_cells;
+    for (index, record) in records.iter().enumerate() {
+        // Parent before children: the record row, then its emitted cells —
+        // the JSON/SQL outer-key-first convention.
+        definitions.push(csv_record_definition(record, (index + 1) as u64));
+        if remaining == 0 {
+            // Budget exhausted: records continue to emit, their fields don't.
+            continue;
+        }
+        let header = index == 0;
+        for (column, field) in record.fields.iter().enumerate() {
+            if remaining == 0 {
+                break; // the cut may land mid-record (strict source order)
+            }
+            remaining -= 1;
+            definitions.push(csv_cell_definition(field, column, header));
+        }
+    }
+
+    let warnings = if truncated {
+        vec![format!(
+            "cell extraction capped at {max_cells} (file has more); records unaffected"
+        )]
+    } else {
+        Vec::new()
+    };
+    (definitions, warnings)
+}
+
+/// Map a scanned [`CsvRecord`] onto the `record` definition channel so `tldr
+/// structure <file>.csv` surfaces records through the same
+/// `files[0].definitions` array every other format uses (CSV/TSV batch).
+///
+/// - `kind` = `"record"`.
+/// - `name` = the first field's text truncated to 60 chars (ellipsis on
+///   truncation), or `row-N` (1-indexed source order) when that text is
+///   empty/whitespace — see [`record_name`].
+/// - line/byte spans come straight from the scanner: the record's region is
+///   its first field's first byte through its last field's last byte
+///   (delimiters, quotes and embedded line breaks included; the terminating
+///   `\n`/`\r\n` excluded), so `source[byte_start..byte_end]` IS the record.
+/// - `signature` = empty (a data row has nothing signature-shaped).
+/// - `definition_line` = the record's first line.
+fn csv_record_definition(record: &CsvRecord, row_number: u64) -> DefinitionInfo {
+    DefinitionInfo {
+        name: record_name(record, row_number),
+        kind: "record".to_string(),
+        line_start: record.line_start,
+        line_end: record.line_end,
+        definition_line: Some(record.line_start),
+        byte_start: Some(record.byte_start),
+        byte_end: Some(record.byte_end),
+        signature: String::new(),
+        container: None,
+    }
+}
+
+/// Map one field onto a `cell` definition — the CSV analogue of a JSON key.
+///
+/// - `kind` = `"cell"`; `name` follows the module-doc naming rules: the
+///   FIRST record's fields (`header`) keep the field's unescaped text
+///   verbatim, data-row fields truncate it to [`MAX_RECORD_NAME_CHARS`]
+///   characters (ellipsis on truncation), and an empty/whitespace text falls
+///   back to `col-N` either way.
+/// - `column` = the field's 0-based position in its record; the `signature`
+///   reports it 1-indexed as `col N` for orientation.
+/// - byte span = the field's RAW region (quotes included for quoted fields —
+///   the addressable region, not the display text), always contained in the
+///   parent record's span.
+/// - `definition_line` = the field's first line.
+fn csv_cell_definition(field: &CsvField, column: usize, header: bool) -> DefinitionInfo {
+    let name = if field.text.trim().is_empty() {
+        format!("col-{}", column + 1)
+    } else if header {
+        field.text.clone()
+    } else {
+        truncated_name(&field.text)
+    };
+    DefinitionInfo {
+        name,
+        kind: "cell".to_string(),
+        line_start: field.line_start,
+        line_end: field.line_end,
+        definition_line: Some(field.line_start),
+        byte_start: Some(field.byte_start),
+        byte_end: Some(field.byte_end),
+        signature: format!("col {}", column + 1),
+        container: None,
+    }
+}
+
+/// Shared name shaping: `text` truncated to [`MAX_RECORD_NAME_CHARS`]
+/// **characters** (char-boundary safe, an ellipsis appended when truncation
+/// happened).
+fn truncated_name(text: &str) -> String {
+    let mut name: String = text.chars().take(MAX_RECORD_NAME_CHARS).collect();
+    if name.chars().count() < text.chars().count() {
+        name.push('…');
+    }
+    name
+}
 
 /// The `record` definition name for a record: the first field's text
 /// truncated to [`MAX_RECORD_NAME_CHARS`] characters (char-boundary safe,
@@ -568,11 +755,7 @@ pub fn record_name(record: &CsvRecord, row_number: u64) -> String {
     if first.trim().is_empty() {
         return format!("row-{row_number}");
     }
-    let mut name: String = first.chars().take(MAX_RECORD_NAME_CHARS).collect();
-    if name.chars().count() < first.chars().count() {
-        name.push('…');
-    }
-    name
+    truncated_name(first)
 }
 
 #[cfg(test)]
@@ -822,5 +1005,232 @@ mod tests {
         assert_eq!(record_name(&rec(field("   ")), 7), "row-7");
         assert_eq!(record_name(&rec(field("")), 12), "row-12");
         assert_eq!(record_name(&rec(field("héllo")), 1), "héllo");
+    }
+
+    // =========================================================================
+    // Definition mapping — the cell budget (cell-budget-v1)
+    // =========================================================================
+
+    /// Scan an in-memory fixture and map it through the production mapping
+    /// with an INJECTED budget (the testability hook — production passes
+    /// `CSV_MAX_CELLS`).
+    fn defs_for(
+        source: &str,
+        delimiter: u8,
+        max_cells: usize,
+    ) -> (Vec<DefinitionInfo>, Vec<String>) {
+        let recs = scan(source, delimiter);
+        csv_definitions(&recs, max_cells)
+    }
+
+    fn cells<'a>(defs: &'a [DefinitionInfo]) -> Vec<&'a DefinitionInfo> {
+        defs.iter().filter(|d| d.kind == "cell").collect()
+    }
+
+    fn records<'a>(defs: &'a [DefinitionInfo]) -> Vec<&'a DefinitionInfo> {
+        defs.iter().filter(|d| d.kind == "record").collect()
+    }
+
+    /// The budget consumed EXACTLY at N: a fitting budget emits every cell
+    /// and never warns; budget 0 emits records only and warns once.
+    #[test]
+    fn cell_budget_consumed_exactly_at_n_emits_no_warning() {
+        // 3 records × 2 fields = 6 cells.
+        let src = "a,b\n1,x\n2,y\n";
+        let (defs, warnings) = defs_for(src, b',', 6);
+        assert_eq!(cells(&defs).len(), 6, "a fitting budget emits every cell");
+        assert_eq!(records(&defs).len(), 3);
+        assert!(
+            warnings.is_empty(),
+            "a fitting budget never warns: {warnings:?}"
+        );
+
+        // Budget 0: no cells at all, records unaffected, one warning.
+        let (defs0, warnings0) = defs_for(src, b',', 0);
+        assert!(cells(&defs0).is_empty());
+        assert_eq!(records(&defs0).len(), 3, "records are never budgeted");
+        assert_eq!(
+            warnings0,
+            vec!["cell extraction capped at 0 (file has more); records unaffected"]
+        );
+    }
+
+    /// Truncation: cells stop at the budget, records keep emitting, and the
+    /// host structure receives exactly ONE warning with the documented text.
+    #[test]
+    fn cell_budget_truncation_warns_once_and_keeps_records() {
+        let src = "a,b\n1,x\n2,y\n3,z\n"; // 4 records × 2 fields = 8 cells
+        let (defs, warnings) = defs_for(src, b',', 5);
+        assert_eq!(cells(&defs).len(), 5, "cells stop exactly at the budget");
+        assert_eq!(records(&defs).len(), 4, "records are unaffected by the cut");
+        assert_eq!(warnings.len(), 1, "exactly ONE truncation warning");
+        assert_eq!(
+            warnings[0],
+            "cell extraction capped at 5 (file has more); records unaffected"
+        );
+
+        // A file that fits (total == budget) never warns — the warning is
+        // reserved for actual truncation.
+        let (_, warnings_fit) = defs_for(src, b',', 8);
+        assert!(warnings_fit.is_empty());
+    }
+
+    /// Determinism: the budget is consumed in STRICT source order — the
+    /// emitted cells are exactly the first N fields of the file (byte-span
+    /// identical), the cut may land mid-record, and two runs agree exactly.
+    #[test]
+    fn cell_budget_is_deterministic_strict_source_order() {
+        let src = "h1,h2\nr1a,r1b\nr2a,r2b\n";
+        let recs = scan(src, b',');
+        let (defs, _) = csv_definitions(&recs, 3);
+
+        // Expected: the first 3 fields in source order (header's two, then
+        // record 2's first) — record 2's cut lands mid-record.
+        let mut expected: Vec<(u64, u64)> = Vec::new();
+        'outer: for r in &recs {
+            for f in &r.fields {
+                expected.push((f.byte_start, f.byte_end));
+                if expected.len() == 3 {
+                    break 'outer;
+                }
+            }
+        }
+        let actual: Vec<(u64, u64)> = cells(&defs)
+            .iter()
+            .map(|d| (d.byte_start.unwrap(), d.byte_end.unwrap()))
+            .collect();
+        assert_eq!(actual, expected, "cells must follow strict source order");
+
+        // Two runs of the same input agree bit-for-bit.
+        let (again, _) = csv_definitions(&recs, 3);
+        assert_eq!(defs, again, "the mapping must be deterministic");
+    }
+
+    /// The header's cells are spent FIRST (they count toward the budget like
+    /// every other field) — with budget 3 the header takes two slots and only
+    /// the first data field of record 2 gets a cell.
+    #[test]
+    fn header_cells_count_toward_the_budget() {
+        let (defs, _) = defs_for("h1,h2\nr1a,r1b\nr2a,r2b\n", b',', 3);
+        let names: Vec<&str> = cells(&defs).iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["h1", "h2", "r1a"],
+            "header cells are spent first, then source order resumes"
+        );
+        // The interleave stays parent-before-children throughout.
+        let sequence: Vec<(String, String)> = defs
+            .iter()
+            .map(|d| (d.kind.clone(), d.name.clone()))
+            .collect();
+        assert_eq!(
+            sequence,
+            [
+                ("record", "h1"),
+                ("cell", "h1"),
+                ("cell", "h2"),
+                ("record", "r1a"),
+                ("cell", "r1a"),
+                ("record", "r2a"),
+            ]
+            .iter()
+            .map(|(k, n)| (k.to_string(), n.to_string()))
+            .collect::<Vec<_>>()
+        );
+    }
+
+    /// Every cell's signature carries its 1-indexed column number (`col N`);
+    /// record signatures stay empty.
+    #[test]
+    fn cell_signature_carries_the_column_index() {
+        let (defs, _) = defs_for("a,b,c\n1,2,3\n", b',', 100);
+        let by_name = |kind: &str, name: &str| {
+            defs.iter()
+                .find(|d| d.kind == kind && d.name == name)
+                .unwrap_or_else(|| panic!("{kind}:`{name}` missing: {defs:#?}"))
+        };
+        // Header cells.
+        assert_eq!(by_name("cell", "a").signature, "col 1");
+        assert_eq!(by_name("cell", "b").signature, "col 2");
+        assert_eq!(by_name("cell", "c").signature, "col 3");
+        // Data-row cells carry the same column numbers.
+        assert_eq!(by_name("cell", "1").signature, "col 1");
+        assert_eq!(by_name("cell", "2").signature, "col 2");
+        assert_eq!(by_name("cell", "3").signature, "col 3");
+        // Records stay signature-less.
+        for r in records(&defs) {
+            assert!(
+                r.signature.is_empty(),
+                "record {} must have no signature",
+                r.name
+            );
+        }
+    }
+
+    /// A record's region CONTAINS its cells' regions (both come straight
+    /// from the scanner), so body-on-a-record returns the whole row and
+    /// body-on-a-cell returns the field; with a fitting budget every field
+    /// of every record becomes a cell.
+    #[test]
+    fn record_region_contains_its_cells_regions() {
+        let src = "id,desc,note\n1,\"x,y\",z\n2,\"multi\nline\",w\n";
+        let recs = scan(src, b',');
+        let (defs, warnings) = csv_definitions(&recs, usize::MAX); // unlimited
+        assert!(warnings.is_empty());
+
+        for cell in cells(&defs) {
+            let (cs, ce) = (cell.byte_start.unwrap(), cell.byte_end.unwrap());
+            let parent = recs
+                .iter()
+                .find(|r| r.byte_start <= cs && ce <= r.byte_end)
+                .unwrap_or_else(|| panic!("cell `{}` has no containing record", cell.name));
+            assert!(
+                parent.byte_start <= cs && ce <= parent.byte_end,
+                "cell `{}` region {cs}..{ce} escapes its record's {}..{}",
+                cell.name,
+                parent.byte_start,
+                parent.byte_end
+            );
+            assert!(
+                parent.line_start <= cell.line_start && cell.line_end <= parent.line_end,
+                "cell `{}` lines escape its record's lines",
+                cell.name
+            );
+        }
+        // A fitting budget emits one cell per field of every record.
+        let total_fields: usize = recs.iter().map(|r| r.fields.len()).sum();
+        assert_eq!(cells(&defs).len(), total_fields);
+        assert_eq!(records(&defs).len(), recs.len());
+    }
+
+    /// Cell naming: header cells keep the field text verbatim (even beyond
+    /// the 60-char record limit), data cells truncate to the record-name
+    /// rule, and an empty/whitespace field falls back to `col-N` either way.
+    #[test]
+    fn cell_names_header_verbatim_data_truncated_empty_fallback() {
+        let long = "w".repeat(100);
+        // The data row carries an empty MIDDLE field (a trailing delimiter
+        // ends the record AT the delimiter — the scanner materialises no
+        // field after it).
+        let src = format!("{long},h2\n{long},,d2\n");
+        let (defs, _) = defs_for(&src, b',', 100);
+
+        let by_name = |name: &str| {
+            defs.iter()
+                .find(|d| d.kind == "cell" && d.name == name)
+                .unwrap_or_else(|| panic!("cell `{name}` missing: {defs:#?}"))
+        };
+        // Header: verbatim, NOT truncated.
+        assert_eq!(by_name(&long).name.len(), 100);
+        assert_eq!(by_name("h2").signature, "col 2");
+        // Data row: truncated to the record-name rule (60 chars + ellipsis).
+        let data = by_name(&format!("{}…", "w".repeat(60)));
+        assert_eq!(data.name.chars().count(), MAX_RECORD_NAME_CHARS + 1);
+        assert_eq!(data.signature, "col 1");
+        // The empty middle field falls back to its column number.
+        assert_eq!(by_name("col-2").name, "col-2");
+        assert_eq!(by_name("col-2").signature, "col 2");
+        assert_eq!(by_name("d2").name, "d2");
+        assert_eq!(by_name("d2").signature, "col 3");
     }
 }

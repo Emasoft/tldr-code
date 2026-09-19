@@ -89,10 +89,14 @@
 //!   unbuildable, so no tree-sitter grammar is wired), named after the first
 //!   field's text truncated to 60 chars (else `row-N`), region = the record's
 //!   exact source bytes (delimiters, quotes and embedded newlines included;
-//!   the terminating `\n`/`\r\n` excluded) + `cell` per field of the FIRST
-//!   record only (the header convention; name = the field's unescaped text,
-//!   region = the field's RAW bytes, quotes included). Signature is always
-//!   empty; `definition_line` = the record/field's start line.
+//!   the terminating `\n`/`\r\n` excluded) + `cell` per field of EVERY
+//!   record under the 50,000-cell budget (cell-budget-v1: cells are consumed
+//!   in strict source order, records never truncate, and a truncation
+//!   appends ONE warning to the host structure). Header cells keep their
+//!   verbatim text names, data cells truncate to 60 chars (else `col-N`),
+//!   every cell's signature is `col N` (1-indexed column) and its region is
+//!   the field's RAW bytes (quotes included) — always inside the parent
+//!   record's region. `definition_line` = the record/field's start line.
 //!
 //! Every element pins:
 //! 1. EXACT `kind` / `name` / `line_start` / `line_end` (1-indexed), and
@@ -1854,7 +1858,7 @@ fn markdown_headings_code_blocks_and_tables_are_elements() {
 }
 
 // =============================================================================
-// CSV/TSV — native RFC 4180 scanner (NO tree-sitter): records + header cells
+// CSV/TSV — native RFC 4180 scanner (NO tree-sitter): records + their cells
 // =============================================================================
 //
 // `.csv`/`.tsv` never reach a tree-sitter tree (the only CSV grammar crate on
@@ -1862,10 +1866,13 @@ fn markdown_headings_code_blocks_and_tables_are_elements() {
 // LanguageFns; root Cargo.toml audit note). The `get_code_structure` hook
 // early-returns to the `ast::csvscan` scanner, and each record maps onto a
 // `DefinitionInfo` with kind `"record"` (name = first field text truncated to
-// 60 chars, else `row-N`), while the FIRST record's fields additionally map
-// onto kind `"cell"` definitions (the header convention). `signature` is
-// always empty (a data row has nothing signature-shaped) and
-// `definition_line` = the record/field's start line.
+// 60 chars, else `row-N`), immediately followed by kind `"cell"` definitions
+// for that record's FIELDS (parent before children — the JSON/SQL outer-key-
+// first convention) under the 50,000-cell budget. Header cells keep the
+// field's verbatim text as their name; data cells truncate to 60 chars (else
+// `col-N`); every cell's `signature` is `col N` (1-indexed column) while
+// records keep an empty signature; `definition_line` = the record/field's
+// start line.
 // `assert_element_invariants` is deliberately NOT applied here: CSV elements
 // DO set `definition_line`.
 //
@@ -1885,9 +1892,10 @@ const CSV_FIXTURE: &str = "sku,product,notes\n\
 fn csv_records_and_header_cells_are_definitions_with_exact_spans() {
     let defs = extract_elements("data.csv", CSV_FIXTURE, Language::Csv);
 
-    // EXACT source-order sequence: the header record (whose cells follow it),
-    // then one record per data row — record 2 spans two lines (its quoted
-    // `notes` field embeds a newline AND a comma).
+    // EXACT source-order sequence: the header record with its cells, then
+    // each data record followed by ITS cells (parent before children) —
+    // record 2 spans two lines (its quoted `notes` field embeds a newline
+    // AND a comma).
     let sequence: Vec<(String, String)> = defs
         .iter()
         .map(|d| (d.kind.clone(), d.name.clone()))
@@ -1898,8 +1906,17 @@ fn csv_records_and_header_cells_are_definitions_with_exact_spans() {
         ("cell", "product"),
         ("cell", "notes"),
         ("record", "A-1"),
+        ("cell", "A-1"),
+        ("cell", "Widget"),
+        ("cell", "round, blue"),
         ("record", "A-2"),
+        ("cell", "A-2"),
+        ("cell", "Gadget"),
+        ("cell", "sells\nwell, sometimes"),
         ("record", "A-3"),
+        ("cell", "A-3"),
+        ("cell", "Doodad"),
+        ("cell", "plain"),
     ]
     .iter()
     .map(|(k, n)| (k.to_string(), n.to_string()))
@@ -1909,8 +1926,9 @@ fn csv_records_and_header_cells_are_definitions_with_exact_spans() {
         "element-extraction-v1 [data.csv]: expected exact record/cell sequence"
     );
 
-    // Every element: definition_line = start line, byte spans present, and
-    // the byte region is an exact slice of the source.
+    // Every element: definition_line = start line and byte spans present.
+    // Records keep an empty signature; every cell carries its 1-indexed
+    // `col N` orientation signature.
     for d in &defs {
         assert_eq!(
             d.definition_line,
@@ -1925,12 +1943,20 @@ fn csv_records_and_header_cells_are_definitions_with_exact_spans() {
             d.kind,
             d.name
         );
-        assert!(
-            d.signature.is_empty(),
-            "element-extraction-v1 [data.csv]: {}:`{}` data rows have no signatures",
-            d.kind,
-            d.name
-        );
+        if d.kind == "record" {
+            assert!(
+                d.signature.is_empty(),
+                "element-extraction-v1 [data.csv]: record:`{}` keeps no signature",
+                d.name
+            );
+        } else {
+            assert!(
+                matches!(d.signature.as_str(), "col 1" | "col 2" | "col 3"),
+                "element-extraction-v1 [data.csv]: cell:`{}` must carry a `col N` signature, got {:?}",
+                d.name,
+                d.signature
+            );
+        }
     }
 
     // Header record: one line, its cells are sub-regions of its span.
@@ -1963,14 +1989,46 @@ fn csv_records_and_header_cells_are_definitions_with_exact_spans() {
         "record region = the exact source line (comma inside quotes kept)"
     );
 
+    // A-1's data cells: parent-before-children (they follow the record row),
+    // each region the field's RAW bytes inside the record's region.
+    let cell_a1 = find_element(&defs, "data.csv", "cell", "A-1");
+    assert_span(cell_a1, "data.csv", "cell:A-1", 2, 2);
+    assert_byte_slice(cell_a1, CSV_FIXTURE, "data.csv", "A-1");
+    let cell_widget = find_element(&defs, "data.csv", "cell", "Widget");
+    assert_span(cell_widget, "data.csv", "cell:Widget", 2, 2);
+    assert_byte_slice(cell_widget, CSV_FIXTURE, "data.csv", "Widget");
+    let cell_round = find_element(&defs, "data.csv", "cell", "round, blue");
+    assert_span(cell_round, "data.csv", "cell:round, blue", 2, 2);
+    let round_slice = &CSV_FIXTURE
+        [cell_round.byte_start.unwrap() as usize..cell_round.byte_end.unwrap() as usize];
+    assert_eq!(
+        round_slice, "\"round, blue\"",
+        "a quoted cell's region keeps BOTH quotes (raw bytes, not display text)"
+    );
+    assert_eq!(cell_round.signature, "col 3");
+    assert!(
+        a1.byte_start.unwrap() <= cell_round.byte_start.unwrap()
+            && cell_round.byte_end.unwrap() <= a1.byte_end.unwrap(),
+        "a cell's region must sit inside its parent record's region"
+    );
+
     // Record A-2: embedded newline in the quoted field → the record spans
-    // lines 3-4 and its byte region reproduces BOTH lines exactly.
+    // lines 3-4 and its byte region reproduces BOTH lines exactly; its
+    // `notes` cell spans the same two lines (the field's raw region).
     let a2 = find_element(&defs, "data.csv", "record", "A-2");
     assert_span(a2, "data.csv", "record:A-2", 3, 4);
     let a2_slice = &CSV_FIXTURE[a2.byte_start.unwrap() as usize..a2.byte_end.unwrap() as usize];
     assert_eq!(
         a2_slice, "A-2,Gadget,\"sells\nwell, sometimes\"",
         "record region covers the embedded newline record exactly"
+    );
+    let cell_sells = find_element(&defs, "data.csv", "cell", "sells\nwell, sometimes");
+    assert_span(cell_sells, "data.csv", "cell:sells…", 3, 4);
+    let sells_slice = &CSV_FIXTURE
+        [cell_sells.byte_start.unwrap() as usize..cell_sells.byte_end.unwrap() as usize];
+    assert_eq!(
+        sells_slice, "\"sells\nwell, sometimes\"",
+        "the embedded-newline cell's region spans both lines, quotes included"
     );
 
     // Record A-3: plain record.
@@ -1995,6 +2053,8 @@ fn tsv_records_use_the_tab_delimiter() {
         ("cell", "id"),
         ("cell", "name"),
         ("record", "1"),
+        ("cell", "1"),
+        ("cell", "ada"),
     ]
     .iter()
     .map(|(k, n)| (k.to_string(), n.to_string()))
@@ -2009,6 +2069,124 @@ fn tsv_records_use_the_tab_delimiter() {
     let header_slice =
         &TSV_FIXTURE[header.byte_start.unwrap() as usize..header.byte_end.unwrap() as usize];
     assert_eq!(header_slice, "id\tname");
+}
+
+// =============================================================================
+// cell-budget-v1: cells for every record until the 50,000 budget is consumed
+// in strict source order; then records keep emitting (unaffected) and ONE
+// warning is appended to the host structure
+// =============================================================================
+
+/// 1 header field + 60,000 one-field data rows = 60,001 candidate cells: the
+/// 50,000 budget truncates exactly, the last affordable cell is data row
+/// 49,998 (header first, then source order), and every record survives.
+#[test]
+fn csv_cell_budget_truncates_at_50k_with_one_warning() {
+    let mut csv = String::from("n\n");
+    for i in 0..60_000 {
+        csv.push_str(&i.to_string());
+        csv.push('\n');
+    }
+    let dir =
+        TempDir::new().unwrap_or_else(|e| panic!("element-extraction-v1: tempdir failed: {e}"));
+    let path = dir.path().join("wide.csv");
+    fs::write(&path, csv.as_bytes())
+        .unwrap_or_else(|e| panic!("element-extraction-v1: failed to write wide.csv: {e}"));
+
+    let structure = get_code_structure(&path, Language::Csv, 0, None)
+        .unwrap_or_else(|e| panic!("element-extraction-v1: wide.csv extraction failed: {e}"));
+    assert_eq!(
+        structure.files.len(),
+        1,
+        "element-extraction-v1 [wide.csv]: expected exactly one FileStructure"
+    );
+    let defs = &structure.files[0].definitions;
+
+    // EXACTLY 50,000 cells — the budget, no more, no less — consumed in
+    // strict source order.
+    let cells: Vec<&DefinitionInfo> = defs.iter().filter(|d| d.kind == "cell").collect();
+    assert_eq!(
+        cells.len(),
+        50_000,
+        "element-extraction-v1 [wide.csv]: cell count must equal the budget exactly"
+    );
+    assert_eq!(
+        cells[0].name, "n",
+        "element-extraction-v1 [wide.csv]: the header cell is spent first"
+    );
+    let last = cells.last().unwrap();
+    let last_slice = &csv[last.byte_start.unwrap() as usize..last.byte_end.unwrap() as usize];
+    assert_eq!(
+        last_slice, "49998",
+        "element-extraction-v1 [wide.csv]: the last affordable cell is data row 49998"
+    );
+    assert_eq!(last.signature, "col 1");
+
+    // Records are UNAFFECTED: all 60,001 rows keep their record definition,
+    // and after the cut only records remain.
+    assert_eq!(
+        defs.iter().filter(|d| d.kind == "record").count(),
+        60_001,
+        "element-extraction-v1 [wide.csv]: every record must survive the cell cut"
+    );
+    let last_cell = defs.iter().rposition(|d| d.kind == "cell").unwrap();
+    assert!(
+        defs[last_cell + 1..].iter().all(|d| d.kind == "record"),
+        "element-extraction-v1 [wide.csv]: no cell may follow the budget's last cell"
+    );
+
+    // ONE warning on the host structure, exactly the documented text.
+    assert_eq!(
+        structure.warnings,
+        vec!["cell extraction capped at 50000 (file has more); records unaffected"],
+        "element-extraction-v1 [wide.csv]: exactly one budget-truncation warning"
+    );
+}
+
+/// body-by-name on data-row cells resolves byte-exactly: the FIRST match in
+/// source order wins (duplicates are allowed — a column whose value repeats
+/// — and a record always precedes its own cells, so a name shared by record
+/// and field resolves to the record first). The region is the field's RAW
+/// bytes, quotes included.
+#[test]
+fn csv_body_by_name_on_a_data_row_cell_is_byte_exact() {
+    const FIXTURE: &str = "sku,product,notes\n\
+                           A-1,Widget,\"round, blue\"\n\
+                           B-2,Widget,plain\n";
+    let defs = extract_elements("data.csv", FIXTURE, Language::Csv);
+
+    let slice_of =
+        |d: &DefinitionInfo| &FIXTURE[d.byte_start.unwrap() as usize..d.byte_end.unwrap() as usize];
+
+    // A unique data-cell name resolves straight to the cell.
+    let widget = defs.iter().find(|d| d.name == "Widget").unwrap();
+    assert_eq!(
+        widget.kind, "cell",
+        "first `Widget` in source order is A-1's cell"
+    );
+    assert_eq!(slice_of(widget), "Widget", "the cell's region IS the field");
+    assert_eq!(widget.signature, "col 2");
+
+    // The quoted cell's raw region keeps both quotes (region ≠ display text).
+    let round = defs.iter().find(|d| d.name == "round, blue").unwrap();
+    assert_eq!(round.kind, "cell");
+    assert_eq!(slice_of(round), "\"round, blue\"");
+    assert_eq!(round.signature, "col 3");
+
+    // Duplicate cell names: first match in source order wins — row A-1's
+    // `Widget` precedes row B-2's.
+    let widgets: Vec<&DefinitionInfo> = defs.iter().filter(|d| d.name == "Widget").collect();
+    assert_eq!(widgets.len(), 2, "duplicate cell names are allowed");
+    assert!(
+        widgets[0].byte_start.unwrap() < widgets[1].byte_start.unwrap(),
+        "the first match in source order is row A-1's cell"
+    );
+
+    // A name shared by a record and its first field resolves to the RECORD
+    // first (parent before children).
+    let a1 = defs.iter().find(|d| d.name == "A-1").unwrap();
+    assert_eq!(a1.kind, "record");
+    assert_eq!(slice_of(a1), "A-1,Widget,\"round, blue\"");
 }
 
 // =============================================================================
