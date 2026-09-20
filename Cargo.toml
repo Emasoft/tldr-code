@@ -104,6 +104,11 @@ codebook-tree-sitter-latex = "=0.6.1"
 tree-sitter-md = "=0.5.3"
 # NOTE: tree-sitter-sql dropped — crates.io only publishes 0.0.2 (DerekStride
 # grammar is source-only); revisit if a maintained sql crate targets ts 0.25.
+# Evaluated 2026-09: vendoring DerekStride/tree-sitter-sql v0.3.11 is
+# ABI-15-compatible with ts 0.25 (corpus 412/412, dollar-quoted bodies parse)
+# but the generated parser.c is 17.4 MB — deferred; the native ast/sqlscan
+# outline covers schema extraction + REFERENCES edges. Revisit if full SQL
+# parse fidelity is required.
 # NOTE: tree-sitter-csv dropped (CSV/TSV batch, 2026-09) — the only CSV
 # grammar crate on crates.io, tree-sitter-csv 1.2.0 (last publish 2024-01-24),
 # is UNBUILDABLE and UNLINKABLE in this workspace, verified by build probe:
