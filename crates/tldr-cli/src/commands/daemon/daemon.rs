@@ -40,10 +40,11 @@ use super::types::DEFAULT_REINDEX_THRESHOLD;
 use tldr_core::semantic::{BuildOptions, CacheConfig, IndexSearchOptions, SemanticIndex};
 use tldr_core::{
     architecture_analysis, build_project_call_graph, change_impact, collect_all_functions,
-    dead_code_analysis, detect_or_parse_language, enriched_search, extract_file, find_importers,
-    get_cfg_context, get_code_structure, get_dfg_context, get_file_tree, get_imports,
-    get_relevant_context, get_slice, impact_analysis, search as tldr_search, CodeStructure,
-    EnrichedSearchOptions, FileTree, Language, NodeType, SliceDirection,
+    dead_code_analysis, detect_or_parse_language, enriched_search, extract_file,
+    filter_structure_max_depth, find_importers, get_cfg_context, get_code_structure,
+    get_dfg_context, get_file_tree, get_imports, get_relevant_context, get_slice, impact_analysis,
+    search as tldr_search, CodeStructure, EnrichedSearchOptions, FileTree, Language, NodeType,
+    SliceDirection,
 };
 
 // =============================================================================
@@ -1275,7 +1276,11 @@ impl TLDRDaemon {
                 }
             }
 
-            DaemonCommand::Structure { path, lang } => {
+            DaemonCommand::Structure {
+                path,
+                lang,
+                max_depth,
+            } => {
                 let lang_str = lang.as_deref().unwrap_or("");
                 let language = match detect_or_parse_language(lang.as_deref(), &path) {
                     Ok(l) => l,
@@ -1287,25 +1292,43 @@ impl TLDRDaemon {
                     }
                 };
                 let key = structure_query_key(&path, lang_str, language);
-                if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
-                    return DaemonResponse::Result(cached);
-                }
-                match get_code_structure(&path, language, 0, None) {
-                    Ok(result) => {
-                        let val = serde_json::to_value(&result).unwrap_or_default();
-                        // Issue #51 follow-up (W5b): structure is FILE-scoped
-                        // — register the file's input hashes (canonical + raw
-                        // spellings) exactly like the Extract arm, so Notify
-                        // invalidates the slot.
-                        let deps = file_input_hashes(&path);
-                        self.cache.insert(key, &val, deps);
-                        DaemonResponse::Result(val)
+                // markup-node-tree-v1: the cached slot (and the fresh compute)
+                // hold the FULL unfiltered structure; `--max-depth` narrows
+                // PER REQUEST on the way out, so one slot serves every depth.
+                let mut result = if let Some(cached) = self.cache.get::<serde_json::Value>(&key) {
+                    cached
+                } else {
+                    match get_code_structure(&path, language, 0, None) {
+                        Ok(result) => {
+                            let val = serde_json::to_value(&result).unwrap_or_default();
+                            // Issue #51 follow-up (W5b): structure is FILE-scoped
+                            // — register the file's input hashes (canonical + raw
+                            // spellings) exactly like the Extract arm, so Notify
+                            // invalidates the slot.
+                            let deps = file_input_hashes(&path);
+                            self.cache.insert(key, &val, deps);
+                            val
+                        }
+                        Err(e) => {
+                            return DaemonResponse::Error {
+                                status: "error".to_string(),
+                                error: e.to_string(),
+                            }
+                        }
                     }
-                    Err(e) => DaemonResponse::Error {
-                        status: "error".to_string(),
-                        error: e.to_string(),
-                    },
+                };
+                if max_depth.is_some() {
+                    if let Ok(mut structure) =
+                        serde_json::from_value::<CodeStructure>(result.clone())
+                    {
+                        filter_structure_max_depth(&mut structure, max_depth.unwrap_or(0));
+                        result = serde_json::to_value(&structure).unwrap_or(result);
+                    }
+                    // A deserialize failure is unreachable for values this
+                    // daemon serialized itself; serving the full structure
+                    // beats a broken report.
                 }
+                DaemonResponse::Result(result)
             }
 
             DaemonCommand::Context {
@@ -2681,6 +2704,7 @@ mod tests {
             .handle_command(DaemonCommand::Structure {
                 path: temp.path().to_path_buf(),
                 lang: Some("python".to_string()),
+                max_depth: None,
             })
             .await;
 
@@ -3405,6 +3429,7 @@ mod tests {
             .handle_command(DaemonCommand::Structure {
                 path: utils_py.clone(),
                 lang: Some("python".to_string()),
+                max_depth: None,
             })
             .await;
         let first_value = match first {
@@ -3436,6 +3461,7 @@ mod tests {
             .handle_command(DaemonCommand::Structure {
                 path: utils_py.clone(),
                 lang: Some("python".to_string()),
+                max_depth: None,
             })
             .await;
         let second_value = match second {
@@ -3623,6 +3649,7 @@ mod tests {
             .handle_command(DaemonCommand::Structure {
                 path: example_py.clone(),
                 lang: Some("python".to_string()),
+                max_depth: None,
             })
             .await;
         let value = match response {
@@ -4420,6 +4447,7 @@ mod tests {
             DaemonCommand::Structure {
                 path: py_file.clone(),
                 lang: Some("python".to_string()),
+                max_depth: None,
             },
             DaemonCommand::Cfg {
                 file: py_file.clone(),

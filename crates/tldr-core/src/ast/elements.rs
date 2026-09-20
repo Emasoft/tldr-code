@@ -274,6 +274,24 @@
 //! - `signature`: a one-line summary (the element's first source line), so
 //!   text-mode and JSON consumers see what the region opens with.
 //!
+//! # Depth (markup-node-tree-v1)
+//!
+//! Markup element rows carry `DefinitionInfo::depth = Some(n)` — the element's
+//! nesting level within its document, root-level elements at 0, children at 1,
+//! … — so consumers can navigate 100 MB XML documents level by level instead
+//! of reading one flat 2.4M-row list:
+//!
+//! | Format | Depth semantics |
+//! |--------|-----------------|
+//! | XML/SVG/HTML/XHTML (`walk_xml`/`walk_html`) | tree-sitter tree nesting: the document's root element(s) are 0, each nested element +1; `element`, `script_element` and `style_element` rows all carry it |
+//! | OOXML (`.docx`/`.xlsx`/`.pptx`) | PER-PART depth: each zip part is walked as its own XML document, so every part's root elements are 0 again; `signature` already carries the part path that scopes the depth |
+//! | Embedded virtual documents (`<host>#fo-N`, script/style documents' element rows) | depth restarts at 0 WITHIN the virtual document and the `container` field identifies the document the depth belongs to |
+//! | Inner CSS (`selector`/`at-rule`) and inner JS rows | `None` — they are not markup nodes |
+//! | JSON/YAML/TOML `key`, TOML `section`, YAML `document`, bash `function`, LaTeX, Markdown, log/text/csv/sql/env/ignore rows, code-language definitions | `None` — not markup node trees (SQL tables could carry depth 0; deliberately left `None`, the schema outline is flat) |
+//!
+//! `structure --max-depth N` keeps every definition whose depth is `None`
+//! (the filter narrows markup elements only) or whose depth is `<= N`.
+//!
 //! # Determinism
 //!
 //! Every walker is a pre-order depth-first traversal emitting in source order.
@@ -396,8 +414,13 @@ fn extract_elements_inner(
         // `#script-N` numbering spans the whole host document in source order.
         // virtual-documents-v1 adds the parallel `#style-N` counter and the
         // outbound-reference collection for both.
-        Language::Xml => walk_xml(root, source, &mut state, &mut elements),
-        Language::Html => walk_html(root, source, &mut state, &mut elements),
+        // markup-node-tree-v1: the markup walks start their depth counter at
+        // 0 (root-level elements); one counter per document — the OOXML
+        // per-part walks each dispatch here fresh, so a part's depth is
+        // part-relative, and the embedded-document recursion restarts its
+        // own counter per virtual document.
+        Language::Xml => walk_xml(root, source, &mut state, &mut elements, 0),
+        Language::Html => walk_html(root, source, &mut state, &mut elements, 0),
         Language::Css => walk_css(root, source, &mut elements),
         // LaTeX batch (2025-11): document markup joins the same engine
         // (kinds `section` / `environment`).
@@ -558,7 +581,20 @@ fn push_rebased(
 /// Build an element definition from a node: line span from the node's rows
 /// (trailing-newline trimmed, see the module doc), byte span from the node's
 /// byte range, signature = the element's first source line.
-fn element_def(kind: &str, name: String, node: Node, source: &str) -> DefinitionInfo {
+///
+/// markup-node-tree-v1: `depth` is the element's nesting level within its
+/// document (root-level elements = 0, children = 1, …). The markup walkers
+/// (`walk_xml`/`walk_html`, including the embedded-document recursion and the
+/// OOXML per-part walks) pass `Some(depth)`; every other producer of this
+/// helper (JSON/TOML/YAML keys, sections, documents, CSS rows, …) passes
+/// `None` — they are not markup node trees.
+fn element_def(
+    kind: &str,
+    name: String,
+    node: Node,
+    source: &str,
+    depth: Option<u32>,
+) -> DefinitionInfo {
     let bytes = source.as_bytes();
     let line_start = node.start_position().row as u32 + 1;
     // A node whose last byte is a newline would put `end_position().row + 1`
@@ -591,6 +627,7 @@ fn element_def(kind: &str, name: String, node: Node, source: &str) -> Definition
         // Host-file elements carry no virtual-document provenance — only
         // script-inner JS rows do (script-inner-js-v1).
         container: None,
+        depth,
     }
 }
 
@@ -622,6 +659,7 @@ fn walk_json(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
                 json_key_name(&key, source),
                 node,
                 source,
+                None,
             ));
         }
     }
@@ -654,7 +692,7 @@ fn walk_toml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
             // Header = the key-part children before the first `pair`.
             let path = toml_header_path(&node, source);
             if !path.is_empty() {
-                out.push(element_def("section", path, node, source));
+                out.push(element_def("section", path, node, source, None));
             }
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
@@ -663,7 +701,7 @@ fn walk_toml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
         }
         "pair" => {
             if let Some(name) = toml_pair_name(&node, source) {
-                out.push(element_def("key", name, node, source));
+                out.push(element_def("key", name, node, source, None));
             }
             // Recurse so inline-table pairs (`x = { a = 1 }`) surface too.
             let mut cursor = node.walk();
@@ -755,6 +793,7 @@ fn walk_yaml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
                     format!("document-{}", idx + 1),
                     child,
                     source,
+                    None,
                 ));
                 walk_yaml(child, source, out);
             }
@@ -768,7 +807,7 @@ fn walk_yaml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
     // inside sequences (`- a: 1`), flow mappings inside block contexts.
     if node.kind() == "block_mapping_pair" || node.kind() == "flow_pair" {
         if let Some(name) = yaml_pair_name(&node, source) {
-            out.push(element_def("key", name, node, source));
+            out.push(element_def("key", name, node, source, None));
         }
     }
 
@@ -815,7 +854,7 @@ fn walk_bash(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
         // region-bearing functions, so it flows through the element engine.
         if let Some(name_node) = node.child_by_field_name("name") {
             let name = source[name_node.byte_range()].to_string();
-            out.push(element_def("function", name, node, source));
+            out.push(element_def("function", name, node, source, None));
         }
     }
 
@@ -860,13 +899,28 @@ fn walk_bash(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
 /// attribute — SVG 1.1 loaded by `xlink:href`, SVG 2 by `href`) and non-JS
 /// `type` values are skipped; a self-closing `<script …/>` (`EmptyElemTag`)
 /// has no content and emits nothing on its own.
-fn walk_xml(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<DefinitionInfo>) {
+///
+/// markup-node-tree-v1: `depth` is the element's nesting level in the CURRENT
+/// document — the number of ANCESTOR elements (root-level elements = 0). The
+/// top-level caller (and each OOXML part walk) starts at 0; recursion passes
+/// `depth + 1` when descending FROM an element and `depth` through every
+/// grammar wrapper (`document`, XML `content`, text nodes), so grammar
+/// bookkeeping nodes never inflate the markup level. Every `element` row
+/// carries `Some(depth)`; inner-CSS/inner-JS rows are not markup elements and
+/// keep `None`.
+fn walk_xml(
+    node: Node,
+    source: &str,
+    state: &mut WalkState,
+    out: &mut Vec<DefinitionInfo>,
+    depth: u32,
+) {
     // VD-2: true after a foreignObject handed its content to a nested virtual
     // document — the subtree is the document's, not the host walk's.
     let mut skip_children = false;
     if node.kind() == "element" {
         if let Some(name) = xml_element_name(&node, source) {
-            out.push(element_def("element", name, node, source));
+            out.push(element_def("element", name, node, source, Some(depth)));
         }
         let tag = xml_tag_name(&node, source);
         if tag.as_deref() == Some("style") {
@@ -957,9 +1011,16 @@ fn walk_xml(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<Defin
     }
 
     if !skip_children {
+        // Descending FROM an element adds one markup level; grammar wrappers
+        // (`content` et al.) are transparent to the element tree.
+        let child_depth = if node.kind() == "element" {
+            depth + 1
+        } else {
+            depth
+        };
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            walk_xml(child, source, state, out);
+            walk_xml(child, source, state, out, child_depth);
         }
     }
 }
@@ -1153,14 +1214,28 @@ fn xml_attribute(attribute: &Node, source: &str) -> (String, Option<String>) {
 /// [`emit_script_inner_js`]). A `src` attribute makes the script external —
 /// doclinks already indexes that reference — and a non-JS `type` is not
 /// JavaScript; both are skipped before any parse.
-fn walk_html(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<DefinitionInfo>) {
+///
+/// markup-node-tree-v1: `depth` is the element's nesting level in the current
+/// document — the number of ANCESTOR elements (root-level = 0); the top-level
+/// caller starts at 0, recursion passes `depth + 1` when descending FROM an
+/// element-bearing node and `depth` through every other node (doctype,
+/// comments, text). `element`, `script_element` and `style_element` rows all
+/// carry `Some(depth)` (a script/style element IS a markup node; its inner
+/// CSS/JS rows are not and keep `None`).
+fn walk_html(
+    node: Node,
+    source: &str,
+    state: &mut WalkState,
+    out: &mut Vec<DefinitionInfo>,
+    depth: u32,
+) {
     // VD-2: true after a foreignObject handed its content to a nested virtual
     // document — the subtree is the document's, not the host walk's.
     let mut skip_children = false;
     match node.kind() {
         "element" => {
             if let Some(name) = html_element_name(&node, source) {
-                out.push(element_def("element", name, node, source));
+                out.push(element_def("element", name, node, source, Some(depth)));
             }
             // VD-2: a `foreignObject` inside inline `<svg>` (matched
             // case-insensitively — the html grammar keeps the source
@@ -1196,7 +1271,7 @@ fn walk_html(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<Defi
         }
         "script_element" => {
             if let Some(name) = html_element_name(&node, source) {
-                out.push(element_def("element", name, node, source));
+                out.push(element_def("element", name, node, source, Some(depth)));
             }
             if state.host().is_some() {
                 let (external, script_type) = html_script_attrs(&node, source);
@@ -1212,7 +1287,7 @@ fn walk_html(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<Defi
         }
         "style_element" => {
             if let Some(name) = html_element_name(&node, source) {
-                out.push(element_def("element", name, node, source));
+                out.push(element_def("element", name, node, source, Some(depth)));
             }
             // The CSS body: the `raw_text` child of the style_element itself.
             let mut cursor = node.walk();
@@ -1226,9 +1301,15 @@ fn walk_html(node: Node, source: &str, state: &mut WalkState, out: &mut Vec<Defi
     }
 
     if !skip_children {
+        // Descending FROM an element-bearing node adds one markup level;
+        // every other node is transparent to the element tree.
+        let child_depth = match node.kind() {
+            "element" | "script_element" | "style_element" => depth + 1,
+            _ => depth,
+        };
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            walk_html(child, source, state, out);
+            walk_html(child, source, state, out, child_depth);
         }
     }
 }
@@ -1856,7 +1937,10 @@ fn process_embedded_html(
     }
     // `#script-M` / `#style-M` are numbered PER DOCUMENT (hierarchical
     // naming) — fresh counters here, unlike the file-level counters of the
-    // top-level walk.
+    // top-level walk. markup-node-tree-v1: the element-depth counter is
+    // likewise PER DOCUMENT — the virtual document's root-level elements sit
+    // at depth 0 (the doc's `container` identifies the document, so depth
+    // never needs to be global).
     let mut script_no = 0u32;
     let mut style_no = 0u32;
     walk_embedded_html(
@@ -1865,6 +1949,7 @@ fn process_embedded_html(
         byte_base,
         line_base,
         depth,
+        0,
         container_prefix,
         &mut script_no,
         &mut style_no,
@@ -1882,6 +1967,14 @@ fn process_embedded_html(
 /// `byte_base`/`line_base`, script/style numbering is the document-local
 /// counters, and a `foreignObject` element recurses through
 /// [`process_foreign_object_content`] instead of descending.
+///
+/// markup-node-tree-v1: `depth` (usize) stays the VIRTUAL-DOCUMENT nesting
+/// level the `MAX_EMBED_DEPTH` cap counts (1 = first foreignObject document);
+/// `elem_depth` (u32) is the ELEMENT nesting level WITHIN this virtual
+/// document — the number of ancestor elements, the document's root-level
+/// elements at 0 — and it restarts at 0 in every nested document
+/// ([`process_embedded_html`] passes 0). The `container` field identifies the
+/// document a depth belongs to.
 #[allow(clippy::too_many_arguments)]
 fn walk_embedded_html(
     node: Node,
@@ -1889,6 +1982,7 @@ fn walk_embedded_html(
     byte_base: usize,
     line_base: u32,
     depth: usize,
+    elem_depth: u32,
     container: &str,
     script_no: &mut u32,
     style_no: &mut u32,
@@ -1903,7 +1997,7 @@ fn walk_embedded_html(
     match node.kind() {
         "element" => {
             if let Some(name) = html_element_name(&node, html) {
-                let mut def = element_def("element", name, node, html);
+                let mut def = element_def("element", name, node, html, Some(elem_depth));
                 def.container = Some(container.to_string());
                 push_rebased(def, byte_base, line_base, out_defs);
             }
@@ -1929,7 +2023,7 @@ fn walk_embedded_html(
         }
         "script_element" => {
             if let Some(name) = html_element_name(&node, html) {
-                let mut def = element_def("element", name, node, html);
+                let mut def = element_def("element", name, node, html, Some(elem_depth));
                 def.container = Some(container.to_string());
                 push_rebased(def, byte_base, line_base, out_defs);
             }
@@ -1959,7 +2053,7 @@ fn walk_embedded_html(
         }
         "style_element" => {
             if let Some(name) = html_element_name(&node, html) {
-                let mut def = element_def("element", name, node, html);
+                let mut def = element_def("element", name, node, html, Some(elem_depth));
                 def.container = Some(container.to_string());
                 push_rebased(def, byte_base, line_base, out_defs);
             }
@@ -1985,6 +2079,12 @@ fn walk_embedded_html(
     }
 
     if !skip_children {
+        // Same ancestor-count rule as [`walk_html`]: descending from an
+        // element-bearing node adds one markup level.
+        let child_depth = match node.kind() {
+            "element" | "script_element" | "style_element" => elem_depth + 1,
+            _ => elem_depth,
+        };
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             walk_embedded_html(
@@ -1993,6 +2093,7 @@ fn walk_embedded_html(
                 byte_base,
                 line_base,
                 depth,
+                child_depth,
                 container,
                 script_no,
                 style_no,
@@ -2027,14 +2128,14 @@ fn walk_css(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
             for child in node.children(&mut cursor) {
                 if child.kind() == "selectors" {
                     let name = collapse_whitespace(&source[child.byte_range()]);
-                    out.push(element_def("selector", name, node, source));
+                    out.push(element_def("selector", name, node, source, None));
                     break;
                 }
             }
         }
         "media_statement" | "supports_statement" | "keyframes_statement" => {
             let name = css_at_rule_name(&node, source);
-            out.push(element_def("at-rule", name, node, source));
+            out.push(element_def("at-rule", name, node, source, None));
         }
         "at_rule" => {
             // Generic at-rules may also terminate with `;` (no block); only
@@ -2049,7 +2150,7 @@ fn walk_css(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
             }
             if has_block {
                 let name = css_at_rule_name(&node, source);
-                out.push(element_def("at-rule", name, node, source));
+                out.push(element_def("at-rule", name, node, source, None));
             }
         }
         _ => {}
@@ -2161,10 +2262,11 @@ fn walk_latex(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
             latex_section_name(&node, source),
             node,
             source,
+            None,
         ));
     } else if LATEX_ENVIRONMENT_KINDS.contains(&kind) {
         if let Some(name) = latex_environment_name(&node, source) {
-            out.push(element_def("environment", name, node, source));
+            out.push(element_def("environment", name, node, source, None));
         }
     }
 
@@ -2278,13 +2380,13 @@ fn walk_markdown(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
         "atx_heading" | "setext_heading" => {
             let name = markdown_heading_name(&node, source);
             if !name.is_empty() {
-                out.push(element_def("heading", name, node, source));
+                out.push(element_def("heading", name, node, source, None));
             }
         }
         "fenced_code_block" => {
             let name = markdown_fenced_code_name(&node, source)
                 .unwrap_or_else(|| "code-block".to_string());
-            out.push(element_def("code-block", name, node, source));
+            out.push(element_def("code-block", name, node, source, None));
         }
         "indented_code_block" => {
             // The block grammar emits dedicated nodes for 4-space-indented
@@ -2296,12 +2398,13 @@ fn walk_markdown(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
                 "code-block".to_string(),
                 node,
                 source,
+                None,
             ));
         }
         "pipe_table" => {
             let name = markdown_table_name(&node, source);
             if !name.is_empty() {
-                out.push(element_def("table", name, node, source));
+                out.push(element_def("table", name, node, source, None));
             }
         }
         _ => {}
@@ -2626,7 +2729,7 @@ mod tests {
         let mut state = WalkState::new(Some("budget.html"));
         state.budget.limit = 2; // the injected, tiny budget
         let mut out = Vec::new();
-        walk_html(tree.root_node(), src, &mut state, &mut out);
+        walk_html(tree.root_node(), src, &mut state, &mut out, 0);
 
         // Documents 1-2 processed (the script and the style), documents 3+
         // (scripts b and c) skipped.
@@ -2675,7 +2778,7 @@ mod tests {
         let mut state = WalkState::new(Some("fo.svg"));
         state.budget.limit = 0; // no documents affordable at all
         let mut out = Vec::new();
-        walk_xml(tree.root_node(), src, &mut state, &mut out);
+        walk_xml(tree.root_node(), src, &mut state, &mut out, 0);
 
         // The host element rows for svg/foreignObject emit (the walk itself
         // is untouched), but the content is owned by NO document and not

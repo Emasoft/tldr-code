@@ -28,6 +28,15 @@ pub struct StructureArgs {
     /// Maximum number of files to process (0 = unlimited)
     #[arg(long, short = 'm', default_value = "0")]
     pub max_results: usize,
+
+    /// markup-node-tree-v1: keep only markup element definitions at nesting
+    /// depth <= N (root-level elements are depth 0). Formats only —
+    /// XML/SVG/HTML/XHTML and OOXML parts carry element depths; definitions
+    /// without depth semantics (code symbols, inner-CSS/inner-JS rows, json/
+    /// yaml/toml keys, log/text/csv/sql rows) are never filtered. Unset = no
+    /// filtering (the full flat element list, JSON-complete).
+    #[arg(long)]
+    pub max_depth: Option<u32>,
 }
 
 impl StructureArgs {
@@ -88,12 +97,21 @@ impl StructureArgs {
             }
         };
 
-        // Try daemon first for cached result
-        if let Some(structure) = try_daemon_route::<CodeStructure>(
-            &self.path,
-            "structure",
-            params_with_path_lang(&self.path, Some(language.as_str())),
-        ) {
+        // Try daemon first for cached result.
+        //
+        // markup-node-tree-v1: thread `--max-depth` so the daemon applies the
+        // SAME element-tree narrowing the direct-compute path does (the
+        // daemon filters post-extraction per request, so the shared
+        // per-project memoization stays untouched). A request without the
+        // key means "no filtering" on both routes.
+        let mut params = params_with_path_lang(&self.path, Some(language.as_str()));
+        if let Some(depth) = self.max_depth {
+            if let serde_json::Value::Object(ref mut map) = params {
+                map.insert("max_depth".to_string(), serde_json::json!(depth));
+            }
+        }
+        if let Some(structure) = try_daemon_route::<CodeStructure>(&self.path, "structure", params)
+        {
             // Output based on format
             if writer.is_text() {
                 let text = format_structure_text(&structure);
@@ -113,12 +131,18 @@ impl StructureArgs {
         ));
 
         // Get code structure
-        let structure = get_code_structure(
+        let mut structure = get_code_structure(
             &self.path,
             language,
             self.max_results,
             Some(&IgnoreSpec::default()),
         )?;
+
+        // markup-node-tree-v1: `--max-depth` narrows the markup element tree
+        // AFTER extraction (direct-compute parity with the daemon route).
+        if let Some(depth) = self.max_depth {
+            tldr_core::filter_structure_max_depth(&mut structure, depth);
+        }
 
         // Output based on format
         if writer.is_text() {

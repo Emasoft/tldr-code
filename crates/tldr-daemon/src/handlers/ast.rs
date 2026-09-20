@@ -14,7 +14,7 @@ use crate::state::DaemonState;
 
 use tldr_core::{
     detect_or_parse_language, get_code_structure, get_file_tree, get_imports, validate_file_path,
-    CodeStructure, FileTree, ImportInfo, Language, ModuleInfo,
+    CodeStructure, FileTree, ImportInfo, Language, ModuleInfo, TldrResult,
 };
 
 // =============================================================================
@@ -77,11 +77,19 @@ pub async fn tree(
 // =============================================================================
 
 /// Structure request parameters
+///
+/// markup-node-tree-v1: `max_depth` narrows the markup element tree
+/// (depth <= N, `None`-depth rows unaffected) — the additive twin of the
+/// CLI's `structure --max-depth`. Absent (or `null`) means no filtering, so
+/// pre-existing clients are unaffected; the filter runs post-extraction per
+/// request, so the shared per-project structure memoization is unchanged.
 #[derive(Debug, Deserialize)]
 pub struct StructureRequest {
     pub language: String,
     #[serde(default)]
     pub max_results: usize,
+    #[serde(default)]
+    pub max_depth: Option<u32>,
 }
 
 /// Structure handler - extracts code structure from all files
@@ -97,10 +105,18 @@ pub async fn structure(
         .parse()
         .map_err(|e: String| HandlerError(axum::http::StatusCode::BAD_REQUEST, e))?;
     let max_results = request.max_results;
+    let max_depth = request.max_depth;
 
     // Run in blocking context (M10)
-    let result = tokio::task::spawn_blocking(move || {
-        get_code_structure(&project, language, max_results, None)
+    let result = tokio::task::spawn_blocking(move || -> TldrResult<CodeStructure> {
+        let mut structure = get_code_structure(&project, language, max_results, None)?;
+        // markup-node-tree-v1: `--max-depth` parity with the CLI's
+        // direct-compute path — the filter is per-request, applied AFTER
+        // the (memoized) extraction.
+        if let Some(max_depth) = max_depth {
+            tldr_core::filter_structure_max_depth(&mut structure, max_depth);
+        }
+        Ok(structure)
     })
     .await
     .map_err(|e| {

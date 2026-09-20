@@ -292,6 +292,11 @@ fn format_tree_node(tree: &tldr_core::FileTree, output: &mut String, indent: usi
 ///     while still skipping fields the JSON consumers rely on (imports,
 ///     definitions array). Result: roughly 2-3× richer than before, still
 ///     text-stream friendly.
+///
+/// markup-node-tree-v1: the Elements section (only) applies a cap — see the
+/// section comment. JSON output stays complete under every format.
+pub const STRUCTURE_TEXT_ELEMENT_CAP: usize = 200;
+
 pub fn format_structure_text(structure: &tldr_core::CodeStructure) -> String {
     use std::collections::HashMap;
 
@@ -428,11 +433,21 @@ pub fn format_structure_text(structure: &tldr_core::CodeStructure) -> String {
         // element-extraction-v1 (Phase E): data/config formats surface their
         // structural elements as definition kinds (see `ast::elements` for the
         // taxonomy). Text mode lists them here so the human view agrees with
-        // the JSON `definitions` array. Like every other section in this
-        // formatter (none of which applies a cap), it renders all rows —
-        // `--max-results` caps FILES upstream, not rows within a file.
+        // the JSON `definitions` array (which is ALWAYS complete — the
+        // machine contract; the cap below is a TEXT-renderer concern only).
         // Log batch: log entries (`kind: "entry"`, from the native
         // `ast::logs` scanner — not the element engine) render here too.
+        //
+        // markup-node-tree-v1: markup `element` rows carry a nesting depth,
+        // so the section indents two spaces per level — a node tree, not a
+        // flat dump — and, unlike every other section in this formatter,
+        // applies a cap: past [`STRUCTURE_TEXT_ELEMENT_CAP`] entries it
+        // prints the first 200 (source order, shallowest-first within the
+        // tree) plus one "… N more elements" line pointing at the knobs
+        // (`--max-depth` narrows the markup tree, `--max-results` caps
+        // files upstream, `-f json` is always complete). A file under the
+        // cap renders every row exactly as before. Depth-less rows (json/
+        // yaml/toml keys, selectors, entries, …) render at the base indent.
         let elements: Vec<&tldr_core::types::DefinitionInfo> = file
             .definitions
             .iter()
@@ -445,10 +460,18 @@ pub fn format_structure_text(structure: &tldr_core::CodeStructure) -> String {
             .collect();
         if !elements.is_empty() {
             output.push_str("  Elements:\n");
-            for e in elements {
+            let hidden = elements.len().saturating_sub(STRUCTURE_TEXT_ELEMENT_CAP);
+            for e in elements.iter().take(STRUCTURE_TEXT_ELEMENT_CAP) {
+                let indent = "    ".to_string() + &"  ".repeat(e.depth.unwrap_or(0) as usize);
                 output.push_str(&format!(
-                    "    - {} {} (L{}-L{})\n",
+                    "{indent}- {} {} (L{}-L{})\n",
                     e.kind, e.name, e.line_start, e.line_end
+                ));
+            }
+            if hidden > 0 {
+                output.push_str(&format!(
+                    "    … {hidden} more elements (use --max-depth to narrow, \
+                     --max-results to cap, -f json for all)\n"
                 ));
             }
         }

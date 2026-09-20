@@ -231,6 +231,8 @@ fn heading(
         byte_end: Some(byte_end as u64),
         signature: String::new(),
         container: None,
+        // prose headings are flat outline rows, not markup element nodes.
+        depth: None,
     }
 }
 

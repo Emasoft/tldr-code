@@ -1624,6 +1624,34 @@ pub struct DefinitionInfo {
     /// and schema consumers that pin the definition key set are unaffected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container: Option<String>,
+    /// Nesting level of a MARKUP element definition within its document
+    /// (markup-node-tree-v1): the document's root-level elements sit at
+    /// depth 0, their direct children at 1, and so on. Populated ONLY by the
+    /// markup element walkers (`ast::elements::walk_xml` / `walk_html` —
+    /// XML/SVG/HTML/XHTML, the OOXML per-part walks, and the embedded
+    /// foreignObject HTML documents) on `kind: "element"` rows; within an
+    /// embedded virtual document the depth restarts at 0 and the document is
+    /// identified by `container`.
+    ///
+    /// Every other producer keeps `None` — code-language definitions
+    /// (function/class/method/…) have no markup-nesting semantics, and the
+    /// other format kinds are flat or non-tree rows by design:
+    /// JSON/YAML/TOML `key` and TOML `section` rows nest too, but their
+    /// nesting is already readable from the dotted/structured names and they
+    /// are not markup nodes; CSS `selector`/`at-rule`, log `entry`, text
+    /// `heading`, markdown `heading`/`code-block`/`table`, SQL schema kinds,
+    /// csv `record`/`cell`, `env` and `pattern` rows are not part of a markup
+    /// element tree. (SQL `table`s could carry depth 0 — deliberately left
+    /// `None`; the schema outline is flat, not a node tree.)
+    ///
+    /// Consumers: `structure --max-depth N` keeps every definition whose
+    /// depth is `None` (the filter only narrows markup elements) or whose
+    /// depth is `<= N`, and the text renderer indents the Elements section by
+    /// depth. Additive field: skipped in JSON when absent (mirroring
+    /// `definition_line`/`container`), so caches written before it existed
+    /// and schema consumers that pin the definition key set are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<u32>,
 }
 
 /// Structure of a single file

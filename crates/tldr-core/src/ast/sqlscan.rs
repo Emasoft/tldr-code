@@ -673,6 +673,10 @@ pub fn parse_sql_schema(source: &str) -> Vec<DefinitionInfo> {
             byte_end: Some(content_end as u64),
             signature: truncate_signature(head.trim()),
             container: None,
+            // markup-node-tree-v1: the schema outline is flat (one row per
+            // DDL statement) — SQL tables could carry depth 0 but deliberately
+            // stay `None`; there is no node tree to navigate.
+            depth: None,
         });
     }
     defs

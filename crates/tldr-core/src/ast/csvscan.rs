@@ -693,6 +693,8 @@ fn csv_record_definition(record: &CsvRecord, row_number: u64) -> DefinitionInfo 
         byte_end: Some(record.byte_end),
         signature: String::new(),
         container: None,
+        // csv rows are flat records, not a markup node tree.
+        depth: None,
     }
 }
 
@@ -727,6 +729,8 @@ fn csv_cell_definition(field: &CsvField, column: usize, header: bool) -> Definit
         byte_end: Some(field.byte_end),
         signature: format!("col {}", column + 1),
         container: None,
+        // cells are flat columns of a flat record — no markup depth.
+        depth: None,
     }
 }
 

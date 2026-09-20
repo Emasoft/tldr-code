@@ -519,6 +519,45 @@ mod tests {
         // `tag#id` naming flows through the shared walker (unprefixed `id`).
         assert_eq!(defs[1].name, "w:p#p1");
         assert_eq!(defs[2].name, "w:t");
+        // markup-node-tree-v1: per-PART depth — the part's root element is 0,
+        // its children climb normally.
+        assert_eq!(defs[0].depth, Some(0), "the part's root element is depth 0");
+        assert_eq!(defs[1].depth, Some(1));
+        assert_eq!(defs[2].depth, Some(2));
+    }
+
+    /// markup-node-tree-v1: the depth counter is PER PART — each part is
+    /// walked as its own XML document, so every part's root elements restart
+    /// at 0. The part path in `signature` (pinned above) is what scopes a
+    /// depth value.
+    #[test]
+    fn element_depth_restarts_at_zero_per_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("book.xlsx");
+        let sheet1 = "<worksheet><sheetData><row/></sheetData></worksheet>";
+        let sheet2 = "<worksheet><sheetData><row/></sheetData></worksheet>";
+        write_zip(
+            &path,
+            &[
+                ("xl/worksheets/sheet1.xml", sheet1),
+                ("xl/worksheets/sheet2.xml", sheet2),
+            ],
+        );
+
+        let (defs, warnings) = extract_ooxml_with_cap(&path, None).unwrap();
+        assert!(warnings.is_empty());
+        assert_eq!(defs.len(), 6, "three elements per part, both parts walked");
+
+        for part in ["xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml"] {
+            let part_defs: Vec<&DefinitionInfo> =
+                defs.iter().filter(|d| d.signature == part).collect();
+            let depths: Vec<Option<u32>> = part_defs.iter().map(|d| d.depth).collect();
+            assert_eq!(
+                depths,
+                vec![Some(0), Some(1), Some(2)],
+                "each part's element tree restarts at depth 0 ({part})"
+            );
+        }
     }
 
     #[test]

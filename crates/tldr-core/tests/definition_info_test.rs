@@ -21,6 +21,10 @@ fn test_definition_info_serde_roundtrip() {
         // document an embedded-script definition came from; `None` for host
         // definitions and omitted from JSON (skip_serializing_if).
         container: None,
+        // markup-node-tree-v1: additive nesting depth — Some for markup
+        // element rows (`ast::elements`), None for everything else and
+        // omitted from JSON (skip_serializing_if).
+        depth: None,
     };
     let json = serde_json::to_string(&def).unwrap();
     assert!(
@@ -46,6 +50,7 @@ fn test_definition_info_byte_spans_additive_serde() {
         byte_end: Some(13),
         signature: "\"settings\": {".to_string(),
         container: None,
+        depth: None,
     };
     let json = serde_json::to_string(&element).unwrap();
     assert!(
@@ -65,6 +70,7 @@ fn test_definition_info_byte_spans_additive_serde() {
         byte_end: None,
         signature: String::new(),
         container: None,
+        depth: None,
     };
     let json = serde_json::to_string(&code_fn).unwrap();
     assert!(

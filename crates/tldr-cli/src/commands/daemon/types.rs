@@ -419,6 +419,13 @@ pub enum DaemonCommand {
             skip_serializing_if = "Option::is_none"
         )]
         lang: Option<String>,
+        /// markup-node-tree-v1: `--max-depth` element-tree narrowing
+        /// (keep definitions whose `depth` is `None` or `<= N`). The cached
+        /// structure slot stays the FULL extraction — the filter applies per
+        /// request on the way out, so one slot serves every depth and
+        /// pre-existing clients (no key) get the unchanged unfiltered report.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_depth: Option<u32>,
     },
 
     /// Get context for entry point

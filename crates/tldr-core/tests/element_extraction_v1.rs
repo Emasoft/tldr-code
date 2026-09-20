@@ -106,12 +106,17 @@
 //! Code languages keep `byte_start`/`byte_end` = `None` for now (populating
 //! them is a later batch); the format engine — markup formats included —
 //! always populates them.
+//!
+//! markup-node-tree-v1 adds pin 3: markup `element` rows carry an EXACT
+//! nesting `depth` (root-level elements = 0, children = 1, …; per-part in
+//! OOXML, reset to 0 inside each embedded virtual document with `container`
+//! identifying the document); every other kind keeps `depth: None`.
 
 use std::fs;
 
 use tempfile::TempDir;
 use tldr_core::types::DefinitionInfo;
-use tldr_core::{get_code_structure, Language};
+use tldr_core::{filter_structure_max_depth, get_code_structure, Language};
 
 // =============================================================================
 // Helpers
@@ -226,6 +231,23 @@ fn assert_element_invariants(defs: &[DefinitionInfo], file: &str) {
             d.name
         );
     }
+}
+
+/// markup-node-tree-v1: EXACT (name, depth) sequence for the markup `element`
+/// rows of a definition list. Non-`element` rows must all carry depth None
+/// (they are not markup nodes) — asserted separately by the depth tests.
+fn assert_depth_sequence(defs: &[DefinitionInfo], file: &str, expected: &[(&str, Option<u32>)]) {
+    let got: Vec<(String, Option<u32>)> = defs
+        .iter()
+        .filter(|d| d.kind == "element")
+        .map(|d| (d.name.clone(), d.depth))
+        .collect();
+    let expected: Vec<(String, Option<u32>)> =
+        expected.iter().map(|(n, d)| (n.to_string(), *d)).collect();
+    assert_eq!(
+        got, expected,
+        "element-extraction-v1 [{file}]: expected the exact (element, depth) sequence"
+    );
 }
 
 // =============================================================================
@@ -2765,5 +2787,256 @@ fn foreign_object_external_src_and_data_stay_references() {
     assert!(
         !imports.iter().any(|i| i.via.is_some()),
         "no virtual document produced any reference here: {imports:#?}"
+    );
+}
+
+// =============================================================================
+// markup-node-tree-v1 — element nesting depth: XML/SVG/HTML tree depth,
+// mixed nesting, OOXML per-part resets (unit pins in ast::ooxml), embedded
+// document resets, and the --max-depth filter contract
+// =============================================================================
+
+/// EXACT depth for every element of the three pinned fixtures: the
+/// tree-sitter tree nesting IS the reported depth (root-level = 0), and the
+/// non-element rows (the style-inner `selector`) keep `depth: None`.
+#[test]
+fn markup_elements_carry_exact_nesting_depth() {
+    // XML: prolog skipped, catalog → book → title/isbn is 0 → 1 → 2.
+    let defs = extract_elements("pinned.xml", XML_FIXTURE, Language::Xml);
+    assert_element_invariants(&defs, "pinned.xml");
+    assert_depth_sequence(
+        &defs,
+        "pinned.xml",
+        &[
+            ("catalog#cat1", Some(0)),
+            ("book#bk101", Some(1)),
+            ("title", Some(2)),
+            ("book.ref", Some(1)),
+            ("isbn", Some(2)),
+        ],
+    );
+
+    // SVG: the `<style>` element row is a markup node (depth 1) while its
+    // inner-CSS `.a` selector row is NOT (depth None).
+    let defs = extract_elements("icon.svg", SVG_FIXTURE, Language::Xml);
+    assert_depth_sequence(
+        &defs,
+        "icon.svg",
+        &[
+            ("svg", Some(0)),
+            ("defs", Some(1)),
+            ("linearGradient#grad", Some(2)),
+            ("g#grp", Some(1)),
+            ("path", Some(2)),
+            ("circle", Some(2)),
+            ("style", Some(1)),
+        ],
+    );
+    assert_eq!(
+        find_element(&defs, "icon.svg", "selector", ".a").depth,
+        None,
+        "inner-CSS rows are not markup nodes and keep depth None"
+    );
+
+    // HTML: doctype skipped; script/style elements ARE markup nodes (they
+    // carry depth like any element); the void `<br/>` nests like a sibling.
+    let defs = extract_elements("pinned.html", HTML_FIXTURE, Language::Html);
+    assert_depth_sequence(
+        &defs,
+        "pinned.html",
+        &[
+            ("html", Some(0)),
+            ("head", Some(1)),
+            ("title", Some(2)),
+            ("style", Some(2)),
+            ("body#main", Some(1)),
+            ("script", Some(2)),
+            ("p", Some(2)),
+            ("br", Some(2)),
+        ],
+    );
+    assert_eq!(
+        find_element(&defs, "pinned.html", "selector", "body").depth,
+        None,
+        "inner-CSS rows are not markup nodes and keep depth None"
+    );
+}
+
+/// MIXED nesting: siblings at different depths interleave in source order,
+/// and each element's depth is its own — a later shallow sibling resets the
+/// level, a deeper subtree climbs from its own parent, self-closing elements
+/// count like any other.
+#[test]
+fn xml_mixed_nesting_depth_is_exact_per_element() {
+    let src = "\
+<library>
+  <shelf id=\"a\">
+    <book>
+      <page/>
+    </book>
+    <book/>
+  </shelf>
+  <shelf>
+    <book><page/></book>
+  </shelf>
+</library>
+";
+    let defs = extract_elements("mixed.xml", src, Language::Xml);
+    assert_element_invariants(&defs, "mixed.xml");
+    assert_depth_sequence(
+        &defs,
+        "mixed.xml",
+        &[
+            ("library", Some(0)),
+            ("shelf#a", Some(1)),
+            ("book", Some(2)),
+            ("page", Some(3)),
+            ("book", Some(2)),
+            ("shelf", Some(1)),
+            ("book", Some(2)),
+            ("page", Some(3)),
+        ],
+    );
+}
+
+/// Embedded virtual documents: depth restarts at 0 INSIDE each document and
+/// the `container` field scopes it — the host walk keeps its own levels
+/// (html 0 → body 1 → svg 2 → foreignObject 3), the `#fo-1` document's
+/// elements restart at 0, its nested svg/foreignObject climb to 2, and the
+/// `#fo-2` document restarts again. Script/style ELEMENT rows participate
+/// like any element; their inner JS/CSS rows keep depth None.
+#[test]
+fn embedded_document_element_depth_resets_per_container() {
+    let defs = extract_elements("page.html", FOREIGN_OBJECT_CHAIN_FIXTURE, Language::Html);
+
+    // Host rows: container None, the host's own tree levels.
+    assert_depth_sequence(
+        &defs
+            .iter()
+            .filter(|d| d.container.is_none())
+            .cloned()
+            .collect::<Vec<_>>(),
+        "page.html",
+        &[
+            ("html", Some(0)),
+            ("body", Some(1)),
+            ("svg", Some(2)),
+            ("foreignObject", Some(3)),
+        ],
+    );
+
+    // The #fo-1 document: its root <div> is depth 0 again.
+    let fo1: Vec<DefinitionInfo> = defs
+        .iter()
+        .filter(|d| d.container.as_deref() == Some("page.html#fo-1"))
+        .cloned()
+        .collect();
+    assert_depth_sequence(
+        &fo1,
+        "page.html",
+        &[
+            ("div", Some(0)),
+            ("script", Some(1)),
+            ("style", Some(1)),
+            ("svg", Some(1)),
+            ("foreignObject", Some(2)),
+        ],
+    );
+    // The inner JS/CSS rows of fo-1 are not markup nodes.
+    assert_eq!(
+        find_virtual(
+            &defs,
+            "page.html",
+            "function",
+            "outerFn",
+            "page.html#fo-1#script-1"
+        )
+        .depth,
+        None
+    );
+    assert_eq!(
+        find_virtual(
+            &defs,
+            "page.html",
+            "selector",
+            ".fo-box",
+            "page.html#fo-1#style-1"
+        )
+        .depth,
+        None
+    );
+
+    // The #fo-2 document: the reset is per CONTAINER — depth 0 again.
+    let fo2: Vec<DefinitionInfo> = defs
+        .iter()
+        .filter(|d| d.container.as_deref() == Some("page.html#fo-2"))
+        .cloned()
+        .collect();
+    assert_depth_sequence(&fo2, "page.html", &[("div", Some(0)), ("script", Some(1))]);
+}
+
+/// The `--max-depth` filter contract (`filter_structure_max_depth`, the
+/// engine behind `structure --max-depth`): only depth-carrying markup
+/// element rows are narrowed; depth-less rows (inner-CSS selectors, json
+/// keys, …) always survive. Applied to a real extraction so the counts are
+/// honest.
+#[test]
+fn max_depth_filter_keeps_depthless_rows_and_narrows_elements() {
+    // HTML_FIXTURE: 8 elements (html 0, head 1, title 2, style 2, body#main 1,
+    // script 2, p 2, br 2) + 1 depth-less selector row.
+    let mut structure = structure_of("pinned.html", HTML_FIXTURE, Language::Html);
+    assert_eq!(
+        structure.files[0]
+            .definitions
+            .iter()
+            .filter(|d| d.kind == "element")
+            .count(),
+        8,
+        "fixture precondition: the unfiltered report carries all 8 elements"
+    );
+
+    // depth 0 → the root element + every depth-less row.
+    filter_structure_max_depth(&mut structure, 0);
+    let kept: Vec<(String, Option<u32>)> = structure.files[0]
+        .definitions
+        .iter()
+        .map(|d| (d.name.clone(), d.depth))
+        .collect();
+    assert_eq!(
+        kept,
+        vec![("html".to_string(), Some(0)), ("body".to_string(), None),],
+        "--max-depth 0 keeps only the root element (plus depth-less rows)"
+    );
+
+    // depth 1 → root + first-level elements + depth-less rows. The selector
+    // keeps its SOURCE-ORDER position (right after the owning `style`
+    // element, whose own row is filtered out at depth 2).
+    let mut structure = structure_of("pinned.html", HTML_FIXTURE, Language::Html);
+    filter_structure_max_depth(&mut structure, 1);
+    let kept: Vec<&str> = structure.files[0]
+        .definitions
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    assert_eq!(kept, vec!["html", "head", "body", "body#main"]);
+
+    // depth 2 (>= max element depth) → everything survives, order unchanged.
+    let mut structure = structure_of("pinned.html", HTML_FIXTURE, Language::Html);
+    filter_structure_max_depth(&mut structure, 2);
+    assert_eq!(structure.files[0].definitions.len(), 9);
+
+    // Non-markup formats are untouched by the filter at ANY depth.
+    let json_src = r#"{"a": {"b": 1}}"#;
+    let mut structure = structure_of("pinned.json", json_src, Language::Json);
+    filter_structure_max_depth(&mut structure, 0);
+    let names: Vec<&str> = structure.files[0]
+        .definitions
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["a", "b"],
+        "key rows are depth-less, never filtered"
     );
 }

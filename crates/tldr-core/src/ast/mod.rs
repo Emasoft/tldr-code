@@ -51,7 +51,9 @@ pub use doclinks::extract_doc_links;
 pub use dotfiles::{is_env_path, is_ignore_path, parse_env_file, parse_ignore_file};
 pub use elements::extract_elements;
 pub use extract::{extract_file, extract_file_with_lang, extract_from_tree};
-pub use extractor::{extract_definition_entries, get_code_structure, DefinitionEntry};
+pub use extractor::{
+    extract_definition_entries, filter_structure_max_depth, get_code_structure, DefinitionEntry,
+};
 pub use imports::get_imports;
 pub use jsonl::{
     first_row_tree, is_jsonl_path, stream_jsonl, JsonlStreamReport, JsonlStreamSummary,

@@ -540,6 +540,28 @@ pub fn get_code_structure(
     })
 }
 
+/// markup-node-tree-v1: narrow a structure report to its markup element tree
+/// down to `max_depth` — keep every definition whose [`DefinitionInfo::depth`]
+/// is `None` (no markup-nesting semantics: code-language symbols, inner-CSS
+/// `selector`/`at-rule` rows, inner-JS `function`/`class` rows, `key`,
+/// `section`, `document`, `entry`, `heading`, `record`, `cell`, sql kinds,
+/// …) or whose depth is `Some(d)` with `d <= max_depth`.
+///
+/// Only the markup `element` rows carry `Some(depth)` (see `ast::elements`,
+/// the Depth section), so in practice this trims the XML/HTML/SVG/OOXML
+/// element tree: `--max-depth 0` keeps only root-level elements, `1` adds the
+/// first nesting level, and so on. Applied AFTER extraction (the walkers stay
+/// depth-agnostic), mutating in place; both the CLI's direct-compute path and
+/// the daemon's structure handler call it so the two routes agree.
+pub fn filter_structure_max_depth(structure: &mut CodeStructure, max_depth: u32) {
+    for file in &mut structure.files {
+        file.definitions.retain(|d| match d.depth {
+            None => true,
+            Some(depth) => depth <= max_depth,
+        });
+    }
+}
+
 /// Extract structure from a single file.
 ///
 /// Returns the file's structure PLUS per-file warnings (empty in the common
@@ -698,6 +720,7 @@ fn log_entry_definition(entry: crate::ast::logs::LogEntry) -> DefinitionInfo {
         byte_end: Some(entry.byte_end),
         signature: entry.timestamp.unwrap_or_default(),
         container: None,
+        depth: None,
     }
 }
 
@@ -2524,6 +2547,7 @@ fn collect_definition_entries<'tree>(
                     byte_end: None,
                     signature,
                     container: None,
+                    depth: None,
                 },
                 node,
             });
@@ -2904,6 +2928,7 @@ fn make_constant_def(node: Node, name: String, source: &str) -> DefinitionInfo {
         byte_end: None,
         signature,
         container: None,
+        depth: None,
     }
 }
 
@@ -2994,6 +3019,7 @@ fn try_field_definition(
                             byte_end: None,
                             signature: signature.clone(),
                             container: None,
+                            depth: None,
                         });
                     }
                 }
@@ -3018,6 +3044,7 @@ fn try_field_definition(
                                     byte_end: None,
                                     signature: signature.clone(),
                                     container: None,
+                                    depth: None,
                                 });
                             }
                             break;
@@ -3045,6 +3072,7 @@ fn try_field_definition(
                                     byte_end: None,
                                     signature: signature.clone(),
                                     container: None,
+                                    depth: None,
                                 });
                             }
                             break;
@@ -3084,6 +3112,7 @@ fn try_field_definition(
                     byte_end: None,
                     signature,
                     container: None,
+                    depth: None,
                 });
             }
         }
@@ -3430,6 +3459,7 @@ pub(crate) fn try_callback_call_definition(
         byte_end: None,
         signature: format!("{callee}(…)"),
         container: None,
+        depth: None,
     })
 }
 
@@ -3484,6 +3514,7 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
                     byte_end: None,
                     signature,
                     container: None,
+                    depth: None,
                 });
             }
             "defmodule" => {
@@ -3506,6 +3537,7 @@ fn try_elixir_call_definition(node: Node, source: &str) -> Option<DefinitionInfo
                     byte_end: None,
                     signature,
                     container: None,
+                    depth: None,
                 });
             }
             _ => {}

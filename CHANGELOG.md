@@ -4,6 +4,55 @@
 
 ### Added
 
+- **Markup node-tree navigation: `DefinitionInfo::depth` +
+  `structure --max-depth N` + tree-indented text mode**
+  (markup-node-tree-v1, `crates/tldr-core/src/ast/elements.rs`,
+  `crates/tldr-cli/src/commands/structure.rs`, `crates/tldr-cli/src/output.rs`,
+  `crates/tldr-daemon/src/handlers/ast.rs`). Markup element definitions were a
+  flat list (no nesting information) and text mode printed every row —
+  2.4M lines at 100 MB, unnavigable. Markup element rows now carry a nesting
+  depth, the CLI can narrow the tree, and the human-readable view renders it
+  as a tree with a cap.
+  - **`DefinitionInfo::depth: Option<u32>`** (additive; serde
+    `default` + `skip_serializing_if = "Option::is_none"`, mirroring
+    `definition_line`/`container`): the element's nesting level within its
+    document — root-level elements at 0, children at 1, … Populated only by
+    the markup walkers: `walk_xml` (XML/SVG, incl. the OOXML per-part walks —
+    each zip part restarts at depth 0; the part path in `signature` scopes
+    it), `walk_html` (HTML/XHTML — `element`, `script_element` and
+    `style_element` rows), and the embedded virtual documents
+    (`page.html#fo-N` foreignObject content) where the depth restarts at 0
+    within the document and `container` identifies the document the depth
+    belongs to. Everything else keeps `None` and is documented as
+    depth-less: inner-CSS `selector`/`at-rule` and inner-JS rows (not markup
+    nodes), JSON/YAML/TOML `key`/`section`/`document` (nesting is already
+    readable from the names; not markup), LaTeX, Markdown, bash, log `entry`,
+    text `heading`, csv `record`/`cell`, sql schema kinds (tables could carry
+    depth 0 — deliberately `None`, the schema outline is flat), `env`,
+    `pattern`, and every code-language definition.
+  - **`structure --max-depth N`** (optional clap arg; unset = no filtering):
+    keeps every definition whose depth is `None` (the filter narrows the
+    markup element tree only — non-element kinds are unaffected by design) or
+    whose depth is `<= N`. Applied post-extraction via the new core helper
+    `tldr_core::filter_structure_max_depth`, and threaded to the daemon
+    (`max_depth` request param, same post-extraction filter per request) so
+    daemon-served structure honors it identically; pre-existing daemon
+    clients (no key) get the unchanged unfiltered report. JSON output stays
+    complete and now carries `depth`.
+  - **Text renderer = tree.** The Elements section indents two spaces per
+    depth level, and past 200 entries
+    (`STRUCTURE_TEXT_ELEMENT_CAP`) prints the first 200 plus one summary
+    line: `… N more elements (use --max-depth to narrow, --max-results to
+    cap, -f json for all)`. Files under the cap render every row (unchanged
+    at depth 0/None); the cap is a TEXT-renderer concern — `-f json` is
+    always complete.
+  - **Tests.** `element_extraction_v1` pins exact per-element depths on
+    nested XML/SVG/HTML fixtures (incl. mixed nesting), OOXML per-part depth
+    resets, embedded-document depth resets (container-scoped), and the
+    `filter_structure_max_depth` contract; `tldr-cli` integration tests pin
+    the CLI flag e2e (`page.html --max-depth 1` keeps top + first-level
+    elements only), the tree indentation, and the cap line.
+
 - **Persistent daemon JSONL request log: every daemon session writes
   `.tldr/cache/daemon.log`** (issue #67,
   `crates/tldr-cli/src/commands/daemon/logging.rs`). The daemon previously

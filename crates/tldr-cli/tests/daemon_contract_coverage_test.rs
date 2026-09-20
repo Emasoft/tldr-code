@@ -1876,3 +1876,108 @@ async fn client_fallback_is_logged_by_the_shared_router_helper() {
     );
     assert_eq!(fallbacks[0]["pid"], std::process::id());
 }
+
+// =============================================================================
+// markup-node-tree-v1 — daemon-served `structure` honors `max_depth` per
+// request, and the filter never poisons the cached (full) slot
+// =============================================================================
+
+/// The element rows of a structure `Result` payload: (name, depth-as-JSON).
+fn structure_element_rows(value: &serde_json::Value) -> Vec<(String, Option<u32>)> {
+    value["files"][0]["definitions"]
+        .as_array()
+        .expect("structure payload carries files[0].definitions")
+        .iter()
+        .filter(|d| d["kind"] == "element")
+        .map(|d| {
+            (
+                d["name"].as_str().unwrap_or_default().to_string(),
+                d["depth"].as_u64().map(|n| n as u32),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn structure_max_depth_filters_per_request_and_keeps_the_cached_slot_full() {
+    let temp = project_dir("dc-max-depth-");
+    let project = temp.path().canonicalize().unwrap();
+    // An HTML page whose element depths are html 0, head 1, title 2, style 2,
+    // body#main 1, script 2, p 2, br 2 (+ a depth-less selector row).
+    std::fs::write(
+        project.join("page.html"),
+        "\
+<!DOCTYPE html>
+<html lang=\"en\">
+  <head>
+    <title>Page</title>
+    <style>body { color: red; }</style>
+  </head>
+  <body id=\"main\">
+    <script src=\"app.js\"></script>
+    <p>Hello</p>
+    <br/>
+  </body>
+</html>
+",
+    )
+    .expect("write page.html");
+
+    let _handle = start_in_process_daemon(&project, default_config()).await;
+
+    let page = project.join("page.html");
+    let request = |max_depth: Option<u32>| {
+        let page = page.clone();
+        let project = project.clone();
+        async move {
+            send_command(
+                &project,
+                &DaemonCommand::Structure {
+                    path: page,
+                    lang: Some("html".to_string()),
+                    max_depth,
+                },
+            )
+            .await
+            .expect("structure round-trips over IPC")
+        }
+    };
+
+    // 1. Filtered request: only depth <= 1 elements survive.
+    let filtered = match request(Some(1)).await {
+        DaemonResponse::Result(value) => value,
+        other => panic!("filtered structure request must succeed, got {other:?}"),
+    };
+    assert_eq!(
+        structure_element_rows(&filtered),
+        vec![
+            ("html".to_string(), Some(0)),
+            ("head".to_string(), Some(1)),
+            ("body#main".to_string(), Some(1)),
+        ],
+        "the daemon must apply --max-depth exactly like the direct path"
+    );
+
+    // 2. Unfiltered request: the FULL report comes back — the filtered view
+    //    above was per-request and never overwrote the cached slot.
+    let full = match request(None).await {
+        DaemonResponse::Result(value) => value,
+        other => panic!("unfiltered structure request must succeed, got {other:?}"),
+    };
+    assert_eq!(
+        structure_element_rows(&full).len(),
+        8,
+        "no max_depth key means no filtering, even after a filtered request"
+    );
+
+    // 3. Filtered again: per-request narrowing, same answer.
+    let refiltered = match request(Some(1)).await {
+        DaemonResponse::Result(value) => value,
+        other => panic!("second filtered structure request must succeed, got {other:?}"),
+    };
+    assert_eq!(
+        structure_element_rows(&refiltered).len(),
+        3,
+        "the per-request filter is stable across a cache-hit round trip"
+    );
+}
