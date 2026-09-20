@@ -139,7 +139,7 @@
 //!
 //! Plain text (`.txt`/`.text`) has no link syntax at all, so its reference
 //! surface is "anything in the prose that LOOKS like a URL or a path". The
-//! scan is a single left-to-right pass ([`scan_paths_and_urls`]) with four
+//! scan is a single left-to-right pass ([`scan_paths_and_urls`]) with five
 //! shapes, tried at each position in this order (one span never emits twice —
 //! an angle-wrapped URL is consumed by the angle shape, not also by the URL
 //! shape):
@@ -149,7 +149,22 @@
 //! | bare URL | `see https://example.com/x.` | the URL with trailing `.,;:!?"'` trimmed | `url` |
 //! | angle-wrapped | `<./docs/guide with spaces.md>` | the contents verbatim (spaces INCLUDED — that is the whole point of the angle form) | `angle-link` |
 //! | shell-escaped path | `cat my\ file.txt` | the UNESCAPED path (`my file.txt`) — the backslash-space is shell escape SYNTAX; removing it yields the real path | `escaped-path` |
+//! | quoted substring | `fetch("api/v1.json").then(…)` | each balanced `"…"`/`'…'` content, verbatim | `url` for http(s), `path` otherwise |
 //! | plain path token | `see ./b.txt, ok?` | the token with surrounding punctuation split off | `path` |
+//!
+//! The quoted-substring shape exists for the single-line call idiom: an
+//! embedded script line like `fetch("api/v1.json").then(…)` is ONE
+//! whitespace-delimited token (the idiomatic multi-line call makes the
+//! string its own token; the one-liner does not), so the token-level rules
+//! either emit the call-prefixed garble (`fetch("api/v1.json").then(r`) or
+//! miss the target entirely. A token that CONTAINS balanced quoted
+//! substrings therefore has its contents scanned as candidate targets
+//! (double AND single quotes; empty contents skipped; the shared heuristic
+//! decides, percent-encoding raw). The quoted string is the strictly better
+//! signal: when ANY quoted content qualifies, the surrounding token does not
+//! ALSO emit; when none does (an apostrophe-bearing prose token, a quoted
+//! non-path like `"hello world"`), the token keeps the plain-token treatment.
+//! Two quoted paths inside one token are two references (distinct spans).
 //!
 //! Filters: angle contents must contain `:`/`/`/`.` (keeps HTML-ish `<div>`
 //! tokens out); every target passes the shared `emittable` rule (`data:` URIs
@@ -690,12 +705,48 @@ fn trim_token_punct(t: &str) -> &str {
     &t[start..end]
 }
 
+/// Balanced quoted substrings of a whitespace token, left to right:
+/// `(byte offset of the CONTENT within `raw`, content)`. A `"` or `'`
+/// opens a span that closes at the NEXT occurrence of the SAME character;
+/// an unterminated quote forms no span (an apostrophe-bearing token like
+/// `it's` is not a target, and the caller falls back to the token rules).
+/// Deliberately quote-naive — no `\"` escape handling: a string containing
+/// an escaped quote closes early and its tail stays inert.
+fn quoted_substrings(raw: &str) -> Vec<(usize, &str)> {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let q = bytes[i];
+        if q != b'"' && q != b'\'' {
+            i += 1;
+            continue;
+        }
+        let mut close = i + 1;
+        while close < bytes.len() && bytes[close] != q {
+            close += 1;
+        }
+        if close >= bytes.len() {
+            // Unterminated: skip the opener, keep scanning for later spans.
+            i += 1;
+            continue;
+        }
+        out.push((i + 1, &raw[i + 1..close]));
+        i = close + 1;
+    }
+    out
+}
+
 /// Extract the reference surface of a plain-text document: one
 /// `(target, alias)` pair per URL/path-shaped token, in source order, each
 /// source span emitted at most once (a single left-to-right pass cannot
 /// revisit a span — an angle-wrapped URL is consumed by the angle shape and
-/// is therefore never also a bare-URL hit). See the module docs for the
-/// shape table and the false-positive classes.
+/// is therefore never also a bare-URL hit). A whitespace token containing
+/// balanced quoted substrings yields its quoted CONTENTS instead of the
+/// token itself (the single-line call idiom — `fetch("api/v1.json").then(…)`
+/// is one token whose quoted argument is the target; a standalone quoted
+/// token emits once, exactly as it did under the plain-token rule). See the
+/// module docs for the shape table and the false-positive classes.
 #[must_use]
 pub(crate) fn scan_paths_and_urls(source: &str) -> Vec<(String, String)> {
     let bytes = source.as_bytes();
@@ -784,6 +835,38 @@ pub(crate) fn scan_paths_and_urls(source: &str) -> Vec<(String, String)> {
                 hits.push((start, (target, "escaped-path".to_string())));
             }
             continue;
+        }
+
+        // Quoted substrings: a token that CONTAINS balanced quoted strings
+        // carries a strictly better target signal INSIDE the quotes than
+        // the token itself. The single-line call idiom
+        // `fetch("api/v1.json").then(…)` is one whitespace token (the
+        // multi-line idiom makes the string its own token) — the quoted
+        // contents ARE the target. Each content is tested with the shared
+        // heuristic (percent-encoding raw); http(s) content reports with
+        // the `url` alias (the rule a parenthesised-URL token follows),
+        // other passing content with `path`. When any content qualifies the
+        // surrounding token does not ALSO emit; when none does
+        // (unterminated quote, quoted non-path), the plain-token rules
+        // below still apply.
+        if raw.contains('"') || raw.contains('\'') {
+            let mut quoted_hit = false;
+            for (off, content) in quoted_substrings(raw) {
+                let c = content.trim();
+                if c.is_empty() || !looks_like_path_or_url(c) || !emittable(c) {
+                    continue;
+                }
+                let alias = if c.starts_with("http://") || c.starts_with("https://") {
+                    "url"
+                } else {
+                    "path"
+                };
+                hits.push((start + off, (c.to_string(), alias.to_string())));
+                quoted_hit = true;
+            }
+            if quoted_hit {
+                continue;
+            }
         }
 
         // Plain path token: surrounding punctuation split off, then the
@@ -2447,5 +2530,107 @@ mod tests {
         assert_eq!(pairs.len(), 2);
         assert_eq!(pairs[0], ("https://a.io/p".to_string(), "url".to_string()));
         assert_eq!(pairs[1], ("./x/y.md".to_string(), "path".to_string()));
+    }
+
+    // --- Quoted substrings in whitespace tokens (single-line call idiom) ---
+
+    #[test]
+    fn text_single_line_call_quoted_path_is_extracted_cleanly() {
+        // VD-1 caveat, single-line form: the whole `fetch(…)` call is ONE
+        // whitespace token; the quoted argument is the real target. The
+        // call-prefixed garble the token test would otherwise emit is
+        // suppressed by the quoted-substring shape.
+        let imports = extract_doc_links(
+            Language::Text,
+            r#"const res = await fetch("api/v1.json").then(r => r.json());"#,
+        );
+        assert_eq!(targets(&imports), vec!["api/v1.json"]);
+        assert_eq!(aliases(&imports), vec![Some("path")]);
+    }
+
+    #[test]
+    fn text_single_quote_call_target() {
+        let imports = extract_doc_links(Language::Text, r#"get('data/x.csv');"#);
+        assert_eq!(targets(&imports), vec!["data/x.csv"]);
+        assert_eq!(aliases(&imports), vec![Some("path")]);
+    }
+
+    #[test]
+    fn text_prose_and_quoted_paths_on_one_line() {
+        let imports = extract_doc_links(
+            Language::Text,
+            r#"load("./f.yaml") for the config, then open("/data/f.csv")"#,
+        );
+        assert_eq!(targets(&imports), vec!["./f.yaml", "/data/f.csv"]);
+        assert_eq!(aliases(&imports), vec![Some("path"), Some("path")]);
+    }
+
+    #[test]
+    fn text_quoted_non_path_stays_out() {
+        // Quoted prose, a quoted non-path word and a bare version string
+        // must not fabricate targets — the quoted shape runs the same
+        // shared heuristic as every other shape.
+        let imports = extract_doc_links(
+            Language::Text,
+            r#"echo "hello world" and msg("see docs") and note('v1.2.3')"#,
+        );
+        assert!(
+            imports.is_empty(),
+            "quoted non-paths must stay inert: {imports:?}"
+        );
+    }
+
+    #[test]
+    fn text_standalone_quoted_token_emits_once() {
+        // Dedup by span: a quoted string that IS its own token (the
+        // multi-line fetch idiom the pinned fixture uses) emits exactly
+        // once, with the same target/alias as before the quoted shape.
+        let imports = extract_doc_links(Language::Text, "fetch(\n  \"api/v1.json\"\n);");
+        assert_eq!(targets(&imports), vec!["api/v1.json"]);
+        assert_eq!(aliases(&imports), vec![Some("path")]);
+    }
+
+    #[test]
+    fn text_quoted_url_reports_with_url_alias() {
+        let imports = extract_doc_links(
+            Language::Text,
+            r#"fetch("https://example.com/a.json").then(r => r.json());"#,
+        );
+        assert_eq!(targets(&imports), vec!["https://example.com/a.json"]);
+        assert_eq!(aliases(&imports), vec![Some("url")]);
+    }
+
+    #[test]
+    fn text_quoted_percent_encoded_target_kept_raw() {
+        let imports = extract_doc_links(Language::Text, r#"open("./docs/my%20file.txt")"#);
+        assert_eq!(targets(&imports), vec!["./docs/my%20file.txt"]);
+        assert_eq!(aliases(&imports), vec![Some("path")]);
+    }
+
+    #[test]
+    fn text_quoted_fragment_and_data_targets_suppressed() {
+        let imports = extract_doc_links(
+            Language::Text,
+            r##"jump("#section") load("data:x") fetch("./ok.md")"##,
+        );
+        assert_eq!(targets(&imports), vec!["./ok.md"]);
+    }
+
+    #[test]
+    fn text_two_quoted_paths_in_one_token_both_emit() {
+        // Two balanced quoted strings in one whitespace token are two
+        // references — distinct spans, both emit.
+        let imports = extract_doc_links(Language::Text, r#"pair("a/x.md","b/y.md")"#);
+        assert_eq!(targets(&imports), vec!["a/x.md", "b/y.md"]);
+    }
+
+    #[test]
+    fn text_quoted_escaped_path_keeps_escaped_path_shape() {
+        // The shell-escape shape still wins when its marker is present: the
+        // surrounding quotes are token punctuation and the backslash-space
+        // is the shell's own quoting mechanism.
+        let imports = extract_doc_links(Language::Text, r#"cat "my\ file.txt""#);
+        assert_eq!(targets(&imports), vec!["my file.txt"]);
+        assert_eq!(aliases(&imports), vec![Some("escaped-path")]);
     }
 }

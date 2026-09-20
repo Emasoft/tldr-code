@@ -38,8 +38,12 @@
 //! scan end to end — with the documented-by-design fact that table-name
 //! targets do not resolve to project files (they are names, not paths), so
 //! the rows surface in `tldr imports` and stay inert in the impact/importers
-//! file graph. No
-//! daemon is started; every command takes the direct-compute path.
+//! file graph. The single-line-call batch adds
+//! `build_single_line_fetch_project`: `page.html` embeds a ONE-LINE
+//! `fetch("api/v1.json").then(…)` script whose quoted target the prose scan
+//! extracts cleanly — the multi-line fetch in `build_virtual_doc_project` is
+//! no longer load-bearing for extraction. No daemon is started; every
+//! command takes the direct-compute path.
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -1347,6 +1351,112 @@ fn impact_binary_asset_referenced_only_by_embedded_style_finds_the_page() {
 #[test]
 fn impact_fetch_target_referenced_only_by_inline_script_finds_the_page() {
     let dir = build_virtual_doc_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(
+        &[
+            "impact",
+            root.join("api/v1.json").to_str().unwrap(),
+            "-f",
+            "json",
+            "-q",
+        ],
+        root,
+    );
+    assert_eq!(code, Some(0));
+
+    let mut files = Vec::new();
+    collect_files(&json, &mut files);
+    assert!(
+        files.iter().any(|f| f.ends_with("page.html")),
+        "closure must contain page.html: {files:?}"
+    );
+}
+
+// =============================================================================
+// (7b) single-line-call batch (build_single_line_fetch_project): the quoted
+//      target of a ONE-LINE fetch/call inside an embedded script extracts
+//      cleanly — the VD-1 caveat (multi-line fetch required so the string
+//      forms its own token) is flipped
+// =============================================================================
+
+/// Fixture for the single-line-call batch: the SAME shape as
+/// [`build_virtual_doc_project`]'s embedded script, but the fetch written
+/// the way real one-liners are — `fetch("api/v1.json").then(…)` on a single
+/// line, so the whole call is ONE whitespace token and the quoted argument
+/// is the only target signal the prose scan gets. Before the
+/// quoted-substring shape this emitted the call-prefixed garble
+/// (`fetch("api/v1.json").then(r`); now the quoted content is the target.
+fn build_single_line_fetch_project() -> TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+
+    write(
+        root.join("package.json"),
+        r#"{ "name": "fixture", "private": true }"#,
+    );
+    write(
+        root.join("page.html"),
+        r#"<!DOCTYPE html>
+<html>
+<head>
+<script src="app.js"></script>
+</head>
+<body>
+<script>
+const res = fetch("api/v1.json").then(r => r.json());
+</script>
+</body>
+</html>
+"#,
+    );
+    write(root.join("api/v1.json"), "{ \"v\": 1 }\n");
+    write(root.join("app.js"), "// external script\n");
+    dir
+}
+
+/// `tldr imports page.html` — the embedded one-line fetch yields ONE clean
+/// `api/v1.json` row with `path` provenance under `page.html#script-1` (no
+/// call-prefixed garble row), next to the host's via-less `src` row.
+#[test]
+fn imports_html_one_line_fetch_script_yields_the_clean_quoted_target() {
+    let dir = build_single_line_fetch_project();
+    let root = dir.path();
+
+    let (code, json) = run_json(&["imports", "page.html", "-f", "json", "-q"], root);
+    assert_eq!(code, Some(0));
+    assert_eq!(json["language"], "html");
+
+    let imports = json["imports"].as_array().unwrap();
+    let find = |module: &str| {
+        imports
+            .iter()
+            .filter(|i| i["module"] == module)
+            .collect::<Vec<_>>()
+    };
+
+    let app = find("app.js");
+    assert_eq!(app.len(), 1, "the host's src row: {imports:?}");
+    assert!(app[0]["via"].is_null());
+
+    let api = find("api/v1.json");
+    assert_eq!(api.len(), 1, "exactly the clean quoted target: {imports:?}");
+    assert_eq!(api[0]["via"], "page.html#script-1");
+    assert_eq!(api[0]["alias"], "path");
+    assert_eq!(api[0]["is_from"], true);
+    assert!(
+        imports
+            .iter()
+            .all(|i| i["module"] != "fetch(\"api/v1.json\").then(r"),
+        "the call-prefixed garble must not emit: {imports:?}"
+    );
+}
+
+/// `tldr impact <root>/api/v1.json` — the quoted target of the one-line
+/// fetch is a real blast-radius edge: the closure finds page.html.
+#[test]
+fn impact_one_line_fetch_target_closure_finds_the_page() {
+    let dir = build_single_line_fetch_project();
     let root = dir.path();
 
     let (code, json) = run_json(
