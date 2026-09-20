@@ -27,6 +27,7 @@ timeout 3600 cargo test -p tldr-core --test large_file_accuracy_v1 --release -- 
   timeout 600 cargo test -p tldr-cli --test <name>
   timeout 600 cargo test -p tldr-core --test <name>
   ```
+  First-touch suites may exceed 600 s purely on compilation/linking (cold test-profile cache) — pre-warm with `cargo test -p <crate> --test <name> --no-run` or raise the timeout; a killed compile is not a test failure.
 - NEVER run bare `cargo test`, `cargo test --workspace`, or any command that would run all integration tests. `tests/` holds ~200 binaries including benchmark suites (`bench_*`) and daemon lifecycle tests; a full run takes hours.
 - Always wrap any cargo test invocation in `timeout` (900s for lib tests, 600s for a single suite).
 - Daemon warning: some integration tests spawn a real `tldr-daemon` (30-minute idle timeout). If a test run is interrupted, clean up before re-running:
