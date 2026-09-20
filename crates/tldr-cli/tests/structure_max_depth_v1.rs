@@ -151,3 +151,115 @@ fn cli_max_depth_0_and_the_unfiltered_default_run() {
          carries its nesting depth"
     );
 }
+
+// -----------------------------------------------------------------------------
+// xml-navigation-v1 companion: the 100 MiB depth-filtered views (exact
+// per-level counts, level-sum invariant, byte-exact depth probes) live in
+// `tldr-core/tests/xml_navigation_v1.rs`. This pins the TEXT-MODE navigation
+// surface on a MID-SIZE xml file (≈5.8 MB — big enough for the renderer's
+// element cap to fire, small enough for a plain CLI run): the Elements
+// section indents two spaces per nesting level (a node tree, not a flat
+// dump), caps at 200 rendered rows, and fires the "… N more elements"
+// summary line that points at the knobs.
+// -----------------------------------------------------------------------------
+
+/// Repetitions of the 12-level chain below → 120,000 elements at depths
+/// 0..11 (10,000 units × 12).
+const SNAPSHOT_UNITS: usize = 10_000;
+/// Nesting levels per chain unit.
+const SNAPSHOT_LEVELS: usize = 12;
+/// One-level payload text (keeps units ~575 bytes ≈ 5.8 MB total).
+const SNAPSHOT_PAYLOAD: &str = "mmmmmmmmmmmmmmmmmmmmmmmm";
+/// The renderer's element cap (`output::STRUCTURE_TEXT_ELEMENT_CAP`; the
+/// constant lives in the binary crate, so the value is pinned here).
+const TEXT_ELEMENT_CAP: usize = 200;
+
+/// One 12-level-deep chain unit: `<n0 id="u{i}d0">` … `<n11 id="u{i}d11">`,
+/// each element opening on its own line with a payload line, then the 12
+/// closing tags — 36 lines, 12 elements, ~575 bytes.
+fn snapshot_unit(i: usize) -> String {
+    let mut unit = String::new();
+    for d in 0..SNAPSHOT_LEVELS {
+        unit.push_str(&format!("<n{d} id=\"u{i}d{d}\">\n{SNAPSHOT_PAYLOAD}\n"));
+    }
+    for d in (0..SNAPSHOT_LEVELS).rev() {
+        unit.push_str(&format!("</n{d}>\n"));
+    }
+    unit
+}
+
+fn run_structure_text(path: &Path, extra: &[&str]) -> String {
+    let output = Command::new(assert_cmd::cargo::cargo_bin!("tldr"))
+        .args([
+            "structure",
+            path.to_str().unwrap(),
+            "-l",
+            "xml",
+            "-q",
+            "-f",
+            "text",
+        ])
+        .args(extra)
+        .output()
+        .expect("tldr structure must execute");
+    assert!(
+        output.status.success(),
+        "tldr structure {extra:?} must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("text output must be UTF-8")
+}
+
+/// `--max-depth 2` on the 5 MB xml narrows the 120,000-element tree to the
+/// 30,000 rows at depths ≤ 2; the text renderer then shows the first 200
+/// rows INDENTED BY DEPTH and fires the cap summary line for the remaining
+/// 29,800. Depth-0/1 rows appear (the tree shape is visible); depth-3 rows
+/// are gone (the filter, not the renderer, removed them).
+#[test]
+fn text_mode_5mib_xml_max_depth_2_indented_tree_and_cap_line() {
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("big5.xml");
+    let mut body = String::with_capacity(SNAPSHOT_UNITS * 560);
+    for i in 0..SNAPSHOT_UNITS {
+        body.push_str(&snapshot_unit(i));
+    }
+    assert!(
+        body.len() >= 5 * 1024 * 1024,
+        "the mid-size fixture must be ≥ 5 MB, got {} bytes",
+        body.len()
+    );
+    fs::write(&path, body.as_bytes()).expect("write big5.xml fixture");
+
+    let text = run_structure_text(&path, &["--max-depth", "2"]);
+
+    // The Elements section renders as an indented node tree.
+    assert!(text.contains("  Elements:\n"), "Elements section expected");
+
+    // Depth-0 row: base indent + the unit-0 root of the chain.
+    assert!(
+        text.contains("    - element n0#u0d0 (L1-L36)\n"),
+        "depth-0 element row expected in the indented tree"
+    );
+    // Depth-1 row: two extra spaces per nesting level.
+    assert!(
+        text.contains("      - element n1#u0d1 (L3-L35)\n"),
+        "depth-1 element row expected, indented one level deeper"
+    );
+    // The filter removed depth ≥ 3 BEFORE rendering — none may appear.
+    assert!(
+        !text.contains("element n3#"),
+        "depth-3 rows must be filtered out by --max-depth 2"
+    );
+
+    // The cap line: 30,000 kept rows − 200 rendered = 29,800 hidden.
+    let expected_hidden = SNAPSHOT_UNITS * 3 - TEXT_ELEMENT_CAP;
+    let expected_cap_line = format!(
+        "    … {expected_hidden} more elements (use --max-depth to narrow, \
+         --max-results to cap, -f json for all)\n"
+    );
+    assert!(
+        text.contains(&expected_cap_line),
+        "the 200-cap summary line must fire on a 120,000-element file; \
+         expected {expected_hidden:?} hidden, got:\n{text}"
+    );
+}
