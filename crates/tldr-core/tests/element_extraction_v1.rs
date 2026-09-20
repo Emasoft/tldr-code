@@ -14,8 +14,8 @@
 //! - TOML  → `section` per `[table.path]`/`[[table.path]]` header (name =
 //!   dotted path) + `key` per key/value pair
 //! - YAML  → `document` per `---` document (name = `document-N`) + `key` per
-//!   top-level mapping key of each document (region = key + whole value
-//!   subtree)
+//!   mapping key of each document — top-level and, since V-YAML (2026-09),
+//!   every nested depth (region = key + whole value subtree)
 //! - Bash  → `function` per `function_definition` (bash is format-tier but
 //!   has real functions)
 //! - XML/SVG → `element` per `element` node (paired + self-closing), named

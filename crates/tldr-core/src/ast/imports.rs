@@ -162,34 +162,19 @@ pub fn extract_imports_from_tree_hosted(
         // arm — `get_imports`/`get_imports_threadlocal` dispatch them to the
         // native REFERENCES scanner on the PATH before any language arm
         // (the prose scan would be the wrong surface for a schema file).
-        // yaml-chunk-v1: a `.yaml` over the chunk threshold never produces a
-        // usable whole-file tree (the grammar's int16 row overflow aborts the
-        // parse at source row 32768 — see `ast::yaml_chunk`), so the file is
-        // re-parsed in document-aligned chunks and the per-chunk doclink
-        // scans are CONCATENATED. ImportInfo carries no spans, so the merge
-        // is a plain concatenation in source order (each chunk starts at a
-        // document boundary, so no link can straddle two chunks).
-        // NOTE — no warning channel: `ImportInfo` has no place to carry one,
-        // so a chunk that still aborts (a single document over the grammar's
-        // 32768-line limit) contributes whatever links its partial tree
-        // contains and the omission stays silent ON THIS PATH by
-        // construction. The `tldr structure` path warns via
-        // `CodeStructure.warnings` (see `extractor.rs`).
-        Language::Yaml => {
-            if crate::ast::yaml_chunk::should_chunk(source) {
-                let mut links = Vec::new();
-                for chunk in crate::ast::yaml_chunk::parse_yaml_chunks(source) {
-                    links.extend(super::doclinks::extract_doc_links(
-                        language,
-                        &source[chunk.byte_base..chunk.byte_end],
-                        Some(&chunk.tree),
-                    ));
-                }
-                links
-            } else {
-                super::doclinks::extract_doc_links(language, source, Some(tree))
-            }
-        }
+        // yaml joins the single-parse AST-keyed arm too (V-YAML, 2026-09):
+        // the whole-file tree is usable at any size through the vendored
+        // int32-row patched grammar, so the yaml-chunk-v1 re-parse-and-
+        // concatenate branch is deleted — one parse, one scan, byte-exact
+        // with every other config format.
+        Language::Yaml
+        | Language::Markdown
+        | Language::Css
+        | Language::Latex
+        | Language::Json
+        | Language::Toml
+        | Language::Bash
+        | Language::Text => super::doclinks::extract_doc_links(language, source, Some(tree)),
         // virtual-documents-v1: HTML/XML hosts append the OUTBOUND references
         // of their embedded virtual documents (inline `<script>` JS bodies and
         // `<style>` CSS bodies) to the host's own link rows — every row
@@ -206,13 +191,6 @@ pub fn extract_imports_from_tree_hosted(
             ));
             links
         }
-        Language::Markdown
-        | Language::Css
-        | Language::Latex
-        | Language::Json
-        | Language::Toml
-        | Language::Bash
-        | Language::Text => super::doclinks::extract_doc_links(language, source, Some(tree)),
         // Log has no reference surface in any sense: no grammar (its tree
         // is a structural placeholder), no path convention — log files are
         // consumed exclusively by the native scanner in `ast::logs`.

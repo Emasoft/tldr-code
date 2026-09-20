@@ -10,12 +10,11 @@ use tree_sitter::{Node, Tree};
 
 use crate::fs::tree::{collect_files, get_file_tree};
 use crate::types::{
-    CodeStructure, DefinitionInfo, FileStructure, IgnoreSpec, ImportInfo, Language, MethodInfo,
+    CodeStructure, DefinitionInfo, FileStructure, IgnoreSpec, Language, MethodInfo,
 };
 use crate::TldrResult;
 
 use super::extract::is_upper_case_name;
-use super::imports::extract_imports_from_tree;
 
 /// PERF-2: at or below this file count the fan-out overhead beats the
 /// per-file parse savings — stay sequential (same threshold as
@@ -319,9 +318,9 @@ pub fn get_code_structure(
         // thread-local cache only pays off under a multi-thread fan-out).
         match extract_file_structure(root, parent, language, false) {
             Ok((structure, file_warnings)) => {
-                // yaml-chunk-v1: per-file warnings ride the report's
-                // `warnings` (a chunked large yaml that only partially
-                // parsed says so here instead of extracting in silence).
+                // Per-file warnings ride the report's `warnings` (VD-2:
+                // embedded-document recursion issues surface here instead
+                // of extracting in silence).
                 return Ok(CodeStructure {
                     root: root.to_path_buf(),
                     language: Some(language),
@@ -473,8 +472,8 @@ pub fn get_code_structure(
         match result {
             Ok((structure, file_warnings)) => {
                 file_structures.push(structure);
-                // yaml-chunk-v1: per-file warnings (partially-parsed yaml
-                // chunks) accumulate on the report like every other skip.
+                // Per-file warnings (VD-2 embedded-document issues)
+                // accumulate on the report like every other skip.
                 warnings.extend(file_warnings);
             }
             Err(crate::error::TldrError::FileTooLarge {
@@ -544,10 +543,10 @@ pub fn get_code_structure(
 /// Extract structure from a single file.
 ///
 /// Returns the file's structure PLUS per-file warnings (empty in the common
-/// case). The second channel exists for `yaml-chunk-v1`: a large `.yaml`
-/// whose chunks only partially parse must say so in the report's `warnings`
-/// instead of silently extracting zero definitions (the pre-chunking
-/// failure mode). Callers merge the vec into their `CodeStructure.warnings`.
+/// case). The second channel exists for VD-2: embedded-document recursion
+/// (foreignObject nesting beyond the depth cap, the virtual-document budget,
+/// malformed nested content) must surface in the report's `warnings` instead
+/// of being silent. Callers merge the vec into their `CodeStructure.warnings`.
 fn extract_file_structure(
     path: &Path,
     root: &Path,
@@ -573,18 +572,12 @@ fn extract_file_structure(
 
     let relative_path = path.strip_prefix(root).unwrap_or(path).to_path_buf();
 
-    // yaml-chunk-v1: files over the chunk threshold never produce a usable
-    // whole-file tree — the tree-sitter-yaml scanner overflows its int16 row
-    // counter at source row 32768 and error-recovery swallows the rest of
-    // the file into a root ERROR (silent ZERO definitions). Above the
-    // threshold the file is parsed in document-aligned chunks instead; see
-    // `ast::yaml_chunk` for the root cause and the split rules. At or below
-    // the threshold this branch never fires and everything below is
-    // byte-identical to the pre-chunking engine.
-    if language == Language::Yaml && crate::ast::yaml_chunk::should_chunk(&source) {
-        let chunks = crate::ast::yaml_chunk::parse_yaml_chunks(&source);
-        return merge_yaml_chunk_structure(path, relative_path, &source, chunks);
-    }
+    // yaml parses like every other format now (V-YAML, 2026-09): ONE
+    // whole-file parse through the vendored int32-row patched grammar
+    // (`vendor/tree-sitter-yaml`), any size up to the tree-sitter u32
+    // ceiling — the yaml-chunk-v1 splitter and the yaml-native-outline-v1
+    // scanner this file used to route around the un-patched grammar's
+    // row-32768 int16 overflow are deleted.
 
     // canonical-function-enumerator-v1: derive `functions` and `methods` from
     // the canonical `extract_file` enumerator so that
@@ -679,128 +672,6 @@ fn extract_file_structure(
         },
         file_warnings,
     ))
-}
-
-/// yaml-chunk-v1: structure extraction for a `.yaml` file over the chunk
-/// threshold — one parse per document-aligned chunk
-/// (`ast::yaml_chunk::parse_yaml_chunks`), definitions and doclinks merged
-/// in source order, spans translated into full-file coordinates.
-///
-/// Merge math, per chunk:
-/// - `definitions` = legacy `extract_definitions` (empty for yaml today,
-///   kept for parity with the single-parse path) followed by the element
-///   walk, both over the CHUNK tree with the CHUNK SLICE as source (node
-///   byte ranges and rows are chunk-relative), then translated:
-///   `byte_start/byte_end += chunk.byte_base`,
-///   `line_start/line_end += chunk.line_base` — the chunk's row 0 is
-///   full-file row `line_base`, and each chunk begins at a document
-///   boundary so a node's byte range is identical in both coordinates.
-/// - `document` elements are renumbered continuously across chunks (each
-///   chunk's walker restarts at `document-1`).
-/// - `imports` = the per-chunk doclink scan concatenated (ImportInfo has no
-///   spans — the merge is a plain concatenation in source order).
-///
-/// Honesty: a chunk whose parse still errors is kept best-effort (whatever
-/// its partial tree contains) AND surfaces a warning here — the structure
-/// path is where "yaml extracted nothing" must become visible instead of
-/// silent. The ONE exception is the LINE-LIMIT ABORT (yaml-native-outline-
-/// v1): a single document longer than the grammar's 32768-row ceiling
-/// cannot be split, its parse always aborts, and the aborted tree holds
-/// only a truncated prefix — there the tree extraction is REPLACED by the
-/// native top-level outline (`ast::yaml_native`) and the abort warning by
-/// an informational one. Ordinary parse failures at or under the line limit
-/// keep the old best-effort + warning path.
-pub(crate) fn merge_yaml_chunk_structure(
-    path: &Path,
-    relative_path: std::path::PathBuf,
-    source: &str,
-    chunks: Vec<crate::ast::yaml_chunk::YamlChunk>,
-) -> TldrResult<(FileStructure, Vec<String>)> {
-    let mut definitions: Vec<DefinitionInfo> = Vec::new();
-    let mut imports: Vec<ImportInfo> = Vec::new();
-    let mut warnings: Vec<String> = Vec::new();
-    let mut next_doc_no = 1usize;
-
-    for chunk in &chunks {
-        let chunk_slice = &source[chunk.byte_base..chunk.byte_end];
-        let chunk_lines = chunk_slice.lines().count() as u32;
-
-        // A chunk spanning more than the grammar's line limit is an
-        // un-splittable single document — the int16-row abort itself, the
-        // one case chunking cannot fix. The aborted tree holds only the
-        // parseable prefix, so instead of extracting that truncation the
-        // chunk's definitions are REPLACED by the native top-level outline
-        // (`ast::yaml_native`): every column-0 mapping key, byte-exact,
-        // with an informational warning instead of the abort warning.
-        // Engage condition is exact: has_error AND over the line limit.
-        // Ordinary parse failures (malformed yaml, the pathological
-        // column-0 `---` mid-scalar cut) are at or under the limit and
-        // never reach this branch.
-        if chunk.has_error() && chunk_lines > crate::ast::yaml_chunk::YAML_LINE_LIMIT {
-            let (native_defs, native_warnings) = crate::ast::yaml_native::scan_yaml_outline_native(
-                chunk_slice,
-                chunk.byte_base,
-                chunk.line_base,
-            );
-            for w in native_warnings {
-                warnings.push(format!("{}: {}", path.display(), w));
-            }
-            // Native definitions are emitted in FULL-FILE coordinates —
-            // no `translate_definition` pass — and carry no `document`
-            // elements, so `next_doc_no` is untouched for later chunks.
-            definitions.extend(native_defs);
-        } else {
-            let mut chunk_defs = extract_definitions(&chunk.tree, chunk_slice, Language::Yaml);
-            // `host = None`: yaml has no script elements, and the chunk slice has
-            // no host file name to give anyway (script-inner-js-v1 is inert here).
-            chunk_defs.extend(super::elements::extract_elements(
-                Language::Yaml,
-                &chunk.tree,
-                chunk_slice,
-                None,
-            ));
-            for def in chunk_defs.iter_mut() {
-                crate::ast::yaml_chunk::translate_definition(def, chunk.byte_base, chunk.line_base);
-            }
-            next_doc_no = crate::ast::yaml_chunk::renumber_documents(&mut chunk_defs, next_doc_no);
-            definitions.extend(chunk_defs);
-        }
-
-        // Imports still come from the chunk tree on BOTH paths: for an
-        // aborted single document that is the parseable prefix (the native
-        // outline does not cover doclinks — documented in `ast::imports`).
-        imports.extend(extract_imports_from_tree(
-            &chunk.tree,
-            chunk_slice,
-            Language::Yaml,
-        )?);
-
-        // Remaining chunk errors are parse failures INSIDE the chunk at or
-        // under the line limit (malformed yaml, or the pathological
-        // column-0 `---` mid-scalar cut) — the over-limit case above has
-        // its own native-outline message.
-        if chunk.has_error() && chunk_lines <= crate::ast::yaml_chunk::YAML_LINE_LIMIT {
-            warnings.push(format!(
-                "Skipped sections of {}: the yaml section starting at line {} failed to parse cleanly; structure may be incomplete for that section",
-                path.display(),
-                chunk.line_base + 1,
-            ));
-        }
-    }
-
-    // yaml carries no methods — `method_infos` (derived from
-    // kind == "method" definitions) is empty by the same argument as the
-    // single-parse path.
-    let structure = FileStructure {
-        path: relative_path,
-        functions: Vec::new(),
-        classes: Vec::new(),
-        methods: Vec::new(),
-        method_infos: Vec::new(),
-        imports,
-        definitions,
-    };
-    Ok((structure, warnings))
 }
 
 /// Map a parsed [`crate::ast::logs::LogEntry`] onto the `DefinitionInfo`

@@ -1,0 +1,29 @@
+[package]
+name = "tree-sitter-yaml"
+version = "0.7.0"
+edition = "2021"
+# Vendored fork — see README.md for provenance and the int32-row patch.
+# The grammar sources carry upstream's MIT license
+# (https://github.com/tree-sitter-grammars/tree-sitter-yaml, MIT).
+license = "MIT"
+description = "YAML grammar for tree-sitter (vendored, int32-row patched)"
+repository = "https://github.com/tree-sitter-grammars/tree-sitter-yaml"
+build = "build.rs"
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[lib]
+name = "tree_sitter_yaml"
+path = "lib.rs"
+
+[dependencies.tree-sitter-language]
+version = "0.1"
+
+[dev-dependencies.tree-sitter]
+workspace = true
+
+[build-dependencies.cc]
+version = "1.2"

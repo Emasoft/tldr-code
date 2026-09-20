@@ -7,6 +7,7 @@ members = [
     "crates/tldr-cli",
     "crates/tldr-daemon",
     "crates/tldr-mcp",
+    "vendor/tree-sitter-yaml",
 ]
 resolver = "2"
 
@@ -48,7 +49,18 @@ tree-sitter-cpp = "=0.23.4"
 # `cargo test -p tldr-core --test grammar_stability_test` + the parse smoke
 # tests in ast/parser.rs tests. "All tree-sitter formats" directive (#8b follow-up).
 tree-sitter-json = "=0.24.0"
-tree-sitter-yaml = "=0.7.0"
+# YAML grammar — VENDORED (2026-09): upstream tree-sitter-yaml 0.7.0's
+# external scanner tracks the source row in int16_t and overflows at row
+# 32768, so any .yaml past 32,768 lines parsed into one root ERROR (silent
+# ZERO definitions; the defect that forced the yaml-chunk-v1 /
+# yaml-native-outline-v1 workarounds, both now deleted). Upstream issue #49
+# is open and no crates.io fork fixes it (0.7.2 verified still int16_t), so
+# the grammar is vendored at `vendor/tree-sitter-yaml` — upstream 0.7.0
+# verbatim plus a 31-line int32 row/col patch (scanner.c only; node kinds
+# and ABI unchanged, parser.c byte-identical). See that crate's README.md
+# for provenance, the patch, and re-vendor instructions:
+# https://github.com/tree-sitter-grammars/tree-sitter-yaml/issues/49
+tree-sitter-yaml = { path = "vendor/tree-sitter-yaml" }
 tree-sitter-toml-ng = "=0.7.0"
 tree-sitter-xml = "=0.7.0"
 tree-sitter-html = "=0.23.2"

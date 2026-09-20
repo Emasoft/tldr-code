@@ -449,6 +449,78 @@ fn test_markdown_ast_node_types() {
     assert_node_type_exists("# Title\n\nbody", Language::Markdown, "inline");
 }
 
+/// yaml grammar stability (V-YAML, 2026-09): the YAML grammar is now the
+/// VENDORED int32-row patched fork of tree-sitter-yaml 0.7.0
+/// (`vendor/tree-sitter-yaml`), so this test both pins the node kinds the
+/// element walker needs AND proves the patched scanner parses past the old
+/// 32,768-row int16 overflow abort — node kinds are UNCHANGED from upstream
+/// (parser.c is byte-identical upstream 0.7.0; only scanner.c counters were
+/// widened), so a re-vendor onto a fixed upstream release keeps this green.
+#[test]
+fn test_yaml_vendored_grammar_node_types_stable() {
+    // Block structure: the element walker (`ast::elements::walk_yaml`) keys
+    // on `stream` → `document` → `block_mapping_pair`/`flow_pair`.
+    assert_node_type_exists("name: tldr\ncount: 42\n", Language::Yaml, "stream");
+    assert_node_type_exists("name: tldr\ncount: 42\n", Language::Yaml, "document");
+    assert_node_type_exists("name: tldr\ncount: 42\n", Language::Yaml, "block_mapping");
+    assert_node_type_exists(
+        "name: tldr\ncount: 42\n",
+        Language::Yaml,
+        "block_mapping_pair",
+    );
+    assert_node_type_exists(
+        "name: tldr\nitems:\n  - one\n  - two\n",
+        Language::Yaml,
+        "block_sequence",
+    );
+    assert_node_type_exists(
+        "name: tldr\nitems:\n  - one\n  - two\n",
+        Language::Yaml,
+        "block_sequence_item",
+    );
+    assert_node_type_exists("{a: 1, b: 2}\n", Language::Yaml, "flow_mapping");
+    assert_node_type_exists("{a: 1, b: 2}\n", Language::Yaml, "flow_pair");
+    assert_node_type_exists("name: tldr\n", Language::Yaml, "plain_scalar");
+}
+
+/// yaml past the old int16 abort (V-YAML, 2026-09): 40,000-line single and
+/// multi-document sources must parse CLEAN through the vendored patched
+/// grammar — upstream 0.7.0 aborted into a root `ERROR` at row 32768. This
+/// is the grammar-level half of the pin; `yaml_vendored_grammar_v1` covers
+/// the end-to-end extraction.
+#[test]
+fn test_yaml_vendored_grammar_parses_past_the_old_int16_abort() {
+    let pool = ParserPool::new();
+
+    // (a) a single 40,000-key block mapping (40,000 lines) — un-splittable,
+    // this exact shape forced the yaml-native-outline workaround before.
+    let single: String = (0..40_000)
+        .map(|i| format!("key-{i}: value-{i}\n"))
+        .collect();
+    assert_eq!(single.lines().count(), 40_000);
+    let tree = pool
+        .parse(&single, Language::Yaml)
+        .expect("yaml single-document parse must succeed");
+    assert!(
+        !tree.root_node().has_error(),
+        "40k-line single-document yaml must parse clean through the vendored grammar"
+    );
+
+    // (b) a 40,000-line `---`-delimited stream (8,000 documents) — this
+    // shape forced the yaml-chunk-v1 splitter before.
+    let multi: String = (0..8_000)
+        .map(|i| format!("---\nid: {i}\nitems:\n  - x\n  - y\n"))
+        .collect();
+    assert_eq!(multi.lines().count(), 40_000);
+    let tree = pool
+        .parse(&multi, Language::Yaml)
+        .expect("yaml multi-document parse must succeed");
+    assert!(
+        !tree.root_node().has_error(),
+        "40k-line multi-document yaml must parse clean through the vendored grammar"
+    );
+}
+
 // =============================================================================
 // Version Verification Test
 // =============================================================================

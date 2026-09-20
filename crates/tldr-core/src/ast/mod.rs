@@ -21,9 +21,6 @@
 //! - `sqlscan` - native SQL schema-outline scanning for `.sql`/`.ddl` files
 //!   (crates.io only publishes tree-sitter-sql 0.0.2, dead since 2021 — the
 //!   Log/Text/CSV no-grammar precedent; statement-splitter + DDL kind table)
-//! - `yaml_native` - native top-level outline for a yaml SINGLE document the
-//!   grammar cannot parse (the int16-row abort at row 32768; chunking fixes
-//!   multi-doc files, this rescues the un-splittable single document)
 //! - `ooxml` - OOXML containers (.docx/.xlsx/.pptx): in-memory unzip +
 //!   the XML element walker over the container's XML parts
 //! - `doclinks` - document link extraction: markdown/html/xml hyperlinks
@@ -44,8 +41,6 @@ pub mod ooxml;
 pub mod parser;
 pub mod sqlscan;
 pub mod toc;
-pub mod yaml_chunk;
-pub mod yaml_native;
 
 pub use count::{count_functions_canonical, count_functions_canonical_from_modules};
 pub use csvscan::{

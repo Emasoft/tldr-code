@@ -58,8 +58,8 @@
 //!   to build.
 //! - **Ceilings respected.** 62 content lines of ~29 KB per unit: max column
 //!   ~29 KB and ~4k rows per file — both far under the 32-bit tree-sitter
-//!   point ceilings and the int16 row counter that overflowed in
-//!   tree-sitter-yaml (yaml-chunk-v1).
+//!   point ceilings (the yaml grammar's old int16 row overflow is fixed in
+//!   the vendored grammar, V-YAML).
 //!
 //! Every 10th unit carries decorator / attribute / annotation / doc-comment
 //! trivia ABOVE the declaration and the probe body STARTS at that trivia
@@ -80,9 +80,10 @@
 //!
 //! The default (`cargo test -p tldr-core --test large_file_accuracy_v1`) must
 //! compile-and-skip: `31 ignored; 0 failed`. All thirty-one run green.
-//! (yaml-chunk-v1: the yaml test previously carried a defect pin —
-//! tree-sitter-yaml's scanner overflows its int16 row counter at source row
-//! 32768 — fixed by document-aligned chunk parsing in `ast::yaml_chunk`.)
+//! (V-YAML, 2026-09: the yaml test carried a defect pin while upstream's
+//! grammar aborted past row 32768 — fixed for good by the vendored int32-row
+//! patched grammar, `vendor/tree-sitter-yaml`; the yaml-chunk-v1 workaround
+//! it replaced is deleted.)
 
 use std::fmt::Write as _;
 use std::time::Instant;
@@ -590,15 +591,15 @@ fn json_100mib_byte_exact() {
 // file's final newline at EOF, while the line span is EOF-stable. The
 // single-line `id` key is probed on the byte path.
 //
-// yaml-chunk-v1 (was a defect pin): tree-sitter-yaml's external scanner
-// tracks the source row in `int16_t` (scanner.c:136/147) and overflows at
-// source row 32768 — a single whole-file parse of this fixture aborts into a
-// root ERROR and extracts ZERO definitions. Fixed by document-aligned chunk
-// parsing (`ast::yaml_chunk`): the engine splits at column-0 `---` markers,
-// parses each segment independently under the row ceiling, and translates
-// every span back into full-file coordinates — which is what this test now
-// proves at 100 MiB scale (byte-exact `id` spans, line-exact documents and
-// `items`, continuous `document-N` numbering, no warnings, nothing skipped).
+// V-YAML (2026-09): this test began as a defect pin — upstream
+// tree-sitter-yaml 0.7.0's scanner overflows its int16 row counter at source
+// row 32768, so a single whole-file parse aborted into a root ERROR and
+// extracted ZERO definitions — then ran on document-aligned chunk parsing
+// (`ast::yaml_chunk`, deleted). Now the vendored int32-row patched grammar
+// (`vendor/tree-sitter-yaml`) parses the whole 100 MiB file in ONE pass and
+// this test proves full single-parse fidelity at scale: byte-exact `id`
+// spans, line-exact documents and `items`, continuous `document-N` numbering,
+// no warnings, nothing skipped.
 // =============================================================================
 
 fn yaml_unit(i: usize) -> (String, Probe) {

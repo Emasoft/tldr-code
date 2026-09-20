@@ -15,7 +15,7 @@
 //! | TOML     | `section`   | `[table.path]` / `[[table.path]]` headers                              | the dotted path, keys unquoted | the whole `table`/`table_array_element` block       |
 //! | TOML     | `key`       | every key/value `pair` — top-level, inside a section, or in an inline table | the key (dotted keys joined with `.`), unquoted | the `pair` node |
 //! | YAML     | `document`  | each `---`-delimited document of the stream                            | `document-N` (N = 1-indexed source-order position) | the `document` node incl. its `---` marker |
-//! | YAML     | `key`       | top-level mapping keys of each document                                | the key, unquoted              | the `block_mapping_pair` (key + whole value subtree) |
+//! | YAML     | `key`       | mapping keys of each document — top-level and nested (the JSON/TOML recursion convention; full-fidelity since V-YAML 2026-09) | the key, unquoted              | the `block_mapping_pair`/`flow_pair` (key + whole value subtree) |
 //! | Bash     | `function`  | `function_definition` (`name() {}` and `function name {}`)             | the function name              | the whole `function_definition` node |
 //! | XML/SVG  | `element`   | every `element` node — paired (`STag … ETag`) and self-closing (`EmptyElemTag`) alike, at ANY depth | the tag name; `tag#id` when an `id` attribute exists, else `tag.<first-class>` when a `class` attribute does | the whole `element` node incl. children |
 //! | XML/SVG  | `selector` / `at-rule` | the CSS body of a `<style>` element (style-inner-css-v1, below) — same rows a standalone stylesheet would emit | as CSS | the inner rule/at-rule node, re-based onto full-file coordinates |
@@ -94,7 +94,7 @@
 //! not the byte span) — the same fields mean exactly what they mean for a
 //! standalone `.js` file. Scripts are extracted only when a host label is
 //! available (the `extract_elements` `host` argument, the host file's file
-//! name): the OOXML part walker and the yaml chunk merger pass `None`, and
+//! name): the OOXML part walker passes `None`, and
 //! a nameless host cannot name a virtual document.
 //!
 //! # Virtual documents and outbound references (virtual-documents-v1)
@@ -112,7 +112,7 @@
 //!    carry `DefinitionInfo::container` = `<hostfilename>#style-N`. Host
 //!    element rows keep `container: None`, so a style row is always
 //!    distinguishable from a same-named host element. A nameless host (OOXML
-//!    parts, yaml chunk merges) cannot name a virtual document: those style
+//!    parts) cannot name a virtual document: those style
 //!    bodies keep emitting their rows exactly as style-inner-css-v1 shipped
 //!    them — container-less, and they consume no number.
 //!
@@ -209,7 +209,7 @@
 //!    The host walk SKIPS the foreignObject subtree after handing it to the
 //!    virtual document (its elements would otherwise emit twice — once
 //!    container-less from the host walk and once from the document).
-//!    Nameless hosts (OOXML parts, yaml chunk merges) cannot name a virtual
+//!    Nameless hosts (OOXML parts) cannot name a virtual
 //!    document, so for them the subtree is NOT skipped and nothing recurses
 //!    — the pre-VD-2 behavior exactly. Files WITHOUT a foreignObject walk
 //!    byte-identically to the pre-VD-2 engine.
@@ -307,7 +307,7 @@ pub(crate) const MAX_VIRTUAL_DOCS_PER_FILE: usize = 256;
 /// (script-inner-js-v1 / virtual-documents-v1): `Some(name)` enables
 /// script-inner JS extraction (`<file>#script-N` provenance) and style
 /// container provenance (`<file>#style-N`), `None` disables both — callers
-/// without a host file name (OOXML zip parts, yaml chunk merges, unit probes)
+/// without a host file name (OOXML zip parts, unit probes)
 /// keep the pre-virtual-document behavior byte-for-byte.
 ///
 /// Returns an EMPTY vec for every non-format (code) language — the caller
@@ -328,7 +328,7 @@ pub fn extract_elements(
 /// `MAX_VIRTUAL_DOCS_PER_FILE` budget, malformed nested content). The
 /// structure path (`extractor::extract_file_structure`) merges them into the
 /// file's warning channel so `CodeStructure.warnings` reports them; the
-/// plain [`extract_elements`] (OOXML parts, yaml chunk merges, unit probes)
+/// plain [`extract_elements`] (OOXML parts, unit probes)
 /// keeps its signature and drops them.
 pub(crate) fn extract_elements_with_warnings(
     language: Language,
@@ -353,7 +353,7 @@ pub(crate) fn extract_elements_with_warnings(
 /// on `#script-1`/`#style-1` naming.
 ///
 /// `host` is the host file's FILE NAME, the same argument
-/// [`extract_elements`] takes. `None` (OOXML parts, yaml chunk merges) yields
+/// [`extract_elements`] takes. `None` (OOXML parts) yields
 /// an EMPTY vec — a nameless host has no named virtual documents and
 /// therefore no attributable edges. Every other language returns empty too:
 /// only Html/Xml hosts embed script/style documents.
@@ -449,8 +449,8 @@ impl<'h> WalkState<'h> {
 
     /// The host file's FILE NAME — enables virtual-document extraction
     /// (script-inner-js-v1, style containers, outbound refs, VD-2
-    /// foreignObject recursion). `None` for nameless hosts (OOXML parts,
-    /// yaml chunk merges): no virtual documents at any level.
+    /// foreignObject recursion). `None` for nameless hosts (OOXML parts):
+    /// no virtual documents at any level.
     fn host(&self) -> Option<&'h str> {
         self.budget.host
     }
@@ -737,7 +737,10 @@ fn collect_key_parts(node: Node, source: &str, parts: &mut Vec<String>) {
 }
 
 // =============================================================================
-// YAML — kind "document" per --- document + top-level kind "key"
+// YAML — kind "document" per --- document + kind "key" per mapping pair
+// (nested keys recurse, the JSON/TOML walker convention; full-fidelity since
+// V-YAML 2026-09 — one whole-file parse through the vendored int32-row
+// patched grammar, so keys at every depth are grammar nodes we can name)
 // =============================================================================
 
 fn walk_yaml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
@@ -753,46 +756,25 @@ fn walk_yaml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
                     child,
                     source,
                 ));
-                emit_yaml_top_level_keys(&child, source, out);
+                walk_yaml(child, source, out);
             }
+        }
+        return;
+    }
+
+    // Every mapping pair — block or flow, at any depth — IS its region (key
+    // plus the whole value subtree), the same rule as JSON's `pair`. Walking
+    // ALL nodes covers every nesting shape: mappings under mappings, mappings
+    // inside sequences (`- a: 1`), flow mappings inside block contexts.
+    if node.kind() == "block_mapping_pair" || node.kind() == "flow_pair" {
+        if let Some(name) = yaml_pair_name(&node, source) {
+            out.push(element_def("key", name, node, source));
         }
     }
-}
 
-/// Top-level mapping keys of one YAML document: block mappings surface their
-/// `block_mapping_pair`s; flow mappings (`{a: 1}`) their `flow_pair`s. The
-/// region is the pair node — key plus the whole value subtree.
-fn emit_yaml_top_level_keys(document: &Node, source: &str, out: &mut Vec<DefinitionInfo>) {
-    let mut cursor = document.walk();
-    for child in document.children(&mut cursor) {
-        if child.kind() == "block_node" || child.kind() == "flow_node" {
-            let mut inner = child.walk();
-            for content in child.children(&mut inner) {
-                match content.kind() {
-                    "block_mapping" => {
-                        let mut pairs = content.walk();
-                        for pair in content.children(&mut pairs) {
-                            if pair.kind() == "block_mapping_pair" {
-                                if let Some(name) = yaml_pair_name(&pair, source) {
-                                    out.push(element_def("key", name, pair, source));
-                                }
-                            }
-                        }
-                    }
-                    "flow_mapping" => {
-                        let mut pairs = content.walk();
-                        for pair in content.children(&mut pairs) {
-                            if pair.kind() == "flow_pair" {
-                                if let Some(name) = yaml_pair_name(&pair, source) {
-                                    out.push(element_def("key", name, pair, source));
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_yaml(child, source, out);
     }
 }
 
@@ -2405,8 +2387,8 @@ mod tests {
         assert!(extract_elements(Language::Rust, &tree, "fn foo() {}", None).is_empty());
     }
 
-    /// virtual-documents-v1: a NAMELESS host (the OOXML part walker and the
-    /// yaml chunk merger pass `None`) keeps the pre-virtual-documents
+    /// virtual-documents-v1: a NAMELESS host (the OOXML part walker passes
+    /// `None`) keeps the pre-virtual-documents
     /// behavior — style bodies still emit their selector rows (the
     /// style-inner-css-v1 contract) but container-less, and the embedded
     /// reference scan collects NOTHING (no name to attribute edges to).

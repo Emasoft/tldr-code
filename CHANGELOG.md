@@ -516,47 +516,45 @@
      heading, css selector, csv record, json key first-match, log entry, text heading, python class
      line-path, bash function, decorated-python-function fidelity control, text-mode verbatim bytes,
      not-found error shape).
-- **Large `.yaml` files no longer silently extract ZERO definitions.** Root cause found and pinned
-  empirically: tree-sitter-yaml's external scanner tracks the current source row in **`int16_t`**
-  (`scanner.c:136/147` in the published 0.7.0 crate; incremented per newline at `:217/:230`), and the
-  first token on source **row 32768 (0-indexed) = 2^15** overflows it negative — `has_nwl = cur_row >
-  row` (scanner.c:889) flips false, every block-structure decision after that is wrong, and the
-  parser's error recovery swallows the entire remaining file into one root `ERROR` node. The threshold
-  is the LINE index, shape-independent: a 241 351-byte / 32 768-line stream parses clean while 32 769
-  lines abort; a single mapping parses clean through 32 767 keys and aborts at 32 768; byte counts at
-  the break differ 3x between the two shapes, so it was never a size or node-count limit (the old
-  defect pin's "~65k nodes" was a numeric coincidence — the aborted tree happened to hold ~65.5k
-  named nodes). Any `.yaml` over ~250 KB therefore reported `files_skipped == 0`, empty definitions,
-  no warning. **No upstream fix exists** — crates.io's newest `tree-sitter-yaml` 0.7.2 (2025-10-07)
-  still declares `int16_t row/cur_row` (verified against the published crate source), so the pin stays
-  `=0.7.0` and the fix is engine-side: `ast::yaml_chunk` splits files over 512 KiB at column-0 `---`
-  document starts (the spec-guaranteed safe split point — a `---` inside a quoted scalar or block
-  scalar cannot sit at column 0 in valid yaml), coalesces documents into chunks of ≤ 8 192 lines (4x
-  margin under the 32 768-row ceiling), parses each segment independently, and translates every span
-  back into full-file coordinates (`byte += chunk.byte_base`, `line += chunk.line_base`) with
-  continuous `document-N` renumbering across chunks. Non-final chunks end at their last content byte —
-  the trailing newline run before the next `---` belongs to no document in a single whole-file parse
-  either, so chunked extraction is byte-identical to the small-file single parse (pinned by an
-  equivalence test). Files at or below 512 KiB take the unchanged single-parse path. Both yaml call
-  sites share the chunker: `tldr structure` merges per-chunk definitions and doclinks;
-  `tldr imports` concatenates per-chunk `$ref`/`extends` links (ImportInfo carries no spans).
-  **Honesty for the unfixable case:** a `---`-less single document longer than 32 768 lines cannot be
-  split — its chunk's parse always aborts. The structure path now REPLACES the aborted tree's
-  truncated prefix with a **native top-level outline** (`ast::yaml_native`, yaml-native-outline-v1):
-  a deterministic line scan that emits one `key` definition per column-0 top-level mapping key —
-  comments, `---`/`...`, sequence entries and every indented line (nested keys, block-scalar bodies)
-  excluded by the first-character test; a key's region spans everything up to the next column-0 key
-  so nested blocks stay attached to their owner; quoted keys are unquoted; the colon must be followed
-  by space/tab/EOL (the YAML mapping form, which also rejects bare URLs); the scan stops at a
-  100 000-key paranoia budget and says so. Byte spans slice back exactly and lines map to full-file
-  coordinates (`byte_base`/`line_base` applied in the scanner). The abort warning is REPLACED by an
-  informational one — `"...single document exceeds the grammar's 32768-line limit; native top-level
-  outline used (N keys)"` — so a 40k-line single mapping now yields all 40 000 keys where it
-  previously yielded the truncated prefix plus a truncation warning. Ordinary parse failures at or
-  under the line limit keep the old best-effort + warning path, and the imports path still has no
-  warning channel (documented in `ast::imports`). Proof: the previously `#[ignore]`d defect-pin test
-  `yaml_100mib_byte_exact` now runs green — a 100 MiB / ~2.86M-document fixture extracts ~8.6M
-  byte-exact definitions in ~32 s (release) — and the full 13-format 100 MiB suite passes 13/13.
+- **Large `.yaml` files no longer silently extract ZERO definitions — and the fix now lives IN the
+  grammar, not around it.** Root cause found and pinned empirically: tree-sitter-yaml's external
+  scanner tracks the current source row in **`int16_t`** (`scanner.c:136/147` in the published 0.7.0
+  crate; incremented per newline at `:217/:230`), and the first token on source **row 32768
+  (0-indexed) = 2^15** overflows it negative — `has_nwl = cur_row > row` (scanner.c:889) flips false,
+  every block-structure decision after that is wrong, and the parser's error recovery swallows the
+  entire remaining file into one root `ERROR` node. The threshold is the LINE index, shape-independent:
+  a 241 351-byte / 32 768-line stream parses clean while 32 769 lines abort; a single mapping parses
+  clean through 32 767 keys and aborts at 32 768; byte counts at the break differ 3x between the two
+  shapes, so it was never a size or node-count limit (the old defect pin's "~65k nodes" was a numeric
+  coincidence — the aborted tree happened to hold ~65.5k named nodes). Any `.yaml` over ~250 KB
+  reported `files_skipped == 0`, empty definitions, no warning. Two engine-side workarounds shipped in
+  the meantime — `ast::yaml_chunk` (yaml-chunk-v1: document-aligned splitting at column-0 `---` over a
+  512 KiB threshold) and `ast::yaml_native` (yaml-native-outline-v1: a column-0 key outline replacing
+  un-splittable single documents' aborted parses) — and both are **DELETED now** (V-YAML, 2026-09):
+  the grammar is **vendored** at `vendor/tree-sitter-yaml`, upstream tree-sitter-yaml 0.7.0 verbatim
+  (`parser.c`, `schema.*.c`, headers byte-identical; node kinds unchanged) plus a **31-line int32
+  patch** to `scanner.c` that widens the scanner's row/col counters (`row`, `col`, `blk_imp_*`,
+  `end_*`, `cur_*`, the `bgn_row`/`bgn_col` locals) and their serialize/deserialize form to `int32_t`
+  — behavior below the old threshold is byte-identical, one whole-file parse works at any size up to
+  the tree-sitter u32 ceiling. Upstream issue #49
+  ([tree-sitter-grammars/tree-sitter-yaml#49](https://github.com/tree-sitter-grammars/tree-sitter-yaml/issues/49))
+  is still open and no crates.io fork fixes it (0.7.2 verified still `int16_t`); the vendored crate's
+  README documents provenance, the patch and the re-vendor steps for the day upstream ships a fixed
+  release. What full fidelity means:
+  - yaml parses like every other format — ONE whole-file parse; no chunk threshold, no splitter, no
+    outline, no yaml-specific warnings anywhere;
+  - single documents past 32 768 lines are full-fidelity for the first time: `tldr structure` emits
+    the `document-1` element plus every mapping key at EVERY nesting depth (the yaml element walker
+    now recurses into nested mappings, the JSON/TOML walker convention) where the native outline
+    yielded only column-0 keys and no document element;
+  - `tldr imports` scans the one whole-file tree for `$ref`/`extends` links (the re-parse-and-
+    concatenate chunk merge is gone).
+  Proof: `yaml_vendored_grammar_v1` pins a 40 200-line single document extracting 40 201 full-fidelity
+  definitions through the real grammar (nested keys included, byte-exact spans, no warnings); the
+  `yaml_100mib_byte_exact` 100 MiB suite test runs green on the single-parse path — ~2.86M documents /
+  ~8.6M byte-exact definitions (release); `grammar_stability_test` pins the unchanged node kinds plus
+  clean parses of 40 000-line single- and multi-document sources; the full 13-format 100 MiB suite
+  passes 13/13.
 - **`tldr explain --depth` actually scopes the project-callers traversal now.** It was declared in
   `--help` but ignored — the graph walk used a hard-coded depth 1, so `--depth 3` silently behaved
   like `--depth 1`.
