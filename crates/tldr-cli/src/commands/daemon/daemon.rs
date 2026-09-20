@@ -2026,6 +2026,17 @@ impl TLDRDaemon {
         // these entries were registered with an empty dependency list, were
         // unreachable from the dependents index, and were served stale
         // forever.
+        //
+        // Measured 2026-09 (reports/perf-decisions.md): the cost this
+        // conservatism imposes on the next project-wide query after a
+        // single-file edit is one full parallel rebuild — on a 2000-file /
+        // ~80k-symbol corpus: cold build 1.31 s, rebuild-after-edit median
+        // 1.22 s (n=5), hit path 54–74 ms, direct `tldr calls` 0.69–0.92 s;
+        // worst observed under ~1.8x CPU oversubscription: median 2.20 s,
+        // single worst re-query 3.73 s. Decision rule was ≤ 5 s →
+        // conservative-never-stale stays; surgical per-file invalidation
+        // (FileIR-reuse variant) is NOT scheduled. Revisit if a
+        // representative corpus pushes the rebuild median above 5 s.
         for root_hash in project_input_hashes(&self.project, &self.project) {
             self.cache.invalidate_by_input(root_hash);
         }
