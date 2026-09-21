@@ -1,6 +1,6 @@
 # tldr
 
-Token-efficient code analysis for LLMs. 40+ commands across AST, call graph, data flow, security, and quality — output optimized for machine consumption.
+Token-efficient code analysis for LLMs. 66 commands (63 in a default build, 3 behind the `semantic` feature) across AST, call graph, data flow, security, and quality — output optimized for machine consumption.
 
 ## Why
 
@@ -15,6 +15,11 @@ Formats and documents are first-class targets too:
 - **`tldr logs`** — filter log entries by `--from`/`--to` timestamp window, `--level`, and `--grep`
 - **OOXML containers** — `docx`, `xlsx`, `pptx` structure from their main XML part (a container, not a language)
 - **Extensionless text targets** — `Makefile`, `LICENSE`, `.bashrc` join structure, imports, and the reference graph via content sniffing
+- **Depth navigation** — `tldr structure --max-depth N` narrows the markup node tree to the first N nesting levels; text mode renders it tree-indented
+- **Virtual documents** — inline `<script>`/`<style>` bodies and SVG `<foreignObject>` HTML are indexed as `#script-N`/`#style-N`/`#fo-N` containers whose outbound references join the host's blast radius
+- **SQL schema scanner** — `.sql`/`.ddl` DDL structure (tables, views, functions, triggers) plus `REFERENCES` foreign-key edges in the reference graph
+- **`.env` and ignore files** — `.env*`, `*.env`, `.gitignore` and friends report their own structure
+- **`tldr daemon log`** — the daemon writes a persistent JSONL request log (`.tldr/cache/daemon.log`), readable with `--tail`/`--event`/`--command` filters
 
 ## Installation
 
@@ -25,7 +30,7 @@ cargo install tldr-cli                    # crates.io release
 cargo install --path crates/tldr-cli      # this checkout, from the repo root
 ```
 
-This gives you 60+ analysis commands — everything except natural-language semantic search.
+This gives you 63 analysis commands — everything except natural-language semantic search.
 
 ### With semantic search
 
@@ -109,6 +114,7 @@ tldr health src/
 | `extract` | Complete module info |
 | `imports` | Parse import statements |
 | `importers` | Find files importing a module |
+| `logs` | Filter log entries by `--from`/`--to`, `--level`, `--grep` |
 
 ### Call Graph (L2)
 | Command | Description |
@@ -118,6 +124,8 @@ tldr health src/
 | `dead` | Dead code detection |
 | `hubs` | Hub functions (centrality analysis) |
 | `whatbreaks` | What breaks if target changes? |
+| `references` | All references to a symbol |
+| `deps` | Module dependency analysis (import-level) |
 
 ### Data Flow (L3-L4)
 | Command | Description |
@@ -131,6 +139,7 @@ tldr health src/
 |---------|-------------|
 | `slice` | Backward program slice |
 | `chop` | Chop slice (forward + backward intersection) |
+| `body` | Byte-faithful source of a function body or line range |
 | `taint` | Taint flow analysis |
 
 ### Security
@@ -157,6 +166,7 @@ tldr health src/
 | `clones` | Code clone detection |
 | `cohesion` | LCOM4 cohesion |
 | `coupling` | Afferent/efferent coupling |
+| `coverage` | Parse coverage reports (Cobertura XML, LCOV, coverage.py JSON) |
 
 ### Patterns & Architecture
 | Command | Description |
@@ -173,6 +183,14 @@ tldr health src/
 | `invariants` | Infer invariants from tests |
 | `verify` | Verification dashboard |
 | `interface` | Interface contracts |
+| `order` | Use-before-define / TDZ hazards (JS/TS/Python) |
+| `temporal` | Mine temporal constraints (call sequences) |
+
+### Diagnostics & tooling
+| Command | Description |
+|---------|-------------|
+| `diagnostics` | Type checking + linting |
+| `doctor` | Check / install diagnostic tools |
 
 ### Search & Context
 | Command | Description |
@@ -180,6 +198,8 @@ tldr health src/
 | `search` | BM25 search with structural context |
 | `semantic` | Natural language code search * |
 | `similar` | Find similar code fragments * |
+| `embed` | Generate embeddings for code chunks * |
+| `dice` | Similarity between two code fragments |
 | `context` | LLM-ready context from entry point |
 | `definition` | Go-to-definition |
 | `explain` | Comprehensive function analysis |
@@ -193,6 +213,7 @@ tldr health src/
 | `diff` | AST-aware structural diff |
 | `fix` | Diagnose and auto-fix errors |
 | `bugbot` | Automated bug detection on changes |
+| `change-impact` | Find tests affected by code changes |
 
 ## Output formats
 
@@ -214,6 +235,14 @@ tldr warm src/          # Pre-warm cache
 tldr calls src/         # Fast — cache hit
 tldr daemon stop
 ```
+
+| Command | Description |
+|---------|-------------|
+| `daemon start` / `stop` / `status` | Manage the in-memory daemon |
+| `daemon log` | Read the daemon's persistent JSONL request log |
+| `cache stats` / `cache clear` | Cache statistics and clearing |
+| `warm` | Pre-warm the caches |
+| `stats` | Usage statistics |
 
 ## Documentation
 

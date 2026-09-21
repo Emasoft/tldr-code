@@ -365,256 +365,6 @@
     budget, so no truncation, no warning, and their expectations are
     unchanged.
 
-### Fixed
-
-- **The bugbot timeout watchdog can no longer kill an unrelated process via a stale/recycled
-  PID** (watchdog-kill-identity-guard-v1, `commands/bugbot/kill_guard.rs` + both watchdog sites
-  (`runner.rs`, `l2/engines/tldr_differential.rs`), issue #55). The watchdogs signalled the
-  child by bare PID after the timeout. `runner.rs` already polled a `done` flag (closing the
-  seconds-wide window from a watchdog that slept the FULL timeout after an early child exit),
-  but a reuse window remained: the child may be reaped between the watchdog's final poll and
-  the kill, and the kernel may hand the PID to an unrelated process — a late SIGKILL would
-  then destroy that innocent process. `tldr_differential.rs` still slept the full timeout and
-  killed a bare PID with no cancellation at all. Both watchdogs now verify PID OWNERSHIP
-  before every kill: the child's process start-time ("birth time") is captured immediately
-  after spawn — while the child is still OUR unreaped child, so the kernel holds the PID and
-  the snapshot cannot belong to a recycled occupant — and the watchdog signals the PID only
-  if the current occupant carries the SAME birth time. Mismatched birth time (recycled PID)
-  → no kill; no readable process → nothing to kill; reader present but baseline missing →
-  fail closed (no kill); platform with no reader (Windows) → legacy unverified kill preserved
-  and documented. The guard only ever signals the single verified PID, never a process group.
-  A skipped kill still reports the timeout, as before. Start-time sources use std + the
-  already-vendored `libc` (no new deps): `proc_pidinfo(PROC_PIDTBSDINFO)` on macOS
-  (microsecond birth time), `/proc/<pid>/stat` field 22 on Linux (parsed after `comm`, which
-  may contain spaces/parens). Pinned by unit tests in `kill_guard.rs` (decision function:
-  mismatch → skip, match → kill, vanished → skip, unverifiable → fail closed, unsupported
-  platform → legacy kill; hazard shape: a stale record against a LIVE non-child process is
-  refused and the process is left running; end-to-end: a fresh child's identity verifies and
-  the guarded kill terminates it; readers see the test's own process; the Linux `stat` parser
-  survives `comm` fields with spaces/parentheses).
-- **`tldr cache clear` no longer leaves the cache "magically restored" when a daemon is
-  running** (cache-clear-shutdown-race-v1, `commands/daemon/cache_clear.rs`, issue #62).
-  `cache clear` sent `Shutdown` fire-and-forget and deleted the cache files immediately, but
-  the daemon ACKs `Shutdown` BEFORE its event loop breaks — its shutdown path then called
-  `persist_stats()`, which re-creates `.tldr/cache/` and re-writes `salsa_stats.json` +
-  `query_cache.bin` AFTER the delete, so the user asked for an empty cache and got a
-  re-populated one. `cache clear` now performs the same graceful shutdown `daemon stop` does:
-  send `Shutdown`, then poll `check_socket_alive()` (bounded 5s budget) and only delete once
-  the daemon has actually exited — the wait covers the full `run()` teardown including the
-  late persist, because the socket stops connecting only when the daemon's listener is
-  dropped, after `persist_stats()`. It also cleans up the stopped daemon's records (socket
-  file, PID file, legacy discovery record, registry entry), exactly like `daemon stop`.
-  **Semantics change (documented in `--help`): when a daemon is running for the project,
-  `cache clear` stops it and LEAVES IT STOPPED — restart with `tldr daemon start`.** When no
-  daemon is running, behaviour is unchanged and the no-daemon path stays zero-latency (the
-  wait only happens when the shutdown was actually delivered). Pinned by unit tests in
-  `cache_clear.rs` (clear-with-running-daemon leaves the cache dir empty and the daemon
-  joined; clear-without-daemon removes files and they never reappear).
-- **`tldr importers` rewrites an ABSOLUTE doc-file module string to its project-root-relative
-  spelling** (doc-target-importers-v1 absolute-path ergonomics). When the module string names an
-  EXISTING file that resolves to a DOC language, it is now rewritten to the file's
-  project-root-relative path WITH its extension — the same `root_relative_path` derivation
-  (`analysis/whatbreaks.rs`, now `pub`) whatbreaks uses, so the two commands agree byte-for-byte on
-  the module string for the same target. The point: documents reference each other by
-  ROOT-RELATIVE path (`[B](b.md)`, `[Guide](docs/guide.md)`), and an absolute user input
-  (`tldr importers /repo/docs/b.md <root>`) can never match one verbatim — it silently reported
-  `total: 0` with the language resolved correctly. Root-relative inputs round-trip unchanged;
-  nested absolute inputs strip to `docs/guide.md`; code-language module strings are NEVER
-  rewritten (dotted-module queries like `lib.py` stay queries for the dotted name, and
-  `std::collections::HashMap` keeps its legacy non-file path). Pinned by `doc_target_commands_v1.rs`
-  (absolute `b.md` finds a.md; nested absolute `docs/guide.md` finds the README; the
-  code-language control stays verbatim).
-- **HTML/SVG `<style>` bodies now emit their CSS** (style-inner-css-v1, `ast::elements`). The CSS
-  walker also runs on the body of an HTML `style_element` (its `raw_text` child) and of an
-  XML/SVG `<style>` element (the `CharData` child of its `content` — and the `CData` node inside
-  the `CDSect` wrapper for CDATA-wrapped bodies; node shapes verified empirically against the
-  wired tree-sitter-html 0.23.2 / tree-sitter-xml 0.7.0 grammars). The inner CSS parse (via
-  `PARSER_POOL`) emits the same `selector`/`at-rule` rows a standalone `.css` file would —
-  nested at-rule rules included — with spans RE-BASED onto FULL-file coordinates: bytes shift by
-  the body's file offset and lines by the newline count before it, so
-  `full_source[byte_start..byte_end]` is the exact selector/at-rule text and the line numbers are
-  the file's (mid-file `<style>` tags included). Guards: a whitespace-only body emits nothing; a
-  failed inner parse keeps the element definition (the walk can only add rows, never crash);
-  `<script>` inner JS is a documented FUTURE — no code-language walker runs inside embedded
-  scripts. Pinned by `element_extraction_v1.rs` (html multi-line style with at-rule + nested
-  selector, svg CharData and CDATA bodies, byte slice-back against the full source, the
-  whitespace/script guards) and updated exact-sequence pins.
-- **`.env` and ignore files report their own structure** (dotfiles-v1, `ast::dotfiles`). These
-  files are plain text with no tree-sitter grammar worth running — their structure IS the line —
-  but they are extensionless (sniffed Text), so the TOC scanner's heading rules either found
-  nothing or fabricated headings from them. `is_env_path` (matched on FILE NAME) accepts `.env`
-  exactly, the `.env.` prefix family (`.env.local`, `.env.production`, …) and the `*.env` suffix
-  family (`dev.env`); `parse_env_file` emits `kind: "env"` per non-comment, non-empty `KEY=` line —
-  an optional `export ` prefix is stripped, the name is the KEY (non-empty, no whitespace — a
-  prose line with an `=` is not an assignment), the value is NOT stored as data but surfaces as
-  the one-line signature truncated to 80 chars. `is_ignore_path` accepts the closed set
-  `.gitignore`/`.dockerignore`/`.npmignore`/`.eslintignore`/`.prettierignore`/`.ignore`;
-  `parse_ignore_file` emits `kind: "pattern"` per non-comment non-empty line, name = the pattern
-  text (trimmed, 80-char bound), signature empty. Line spans follow the `ast::toc` convention
-  (1-indexed inclusive lines, byte spans exclude the `\n`/`\r\n` terminator, `definition_line` =
-  the line). Both run in the extractor's Text early-return BEFORE the TOC scan; every other text
-  file keeps the TOC heuristic, and a shebang `.bashrc` still resolves to Bash (the sniff ladder
-  outranks the file-name checks). The Text reference scanner (path-shaped env VALUES, ignore
-  patterns) is deliberately left to `ast::doclinks`. Pinned by unit tests in `ast::dotfiles` and
-  the new `crates/tldr-cli/tests/dotfiles_v1.rs` (structure kinds for `.env`/`.env.local`/
-  `dev.env`/`.gitignore`/`.dockerignore`, path-value import edges, non-member `rates.txt` keeping
-  the TOC heuristic, the `.bashrc` Bash regression).
-- **A text file under an UNKNOWN extension now resolves as a Text target** (unknown-ext-text-v1,
-  `validation.rs`). `resolve_target_language` returned `Ok(None)` for an existing text file whose
-  extension is in no bucket (`.sql`, `.xyz`, …), which let the structure command fall through to
-  the PARENT DIRECTORY's dominant language — `tldr structure schema.sql` beside a `lib.rs`
-  reported "rust"; in an isolated directory it errored "Could not detect language". The
-  unknown-extension branch now returns `Some(Text)` for text bytes (the extensionless rule
-  extended to unknown extensions), so single-file structure/imports report `language: "text"` with
-  the TOC/paths scans (and `.env`/ignore files route into the dotfiles scanners above). Binary
-  bytes still produce the structured "binary file" error and a MISSING unknown-extension path
-  still keeps the historical "Could not detect language" error verbatim. This is TARGET resolution
-  only: directory scans remain extension-list-driven (`from_path` stays `None` for `.sql`/`.xyz`),
-  so scan behavior is unchanged. Pinned by `validation.rs` unit tests and
-  `extensionless_targets_v1.rs` (`.sql` in an isolated dir AND beside a `lib.rs`, `.xyz`
-  structure/imports).
-- **`tldr importers <doc-file> <root>` without `--lang` no longer silently reports `total: 0` on
-  doc-only projects** (doc-target-importers-v1). Language resolution was `--lang` else
-  `Language::from_directory(path)` else Python — but `from_directory` skips every doc format via
-  `is_project_language_signal`, so a project with only `.md`/`.html`/… files had NO project-language
-  signal, fell through to Python, and `find_importers` walked only `.py` files: `tldr importers
-  b.md <root>` (the module string names the file `b.md`) reported an honest-looking zero even though
-  `a.md` links it, while the SAME query with `--lang markdown` found the linker. The resolution order
-  is now: (1) `--lang` — unchanged override; (2) a module string that LOOKS path-shaped (contains a
-  separator or a dot) AND names an EXISTING file (resolved relative to the path argument, else CWD)
-  resolves through the ONE shared single-file helper `resolve_target_language` — doc language → use
-  it, code language → use it (per-file truth beats directory dominance, so `importers lib.py
-  <ts-project>` still resolves Python); (3) everything else keeps the legacy fallback byte-identical:
-  non-file module strings (`std::collections::HashMap`, `myapp.service`, `utils`), `Ok(None)` targets
-  (missing path, directory, OOXML container) and binary files all keep the directory autodetect with
-  the Python last resort. (Superseded by the follow-up bullet above: an existing DOC file's module
-  string is now root-relative-rewritten; unknown-extension text targets now resolve to Text instead
-  of `Ok(None)`.) Pinned by `doc_target_commands_v1.rs` (relative doc file without `--lang` — the
-  banner prints the resolved language — plus the `std::collections::HashMap`/`service` legacy pins
-  and the absolute-code-file control).
-- **`tldr whatbreaks` on a FILE target now resolves the language from the target file, derives the
-  module from the PROJECT-ROOT-RELATIVE path, and scopes the walk to the file's project root**
-  (doc-target-whatbreaks-v1). Three gaps, one symptom (silent `count: 0` or a >60 s walk):
-  1. *Language.* File-mode used `from_directory(project).unwrap_or(Python)` — on a doc-only project
-     that is Python, so `tldr whatbreaks <root>/b.md <root>` without `--lang` reported count 0 while
-     `--lang markdown` reported 1. A File target that exists on disk now resolves through the shared
-     `resolve_target_language`; `Ok(None)`/binary/non-existent targets keep the legacy directory
-     autodetect. The `--lang` override stays first.
-  2. *Module derivation.* `derive_module_name` split the RAW target on `/`, so an ABSOLUTE path like
-     `/tmp/proj/b.md` became the leading-dot garbage `.tmp.proj.b.md` and `find_importers` matched
-     nothing even with the right language (affected code files too: `/abs/src/service.py` →
-     `.abs.src.service`). The target is now made root-relative first (canonicalize both sides,
-     `strip_prefix`, error-tolerant lexical fallbacks — absolute and relative spellings of the same
-     file produce IDENTICAL module strings), then: doc language → the root-relative path WITH its
-     extension (`b.md`, `docs/x.md` — document languages reference each other by path); code
-     language → the legacy dotted-module logic on the relative path (`src/service.py` → `src.service`
-     — unchanged for inputs that were already root-relative). Detection also accepts the doc/config
-     extensions (`.md`, `.json`, `.yaml`, `.toml`, `.sh`, …) for NOT-YET-ON-DISK targets so
-     `whatbreaks newdoc.md` is detected as File instead of a qualified function name — the existing
-     file check stays first.
-  3. *Root scoping.* The CLI walked the `path` argument (default CWD) no matter where the target
-     lived: a file target run from a big repository walked the whole tree before first output
-     (>60 s, killed by timeout). A target that names an existing file now scopes the analysis to the
-     file's marker-based project root (`explain_project_root_marker`, the same walk-up
-     `explain`/`impact` use); with no project marker in any ancestor the legacy `path`-argument walk
-     is kept, so marker-less projects behave exactly as before.
-  Pinned by `doc_target_commands_v1.rs` (doc file without `--lang` count 1 with a.md; relative +
-  absolute target spellings; `--lang` override control; doc-extension detection; absolute code file
-  deriving `service` / nested `src.service`; the marker-root scoping probe run from the repo root)
-  and three tldr-core lib tests for the derivation contract.
-- **`tldr references <symbol> <path> --lang <doc-language>` no longer silently searches ZERO files.**
-  The language filter in `analysis/references.rs::is_source_file` enumerated only the 18 code
-  languages in its per-language arms, so every doc/native filter — `--lang markdown`, `--lang text`,
-  `--lang csv`, `--lang json`, … — fell into the `_ => false` arm: the walk filtered out every file,
-  reported `files_searched: 0`, `total_references: 0`, and exited 0 with no hint anything was wrong,
-  even though the SAME query without `--lang` found the matches (the no-filter arm accepts every
-  recognized file). The filter is now ENUMERATED across all 31 `Language` variants: the 18 code arms
-  keep their exact semantics (including JavaScript still accepting TypeScript files), and the 13
-  doc/native formats (Markdown, Text, Log, Csv, Tsv, Json, Yaml, Toml, Xml, Html, Css, Bash, Latex)
-  accept exactly the files DETECTED as the requested format — the same set the no-filter path already
-  scanned. Deliberately NOT accept-all: an unrecognized filter string keeps returning `false` so a
-  typo (the library API `ReferencesOptions.language` is a plain `Option<String>`; the CLI validates
-  through `Language::FromStr`) can never silently widen the search to every file. Pinned by
-  `references_doc_languages_v1.rs` (markdown across two files, text, csv, cross-format strictness,
-  no-filter regression control).
-- **`tldr body <file> <name>` resolves ELEMENT names (and Bash functions), not just function-kind
-  AST nodes.** Two gaps, one symptom ("Function 'say_hi' not found" / "Function 'Setup' not found"):
-  1. *Bash function kinds.* `function_finder::get_function_node_kinds` listed Bash in the
-     "no function nodes" formats block even though bash HAS real functions — tree-sitter-bash
-     0.23.3's `function_definition` is a region-bearing node with a required `name` field (type
-     `word`, covering both `build() { … }` and `function build { … }`) and a required `body` field,
-     and name/body extraction already rides the generic `name`/`body` field arms. Bash now resolves
-     through the FUNCTION path (same bounds as `structure`/`chop`, trailing newline included), pinned
-     by three tldr-core lib tests.
-  2. *Element-definition fallback.* `body` now falls back to the structure extractor's definition
-     table (the same `files[].definitions` array `tldr structure` reports) when the function-kind
-     search finds nothing: markdown headings, CSS selectors, JSON/YAML/TOML keys, TOML sections, CSV
-     records/cells, log entries, text headings, LaTeX sections, OOXML parts, classes, constants and
-     fields are all real, region-bearing definitions that are not functions. Extraction is
-     byte-first — definitions that carry `byte_start`/`byte_end` (all the format producers) are
-     sliced byte-faithfully (`source[byte_start..byte_end]` IS the element: a nested JSON key's body
-     starts mid-line at the quote); definitions with only a line span (code-language definitions keep
-     byte spans `None`) use the same line machinery as the function path minus the trailing newline —
-     an element region is the element itself. The name matches exactly (case-sensitive); when several
-     definitions share the name (same-named JSON keys at different depths, a CSV header cell vs a
-     record), the FIRST in source order wins — every definition producer emits pre-order, so vec
-     order IS source order (documented in `ast::elements`; the body envelope has no notes field, so
-     the rule lives in the code docs and here). The JSON envelope fills `function` with the requested
-     name and `line_start`/`line_end` from the definition; the not-found error shape is unchanged;
-     `--from/--to` behavior is untouched. Pinned by `body_elements_v1.rs` (11 tests: markdown
-     heading, css selector, csv record, json key first-match, log entry, text heading, python class
-     line-path, bash function, decorated-python-function fidelity control, text-mode verbatim bytes,
-     not-found error shape).
-- **Large `.yaml` files no longer silently extract ZERO definitions — and the fix now lives IN the
-  grammar, not around it.** Root cause found and pinned empirically: tree-sitter-yaml's external
-  scanner tracks the current source row in **`int16_t`** (`scanner.c:136/147` in the published 0.7.0
-  crate; incremented per newline at `:217/:230`), and the first token on source **row 32768
-  (0-indexed) = 2^15** overflows it negative — `has_nwl = cur_row > row` (scanner.c:889) flips false,
-  every block-structure decision after that is wrong, and the parser's error recovery swallows the
-  entire remaining file into one root `ERROR` node. The threshold is the LINE index, shape-independent:
-  a 241 351-byte / 32 768-line stream parses clean while 32 769 lines abort; a single mapping parses
-  clean through 32 767 keys and aborts at 32 768; byte counts at the break differ 3x between the two
-  shapes, so it was never a size or node-count limit (the old defect pin's "~65k nodes" was a numeric
-  coincidence — the aborted tree happened to hold ~65.5k named nodes). Any `.yaml` over ~250 KB
-  reported `files_skipped == 0`, empty definitions, no warning. Two engine-side workarounds shipped in
-  the meantime — `ast::yaml_chunk` (yaml-chunk-v1: document-aligned splitting at column-0 `---` over a
-  512 KiB threshold) and `ast::yaml_native` (yaml-native-outline-v1: a column-0 key outline replacing
-  un-splittable single documents' aborted parses) — and both are **DELETED now** (V-YAML, 2026-09):
-  the grammar is **vendored** at `vendor/tree-sitter-yaml`, upstream tree-sitter-yaml 0.7.0 verbatim
-  (`parser.c`, `schema.*.c`, headers byte-identical; node kinds unchanged) plus a **31-line int32
-  patch** to `scanner.c` that widens the scanner's row/col counters (`row`, `col`, `blk_imp_*`,
-  `end_*`, `cur_*`, the `bgn_row`/`bgn_col` locals) and their serialize/deserialize form to `int32_t`
-  — behavior below the old threshold is byte-identical, one whole-file parse works at any size up to
-  the tree-sitter u32 ceiling. Upstream issue #49
-  ([tree-sitter-grammars/tree-sitter-yaml#49](https://github.com/tree-sitter-grammars/tree-sitter-yaml/issues/49))
-  is still open and no crates.io fork fixes it (0.7.2 verified still `int16_t`); the vendored crate's
-  README documents provenance, the patch and the re-vendor steps for the day upstream ships a fixed
-  release. What full fidelity means:
-  - yaml parses like every other format — ONE whole-file parse; no chunk threshold, no splitter, no
-    outline, no yaml-specific warnings anywhere;
-  - single documents past 32 768 lines are full-fidelity for the first time: `tldr structure` emits
-    the `document-1` element plus every mapping key at EVERY nesting depth (the yaml element walker
-    now recurses into nested mappings, the JSON/TOML walker convention) where the native outline
-    yielded only column-0 keys and no document element;
-  - `tldr imports` scans the one whole-file tree for `$ref`/`extends` links (the re-parse-and-
-    concatenate chunk merge is gone).
-  Proof: `yaml_vendored_grammar_v1` pins a 40 200-line single document extracting 40 201 full-fidelity
-  definitions through the real grammar (nested keys included, byte-exact spans, no warnings); the
-  `yaml_100mib_byte_exact` 100 MiB suite test runs green on the single-parse path — ~2.86M documents /
-  ~8.6M byte-exact definitions (release); `grammar_stability_test` pins the unchanged node kinds plus
-  clean parses of 40 000-line single- and multi-document sources; the full 13-format 100 MiB suite
-  passes 13/13.
-- **`tldr explain --depth` actually scopes the project-callers traversal now.** It was declared in
-  `--help` but ignored — the graph walk used a hard-coded depth 1, so `--depth 3` silently behaved
-  like `--depth 1`.
-- **`tldr explain` scoping flags.** `--scope <dir>` overrides project-root detection
-  (existence-checked, fails fast on a bad path) and `--no-callers` skips caller enrichment
-  entirely — the escape hatch when a ~0.1 s single-file explain balloons to minutes on a huge
-  repo or vendor tree. Under `--no-callers` the `callers` array stays present but empty, so
-  schema consumers don't break.
-
-### Added
-
 - **CSV/TSV support via a native RFC 4180 scanner.** `.csv`/`.tsv` files join the supported formats as
   languages 30/31 (`Language::Csv`/`Language::Tsv`, signal=false like every other format — a directory of
   data exports must never outvote source code). The usual tree-sitter route was evaluated and REJECTED
@@ -968,8 +718,396 @@
   generator. Opt-in, sequential (`--test-threads=1` is load-bearing — one fixture's peak RAM at a
   time): `timeout 3600 cargo test -p tldr-core --test large_file_accuracy_v1 --release -- --ignored --test-threads=1`
   (default `cargo test` runs must stay `31 ignored; 0 failed`). All thirty-one run green; the yaml
-  test runs on the document-aligned chunk parsing that fixed the tree-sitter-yaml int16 row
-  overflow the formats tranche originally discovered.
+  test runs on the vendored, int32-patched tree-sitter-yaml grammar — ONE whole-file parse at any
+  size; the document-aligned chunk parsing this bullet originally described was DELETED when the
+  grammar was vendored (see the yaml bullet under Fixed).
+
+- **`tldr body`: byte-faithful contiguous source reader** (issue #8,
+  `crates/tldr-cli/src/commands/body.rs`). Slice/chop answer "which lines influence this one" but
+  reorder, dedupe and window the result; when the VERBATIM source is the deliverable — quoting it,
+  editing it, diffing it — `tldr body <file> <function>` prints the exact contiguous source of a
+  function body, and `tldr body <file> --from N --to M` prints an exact line range. Byte-faithful:
+  CRLF/BOM/whitespace preserved, no re-indentation — safe to read or reconstruct from. Extended
+  under Fixed: element names (markdown headings, CSS selectors, JSON keys, …) and Bash functions
+  resolve too.
+
+- **`tldr order`: use-before-define / TDZ hazards** (issue #8,
+  `crates/tldr-cli/src/commands/order.rs`). One file in, one hazard report out: reads that reach a
+  binding before its definition line — the temporal-dead-zone class in JS/TS, use-before-assignment
+  in Python — computed from definition line ranges rather than name heuristics. MVP languages:
+  JavaScript, TypeScript, Python.
+
+- **`tldr search` exact-token match windows, ranking tiers and `match_type`** (issue #9,
+  `crates/tldr-core/src/search/bm25.rs` + `search/enriched.rs`). Every whole-token occurrence
+  cluster now surfaces as its own match window (`line_start`/`line_end` are the MATCHED-CORE lines;
+  context lines stay in the snippet but out of the bounds) instead of one decoy-prone window per
+  document; each result carries a `match_type` label (`exact` = whole-token window, `substring` =
+  substring-only), exact windows rank ABOVE substring-only windows regardless of document score
+  (stable sort keeps document-score and line order inside each tier), and substring-only windows
+  are emitted only when a document has no exact window at all.
+
+- **`tldr warm` precomputes per-file query keys; the daemon loads the persisted cache** (issue #7,
+  `commands/daemon/daemon.rs` + `warm.rs`). Warming through a running daemon now pre-registers the
+  per-file extract/imports/structure/cfg/dfg slots alongside the call-graph/structure/tree sweeps,
+  and the daemon loads the previously persisted query cache at startup instead of starting cold;
+  the cache-stats filename is corrected. `warm --background` starts the daemon when none is
+  running and hands the warming to it — query-result caches live in the daemon process, so the
+  CLI cannot fill them from outside (the progress note now says so instead of pretending).
+
+### Fixed
+
+- **The bugbot timeout watchdog can no longer kill an unrelated process via a stale/recycled
+  PID** (watchdog-kill-identity-guard-v1, `commands/bugbot/kill_guard.rs` + both watchdog sites
+  (`runner.rs`, `l2/engines/tldr_differential.rs`), issue #55). The watchdogs signalled the
+  child by bare PID after the timeout. `runner.rs` already polled a `done` flag (closing the
+  seconds-wide window from a watchdog that slept the FULL timeout after an early child exit),
+  but a reuse window remained: the child may be reaped between the watchdog's final poll and
+  the kill, and the kernel may hand the PID to an unrelated process — a late SIGKILL would
+  then destroy that innocent process. `tldr_differential.rs` still slept the full timeout and
+  killed a bare PID with no cancellation at all. Both watchdogs now verify PID OWNERSHIP
+  before every kill: the child's process start-time ("birth time") is captured immediately
+  after spawn — while the child is still OUR unreaped child, so the kernel holds the PID and
+  the snapshot cannot belong to a recycled occupant — and the watchdog signals the PID only
+  if the current occupant carries the SAME birth time. Mismatched birth time (recycled PID)
+  → no kill; no readable process → nothing to kill; reader present but baseline missing →
+  fail closed (no kill); platform with no reader (Windows) → legacy unverified kill preserved
+  and documented. The guard only ever signals the single verified PID, never a process group.
+  A skipped kill still reports the timeout, as before. Start-time sources use std + the
+  already-vendored `libc` (no new deps): `proc_pidinfo(PROC_PIDTBSDINFO)` on macOS
+  (microsecond birth time), `/proc/<pid>/stat` field 22 on Linux (parsed after `comm`, which
+  may contain spaces/parens). Pinned by unit tests in `kill_guard.rs` (decision function:
+  mismatch → skip, match → kill, vanished → skip, unverifiable → fail closed, unsupported
+  platform → legacy kill; hazard shape: a stale record against a LIVE non-child process is
+  refused and the process is left running; end-to-end: a fresh child's identity verifies and
+  the guarded kill terminates it; readers see the test's own process; the Linux `stat` parser
+  survives `comm` fields with spaces/parentheses).
+- **`tldr cache clear` no longer leaves the cache "magically restored" when a daemon is
+  running** (cache-clear-shutdown-race-v1, `commands/daemon/cache_clear.rs`, issue #62).
+  `cache clear` sent `Shutdown` fire-and-forget and deleted the cache files immediately, but
+  the daemon ACKs `Shutdown` BEFORE its event loop breaks — its shutdown path then called
+  `persist_stats()`, which re-creates `.tldr/cache/` and re-writes `salsa_stats.json` +
+  `query_cache.bin` AFTER the delete, so the user asked for an empty cache and got a
+  re-populated one. `cache clear` now performs the same graceful shutdown `daemon stop` does:
+  send `Shutdown`, then poll `check_socket_alive()` (bounded 5s budget) and only delete once
+  the daemon has actually exited — the wait covers the full `run()` teardown including the
+  late persist, because the socket stops connecting only when the daemon's listener is
+  dropped, after `persist_stats()`. It also cleans up the stopped daemon's records (socket
+  file, PID file, legacy discovery record, registry entry), exactly like `daemon stop`.
+  **Semantics change (documented in `--help`): when a daemon is running for the project,
+  `cache clear` stops it and LEAVES IT STOPPED — restart with `tldr daemon start`.** When no
+  daemon is running, behaviour is unchanged and the no-daemon path stays zero-latency (the
+  wait only happens when the shutdown was actually delivered). Pinned by unit tests in
+  `cache_clear.rs` (clear-with-running-daemon leaves the cache dir empty and the daemon
+  joined; clear-without-daemon removes files and they never reappear).
+- **`tldr importers` rewrites an ABSOLUTE doc-file module string to its project-root-relative
+  spelling** (doc-target-importers-v1 absolute-path ergonomics). When the module string names an
+  EXISTING file that resolves to a DOC language, it is now rewritten to the file's
+  project-root-relative path WITH its extension — the same `root_relative_path` derivation
+  (`analysis/whatbreaks.rs`, now `pub`) whatbreaks uses, so the two commands agree byte-for-byte on
+  the module string for the same target. The point: documents reference each other by
+  ROOT-RELATIVE path (`[B](b.md)`, `[Guide](docs/guide.md)`), and an absolute user input
+  (`tldr importers /repo/docs/b.md <root>`) can never match one verbatim — it silently reported
+  `total: 0` with the language resolved correctly. Root-relative inputs round-trip unchanged;
+  nested absolute inputs strip to `docs/guide.md`; code-language module strings are NEVER
+  rewritten (dotted-module queries like `lib.py` stay queries for the dotted name, and
+  `std::collections::HashMap` keeps its legacy non-file path). Pinned by `doc_target_commands_v1.rs`
+  (absolute `b.md` finds a.md; nested absolute `docs/guide.md` finds the README; the
+  code-language control stays verbatim).
+- **HTML/SVG `<style>` bodies now emit their CSS** (style-inner-css-v1, `ast::elements`). The CSS
+  walker also runs on the body of an HTML `style_element` (its `raw_text` child) and of an
+  XML/SVG `<style>` element (the `CharData` child of its `content` — and the `CData` node inside
+  the `CDSect` wrapper for CDATA-wrapped bodies; node shapes verified empirically against the
+  wired tree-sitter-html 0.23.2 / tree-sitter-xml 0.7.0 grammars). The inner CSS parse (via
+  `PARSER_POOL`) emits the same `selector`/`at-rule` rows a standalone `.css` file would —
+  nested at-rule rules included — with spans RE-BASED onto FULL-file coordinates: bytes shift by
+  the body's file offset and lines by the newline count before it, so
+  `full_source[byte_start..byte_end]` is the exact selector/at-rule text and the line numbers are
+  the file's (mid-file `<style>` tags included). Guards: a whitespace-only body emits nothing; a
+  failed inner parse keeps the element definition (the walk can only add rows, never crash);
+  `<script>` inner JS is a documented FUTURE — no code-language walker runs inside embedded
+  scripts. Pinned by `element_extraction_v1.rs` (html multi-line style with at-rule + nested
+  selector, svg CharData and CDATA bodies, byte slice-back against the full source, the
+  whitespace/script guards) and updated exact-sequence pins.
+- **`.env` and ignore files report their own structure** (dotfiles-v1, `ast::dotfiles`). These
+  files are plain text with no tree-sitter grammar worth running — their structure IS the line —
+  but they are extensionless (sniffed Text), so the TOC scanner's heading rules either found
+  nothing or fabricated headings from them. `is_env_path` (matched on FILE NAME) accepts `.env`
+  exactly, the `.env.` prefix family (`.env.local`, `.env.production`, …) and the `*.env` suffix
+  family (`dev.env`); `parse_env_file` emits `kind: "env"` per non-comment, non-empty `KEY=` line —
+  an optional `export ` prefix is stripped, the name is the KEY (non-empty, no whitespace — a
+  prose line with an `=` is not an assignment), the value is NOT stored as data but surfaces as
+  the one-line signature truncated to 80 chars. `is_ignore_path` accepts the closed set
+  `.gitignore`/`.dockerignore`/`.npmignore`/`.eslintignore`/`.prettierignore`/`.ignore`;
+  `parse_ignore_file` emits `kind: "pattern"` per non-comment non-empty line, name = the pattern
+  text (trimmed, 80-char bound), signature empty. Line spans follow the `ast::toc` convention
+  (1-indexed inclusive lines, byte spans exclude the `\n`/`\r\n` terminator, `definition_line` =
+  the line). Both run in the extractor's Text early-return BEFORE the TOC scan; every other text
+  file keeps the TOC heuristic, and a shebang `.bashrc` still resolves to Bash (the sniff ladder
+  outranks the file-name checks). The Text reference scanner (path-shaped env VALUES, ignore
+  patterns) is deliberately left to `ast::doclinks`. Pinned by unit tests in `ast::dotfiles` and
+  the new `crates/tldr-cli/tests/dotfiles_v1.rs` (structure kinds for `.env`/`.env.local`/
+  `dev.env`/`.gitignore`/`.dockerignore`, path-value import edges, non-member `rates.txt` keeping
+  the TOC heuristic, the `.bashrc` Bash regression).
+- **A text file under an UNKNOWN extension now resolves as a Text target** (unknown-ext-text-v1,
+  `validation.rs`). `resolve_target_language` returned `Ok(None)` for an existing text file whose
+  extension is in no bucket (`.sql`, `.xyz`, …), which let the structure command fall through to
+  the PARENT DIRECTORY's dominant language — `tldr structure schema.sql` beside a `lib.rs`
+  reported "rust"; in an isolated directory it errored "Could not detect language". The
+  unknown-extension branch now returns `Some(Text)` for text bytes (the extensionless rule
+  extended to unknown extensions), so single-file structure/imports report `language: "text"` with
+  the TOC/paths scans (and `.env`/ignore files route into the dotfiles scanners above). Binary
+  bytes still produce the structured "binary file" error and a MISSING unknown-extension path
+  still keeps the historical "Could not detect language" error verbatim. This is TARGET resolution
+  only: directory scans remain extension-list-driven (`from_path` stays `None` for `.sql`/`.xyz`),
+  so scan behavior is unchanged. Pinned by `validation.rs` unit tests and
+  `extensionless_targets_v1.rs` (`.sql` in an isolated dir AND beside a `lib.rs`, `.xyz`
+  structure/imports).
+- **`tldr importers <doc-file> <root>` without `--lang` no longer silently reports `total: 0` on
+  doc-only projects** (doc-target-importers-v1). Language resolution was `--lang` else
+  `Language::from_directory(path)` else Python — but `from_directory` skips every doc format via
+  `is_project_language_signal`, so a project with only `.md`/`.html`/… files had NO project-language
+  signal, fell through to Python, and `find_importers` walked only `.py` files: `tldr importers
+  b.md <root>` (the module string names the file `b.md`) reported an honest-looking zero even though
+  `a.md` links it, while the SAME query with `--lang markdown` found the linker. The resolution order
+  is now: (1) `--lang` — unchanged override; (2) a module string that LOOKS path-shaped (contains a
+  separator or a dot) AND names an EXISTING file (resolved relative to the path argument, else CWD)
+  resolves through the ONE shared single-file helper `resolve_target_language` — doc language → use
+  it, code language → use it (per-file truth beats directory dominance, so `importers lib.py
+  <ts-project>` still resolves Python); (3) everything else keeps the legacy fallback byte-identical:
+  non-file module strings (`std::collections::HashMap`, `myapp.service`, `utils`), `Ok(None)` targets
+  (missing path, directory, OOXML container) and binary files all keep the directory autodetect with
+  the Python last resort. (Superseded by the follow-up bullet above: an existing DOC file's module
+  string is now root-relative-rewritten; unknown-extension text targets now resolve to Text instead
+  of `Ok(None)`.) Pinned by `doc_target_commands_v1.rs` (relative doc file without `--lang` — the
+  banner prints the resolved language — plus the `std::collections::HashMap`/`service` legacy pins
+  and the absolute-code-file control).
+- **`tldr whatbreaks` on a FILE target now resolves the language from the target file, derives the
+  module from the PROJECT-ROOT-RELATIVE path, and scopes the walk to the file's project root**
+  (doc-target-whatbreaks-v1). Three gaps, one symptom (silent `count: 0` or a >60 s walk):
+  1. *Language.* File-mode used `from_directory(project).unwrap_or(Python)` — on a doc-only project
+     that is Python, so `tldr whatbreaks <root>/b.md <root>` without `--lang` reported count 0 while
+     `--lang markdown` reported 1. A File target that exists on disk now resolves through the shared
+     `resolve_target_language`; `Ok(None)`/binary/non-existent targets keep the legacy directory
+     autodetect. The `--lang` override stays first.
+  2. *Module derivation.* `derive_module_name` split the RAW target on `/`, so an ABSOLUTE path like
+     `/tmp/proj/b.md` became the leading-dot garbage `.tmp.proj.b.md` and `find_importers` matched
+     nothing even with the right language (affected code files too: `/abs/src/service.py` →
+     `.abs.src.service`). The target is now made root-relative first (canonicalize both sides,
+     `strip_prefix`, error-tolerant lexical fallbacks — absolute and relative spellings of the same
+     file produce IDENTICAL module strings), then: doc language → the root-relative path WITH its
+     extension (`b.md`, `docs/x.md` — document languages reference each other by path); code
+     language → the legacy dotted-module logic on the relative path (`src/service.py` → `src.service`
+     — unchanged for inputs that were already root-relative). Detection also accepts the doc/config
+     extensions (`.md`, `.json`, `.yaml`, `.toml`, `.sh`, …) for NOT-YET-ON-DISK targets so
+     `whatbreaks newdoc.md` is detected as File instead of a qualified function name — the existing
+     file check stays first.
+  3. *Root scoping.* The CLI walked the `path` argument (default CWD) no matter where the target
+     lived: a file target run from a big repository walked the whole tree before first output
+     (>60 s, killed by timeout). A target that names an existing file now scopes the analysis to the
+     file's marker-based project root (`explain_project_root_marker`, the same walk-up
+     `explain`/`impact` use); with no project marker in any ancestor the legacy `path`-argument walk
+     is kept, so marker-less projects behave exactly as before.
+  Pinned by `doc_target_commands_v1.rs` (doc file without `--lang` count 1 with a.md; relative +
+  absolute target spellings; `--lang` override control; doc-extension detection; absolute code file
+  deriving `service` / nested `src.service`; the marker-root scoping probe run from the repo root)
+  and three tldr-core lib tests for the derivation contract.
+- **`tldr references <symbol> <path> --lang <doc-language>` no longer silently searches ZERO files.**
+  The language filter in `analysis/references.rs::is_source_file` enumerated only the 18 code
+  languages in its per-language arms, so every doc/native filter — `--lang markdown`, `--lang text`,
+  `--lang csv`, `--lang json`, … — fell into the `_ => false` arm: the walk filtered out every file,
+  reported `files_searched: 0`, `total_references: 0`, and exited 0 with no hint anything was wrong,
+  even though the SAME query without `--lang` found the matches (the no-filter arm accepts every
+  recognized file). The filter is now ENUMERATED across all 31 `Language` variants: the 18 code arms
+  keep their exact semantics (including JavaScript still accepting TypeScript files), and the 13
+  doc/native formats (Markdown, Text, Log, Csv, Tsv, Json, Yaml, Toml, Xml, Html, Css, Bash, Latex)
+  accept exactly the files DETECTED as the requested format — the same set the no-filter path already
+  scanned. Deliberately NOT accept-all: an unrecognized filter string keeps returning `false` so a
+  typo (the library API `ReferencesOptions.language` is a plain `Option<String>`; the CLI validates
+  through `Language::FromStr`) can never silently widen the search to every file. Pinned by
+  `references_doc_languages_v1.rs` (markdown across two files, text, csv, cross-format strictness,
+  no-filter regression control).
+- **`tldr body <file> <name>` resolves ELEMENT names (and Bash functions), not just function-kind
+  AST nodes.** Two gaps, one symptom ("Function 'say_hi' not found" / "Function 'Setup' not found"):
+  1. *Bash function kinds.* `function_finder::get_function_node_kinds` listed Bash in the
+     "no function nodes" formats block even though bash HAS real functions — tree-sitter-bash
+     0.23.3's `function_definition` is a region-bearing node with a required `name` field (type
+     `word`, covering both `build() { … }` and `function build { … }`) and a required `body` field,
+     and name/body extraction already rides the generic `name`/`body` field arms. Bash now resolves
+     through the FUNCTION path (same bounds as `structure`/`chop`, trailing newline included), pinned
+     by three tldr-core lib tests.
+  2. *Element-definition fallback.* `body` now falls back to the structure extractor's definition
+     table (the same `files[].definitions` array `tldr structure` reports) when the function-kind
+     search finds nothing: markdown headings, CSS selectors, JSON/YAML/TOML keys, TOML sections, CSV
+     records/cells, log entries, text headings, LaTeX sections, OOXML parts, classes, constants and
+     fields are all real, region-bearing definitions that are not functions. Extraction is
+     byte-first — definitions that carry `byte_start`/`byte_end` (all the format producers) are
+     sliced byte-faithfully (`source[byte_start..byte_end]` IS the element: a nested JSON key's body
+     starts mid-line at the quote); definitions with only a line span (code-language definitions keep
+     byte spans `None`) use the same line machinery as the function path minus the trailing newline —
+     an element region is the element itself. The name matches exactly (case-sensitive); when several
+     definitions share the name (same-named JSON keys at different depths, a CSV header cell vs a
+     record), the FIRST in source order wins — every definition producer emits pre-order, so vec
+     order IS source order (documented in `ast::elements`; the body envelope has no notes field, so
+     the rule lives in the code docs and here). The JSON envelope fills `function` with the requested
+     name and `line_start`/`line_end` from the definition; the not-found error shape is unchanged;
+     `--from/--to` behavior is untouched. Pinned by `body_elements_v1.rs` (11 tests: markdown
+     heading, css selector, csv record, json key first-match, log entry, text heading, python class
+     line-path, bash function, decorated-python-function fidelity control, text-mode verbatim bytes,
+     not-found error shape).
+- **Large `.yaml` files no longer silently extract ZERO definitions — and the fix now lives IN the
+  grammar, not around it.** Root cause found and pinned empirically: tree-sitter-yaml's external
+  scanner tracks the current source row in **`int16_t`** (`scanner.c:136/147` in the published 0.7.0
+  crate; incremented per newline at `:217/:230`), and the first token on source **row 32768
+  (0-indexed) = 2^15** overflows it negative — `has_nwl = cur_row > row` (scanner.c:889) flips false,
+  every block-structure decision after that is wrong, and the parser's error recovery swallows the
+  entire remaining file into one root `ERROR` node. The threshold is the LINE index, shape-independent:
+  a 241 351-byte / 32 768-line stream parses clean while 32 769 lines abort; a single mapping parses
+  clean through 32 767 keys and aborts at 32 768; byte counts at the break differ 3x between the two
+  shapes, so it was never a size or node-count limit (the old defect pin's "~65k nodes" was a numeric
+  coincidence — the aborted tree happened to hold ~65.5k named nodes). Any `.yaml` over ~250 KB
+  reported `files_skipped == 0`, empty definitions, no warning. Two engine-side workarounds shipped in
+  the meantime — `ast::yaml_chunk` (yaml-chunk-v1: document-aligned splitting at column-0 `---` over a
+  512 KiB threshold) and `ast::yaml_native` (yaml-native-outline-v1: a column-0 key outline replacing
+  un-splittable single documents' aborted parses) — and both are **DELETED now** (V-YAML, 2026-09):
+  the grammar is **vendored** at `vendor/tree-sitter-yaml`, upstream tree-sitter-yaml 0.7.0 verbatim
+  (`parser.c`, `schema.*.c`, headers byte-identical; node kinds unchanged) plus a **31-line int32
+  patch** to `scanner.c` that widens the scanner's row/col counters (`row`, `col`, `blk_imp_*`,
+  `end_*`, `cur_*`, the `bgn_row`/`bgn_col` locals) and their serialize/deserialize form to `int32_t`
+  — behavior below the old threshold is byte-identical, one whole-file parse works at any size up to
+  the tree-sitter u32 ceiling. Upstream issue #49
+  ([tree-sitter-grammars/tree-sitter-yaml#49](https://github.com/tree-sitter-grammars/tree-sitter-yaml/issues/49))
+  is still open and no crates.io fork fixes it (0.7.2 verified still `int16_t`); the vendored crate's
+  README documents provenance, the patch and the re-vendor steps for the day upstream ships a fixed
+  release. What full fidelity means:
+  - yaml parses like every other format — ONE whole-file parse; no chunk threshold, no splitter, no
+    outline, no yaml-specific warnings anywhere;
+  - single documents past 32 768 lines are full-fidelity for the first time: `tldr structure` emits
+    the `document-1` element plus every mapping key at EVERY nesting depth (the yaml element walker
+    now recurses into nested mappings, the JSON/TOML walker convention) where the native outline
+    yielded only column-0 keys and no document element;
+  - `tldr imports` scans the one whole-file tree for `$ref`/`extends` links (the re-parse-and-
+    concatenate chunk merge is gone).
+  Proof: `yaml_vendored_grammar_v1` pins a 40 200-line single document extracting 40 201 full-fidelity
+  definitions through the real grammar (nested keys included, byte-exact spans, no warnings); the
+  `yaml_100mib_byte_exact` 100 MiB suite test runs green on the single-parse path — ~2.86M documents /
+  ~8.6M byte-exact definitions (release); `grammar_stability_test` pins the unchanged node kinds plus
+  clean parses of 40 000-line single- and multi-document sources; the full 13-format 100 MiB suite
+  passes 13/13.
+- **`tldr explain --depth` actually scopes the project-callers traversal now.** It was declared in
+  `--help` but ignored — the graph walk used a hard-coded depth 1, so `--depth 3` silently behaved
+  like `--depth 1`.
+- **`tldr explain` scoping flags.** `--scope <dir>` overrides project-root detection
+  (existence-checked, fails fast on a bad path) and `--no-callers` skips caller enrichment
+  entirely — the escape hatch when a ~0.1 s single-file explain balloons to minutes on a huge
+  repo or vendor tree. Under `--no-callers` the `callers` array stays present but empty, so
+  schema consumers don't break.
+- **Daemon-hardening tranche — seven fixes across discovery, the registry, cache invalidation and
+  routing** (`crates/tldr-cli/src/commands/daemon/`, issues #34, #38, #51, #59, #64, #83, #85):
+  - **Cross-cwd `daemon stop` + guarded discovery-record removal** (#38): stop resolves the
+    project's daemon through the shared discovery path instead of assuming the current working
+    directory, and unconditional discovery-record removal is guarded so a stop can never strip
+    another project's records.
+  - **Absolute fallback for discovery files** (#34): when the cache directory is unavailable,
+    daemon discovery/registry files fall back to an absolute location instead of failing.
+  - **Project-wide cache invalidation + no more empty-dep inserts** (#51): calls, impact, dead,
+    arch, importers and change-impact results (and warm's project-level call-graph/structure/tree
+    slots) were cached with EMPTY dependency lists, which `invalidate_by_input` can never reach —
+    stale results were served forever after any file change. Project-wide inserts now register the
+    project root's input hashes, which every file-change event invalidates at once; the search
+    handler and the remaining empty-dep inserts got the same root-hash registration.
+  - **Canonical notify paths** (#59): notify invalidation and cache insertion hashed different path
+    REPRESENTATIONS (symlinked/`..`/relative spellings), so an edit through one spelling never
+    invalidated an entry inserted through another. One canonicalization on both sides, with the raw
+    and lexically-resolved spellings as fallbacks — deleted files invalidate too.
+  - **flock-guarded daemon registry** (#64): the mtime compare-and-swap had no mutual exclusion, so
+    concurrent `daemon start` calls silently dropped registrations (repro: 158 of 192 calls errored,
+    only 28 entries survived). Every read-modify-write cycle now runs under a blocking exclusive
+    `flock(LOCK_EX)` on a dedicated lock file (Windows `LockFileEx`); the kernel releases the lock
+    when a writer dies, so a crashed daemon can never wedge the registry.
+  - **Language routing for 5 commands** (#83): context, impact, calls, dead and importers thread
+    the DETECTED language into daemon routing instead of letting the daemon default to Python — a
+    non-Python query served by a running daemon no longer computes the wrong graph.
+  - **Fallible caching + payload round-trip** (#85): a FAILED call-graph build no longer occupies
+    the daemon's cache slot forever (failures retry, only successes cache; HTTP 500 with the cause),
+    and the daemon's dead/calls payloads actually decode in the CLI — the `total_functions`
+    duplicate-field rejection and the raw-`ProjectCallGraph`-vs-`CallGraphOutput` shape mismatch
+    that made every daemon route fall back to direct compute are fixed.
+- **Deterministic output across reports (BTreeMaps + walker sorting)** (issue #74). Smells, impact
+  targets and truncated references serialize deterministically now — keyed maps moved to `BTreeMap`,
+  set-like fields emit in sorted order — and all directory walks sort their files (the #74 ripple),
+  so the same tree can no longer produce run-to-run random output ordering. `tldr inheritance`'s
+  report fields (languages, nodes, edges, roots, leaves, diamonds) follow the same conventions.
+- **Cyclomatic complexity counts per-language decision nodes** (issue #75). The counter lacked the
+  expression-form and grammar-specific arms, so branchy code undercounted in kotlin, c#, ocaml,
+  scala (cluster CL-4) and rust: `if_expression`, the rust/scala/ocaml expression-form loops and
+  match arms, kotlin `when`/`do-while`, C/C++ `case_statement`, elixir stab clauses, C# switch
+  sections, scala/ocaml `infix_expression` logical operators, and the Ruby keyword/modifier
+  cognates. Nine per-language known-value tests pin textbook counts; python/go/java/ts behavior is
+  byte-identical.
+- **DFG use classification: false reads dropped, implicit reads recorded** (issue #77). Reaching
+  definitions flagged method names and bare-call targets (ruby), member tails and argument labels
+  (swift), and `$this` (php) as variable reads, while op-assign reads (`msg += x`), Rust
+  `compound_assignment_expr`, C/C++/Java/C# compound assignments, TS/JS shorthand property values
+  and Ruby attribute-assignment receivers went unrecorded — dead-store results lied in both
+  directions. The same-block liveness upper bound is now inclusive: a read on the same line as the
+  next definition is a read-then-write and keeps the value alive.
+- **`tldr interface` consumes the unified extractor** (issue #78). A bespoke, weaker definition
+  walker dropped definitions the unified extractor reports: TS `export`-wrapped classes/interfaces
+  and expression-position nested classes, ruby classes nested in `module`, scala classes nested in
+  `package`, and C++ out-of-line `Widget::~Widget()` (empty names); nested-class methods no longer
+  leak into `functions[]` as ownerless entries. One walk, two views — the command maps
+  `tldr_core::ast::extract_definition_entries`, the same walk `tldr structure` reports; the
+  `InterfaceInfo` JSON shape is unchanged.
+- **`tldr importers` normalizes php/ruby/solidity module spellings** (issue #79): basename/suffix
+  handling so an importers query matches the spellings those languages actually write.
+- **PDG slices use post-dominance control dependence** (issue #80). Backward slices
+  over-included statements: control dependence treated every CFG edge out of a branch/loop header
+  as a dependency, so the unconditional join of an `if` without `else` (and everything after a
+  loop) was slice-included. Replaced with the Ferrante–Ottenstein–Warren post-dominance definition
+  (loop bodies and branch arms keep their control edges; joins and post-loop code lose them), and
+  single-block CFGs (swift/luau) now split swallowed multi-line container spans into per-row nodes
+  so the DFG's per-line def-use edges carry the slice.
+- **`tldr inheritance` separates implements from extends and populates `base_kinds`** (issue #82).
+  The TS and PHP extractors pushed both extends-class and implements-interface names into the
+  kind-less `bases` vec, so every edge reported `kind: "extends"`. `InheritanceNode` gains a
+  parallel `base_kinds` field (serde-default — old payloads still deserialize), the extractors
+  record the per-base relation, and `build_edges` emits it; the Refused-Bequest smell's
+  implements-skip now fires as designed.
+- **BM25 splits digit boundaries** (issue #84). `OAuth2Provider` was one token, so a query for
+  "oauth" never matched it; the tokenizer now splits at digit boundaries (and the reverse), so
+  `oauth`, `2` and `provider` all index and match.
+- **SSA loop headers belong to their own dominance frontier** (issue #86). The
+  Cooper–Harvey–Kennedy walk broke out whenever runner == join_point, so a loop header never
+  recorded itself in `DF(header)` and no phi was ever placed for a header-only definition (a
+  python `for i in …` iteration variable) — memory-SSA and phi placement were incomplete around
+  every loop.
+- **C# inherited method calls resolve across files** (issue #87). A bare call to a base-class
+  method defined in ANOTHER file was classified `CallType::Direct` (the callee is not defined in
+  the current file), so the inheritance-aware resolver never ran and the call edge was silently
+  dropped. Declared bases are threaded through `collect_definitions` (class_bases map) and the
+  call routes through `resolve_method_in_bases` (BFS over the ClassIndex, cycle-safe).
+- **`tldr change-impact` normalizes `./` path prefixes** (issue #89): changed-file keys are
+  root-relative consistently, so the same change reports the same keys regardless of `./` spelling
+  (pinned for whatbreaks' code-target change-impact keys too).
+- **`tldr verify` scans JavaScript** (issue #90). The verification dashboard's file walk skipped
+  `.js` files, so a JavaScript project verified nothing.
+
+### Performance
+
+- **Parallel hot paths fan out across all cores (rayon)** (`ast/extractor.rs`, `ast/imports.rs`,
+  `analysis/references.rs`, `analysis/deps.rs`, `analysis/importers.rs`, `metrics/loc.rs`,
+  `analysis/arch_rules.rs`). Structure/definition extraction, references, imports, loc, deps,
+  arch-rules and the per-file importer scan run as `par_iter` fan-outs with input-order collects —
+  output order and error semantics unchanged, sequential below a small-input threshold. Measured:
+  **5.76×** on structure, **~3.1×** on importers (300-file Python corpus).
+- **Per-thread parser cache (PERF-2)** (`ast/parser.rs`). The global parser pool is one mutex held
+  across the whole parse, so a naive `par_iter` stays mutex-bound — and `tree_sitter::Parser` is
+  `!Send`, so parsers cannot be shared. The parallel hot paths parse through a thread-local parser
+  keyed by `(language, dialect)`: zero contention, one grammar setup per thread instead of one per
+  file. Single-file callers keep the global pool.
+- **`RAYON_NUM_THREADS`** caps the fan-out thread count (CI pinning, A/B benchmarks); all cores by
+  default. A first-use grammar-load failure maps to a typed parse error instead of panicking
+  inside a rayon worker (which would abort the whole process).
 
 ## v0.4.1-fork.1 — 2026-09-05
 

@@ -41,6 +41,7 @@ it, the callers, the slice. You decide the query; `tldr` returns the signal.
 | You want to… | Don't | Do |
 |---|---|---|
 | Understand a module | Read the whole file | `tldr structure <path>` |
+| Navigate a huge XML/HTML/SVG document without drowning | Read the whole file | `tldr structure <file> --max-depth 2` — depth-narrowed, tree-indented node tree; inline `<script>`/`<style>` bodies and SVG foreignObject HTML are navigable virtual documents (`page.html#script-1`, `page.html#fo-1#style-1`) |
 | Find where X is defined | Grep + read | `tldr definition --symbol X --file <f>` (`--symbol` needs `--file`) |
 | See every caller of X | Grep the name | `tldr references X <path>` / `tldr impact X <path>` |
 | Know what breaks if you change X | Guess | `tldr whatbreaks X <path>` |
@@ -72,6 +73,10 @@ tldr chop src/auth.py authenticate 142 150     # forward(from L142) ∩ backward
 
 # UNDERSTAND a subsystem without reading it:
 tldr structure src/payments/              # functions, classes, imports per file
+tldr structure page.html --max-depth 2    # markup node TREE, narrowed to the top nesting levels
+                                          # (text mode is tree-indented); inline <script>/<style>
+                                          # bodies and SVG foreignObject HTML are navigable too:
+                                          # page.html#script-1, page.html#fo-1#style-1
 tldr context handle_request --project .   # LLM-ready context graph from an entry point
 tldr calls src/                           # cross-file call graph
 
@@ -143,7 +148,7 @@ cache). It is an index-reuse optimization whose payoff depends on repo size and 
 volume; **measure before assuming it helps** rather than starting it reflexively. (It
 never *hurts* correctness — it just may not pay off.)
 
-## Full command catalog (63 commands; `[aliases]` shown)
+## Full command catalog (66 commands; `[aliases]` shown)
 
 Per-command flags & detail: run `tldr <cmd> --help`, or read `references/`.
 
@@ -154,6 +159,7 @@ Per-command flags & detail: run `tldr <cmd> --help`, or read `references/`.
 - `extract` `[e]` — complete module info for one file
 - `imports` — parse import statements from a file
 - `importers` — files that import a given module
+- `logs` — filter log entries from a log file by `--from`/`--to` timestamp window, `--level`, `--grep`
 
 **Call graph (L2)**
 - `calls` `[c]` — cross-file call graph
@@ -172,6 +178,7 @@ Per-command flags & detail: run `tldr <cmd> --help`, or read `references/`.
 **Program dependence / slicing (L5)**
 - `slice` — backward program slice (only the lines affecting a target line)
 - `chop` `[chp]` — chop slice (forward ∩ backward)
+- `body` — print the exact contiguous source of a function body or `--from`/`--to` line range (byte-faithful — the safe read/reconstruct counterpart to slice/chop)
 - `taint` `[ta]` — taint flow analysis (also a security command)
 
 **Security**
@@ -206,6 +213,7 @@ Per-command flags & detail: run `tldr <cmd> --help`, or read `references/`.
 - `invariants` `[inv]` — infer invariants from test traces (Daikon-lite)
 - `verify` `[ver]` — aggregated verification dashboard
 - `interface` `[iface]` — interface contracts (public API signatures)
+- `order` — use-before-define / TDZ hazards from definition line ranges (JS/TS/Python)
 - `temporal` `[tem]` — mine temporal constraints (method call sequences)
 
 **Search & context**
@@ -229,7 +237,7 @@ Per-command flags & detail: run `tldr <cmd> --help`, or read `references/`.
 - `doctor` `[doc]` — check / install diagnostic tools (`tldr doctor --install python`)
 
 **Daemon / cache / stats**
-- `daemon` — daemon management (`start`, `stop`, `status`)
+- `daemon` — daemon management (`start`, `stop`, `status`; `log` reads the persistent JSONL request log, `list` shows running daemons)
 - `cache` — cache management (`stats`, `clear`)
 - `warm` `[w]` — pre-warm the call-graph cache (see Performance — measure before relying on it)
 - `stats` — tldr usage statistics
@@ -299,10 +307,15 @@ tldr warm src/          # pre-warm the call-graph cache
 tldr impact foo src/    # fast — served from the daemon
 tldr cache stats
 tldr daemon stop
+tldr daemon log --event error --tail 50   # what did the daemon actually do?
 ```
 
 The daemon replaces the old file-cache model (`.claude/cache/tldr/*.json`); state
-is in memory, queried automatically by the CLI when the daemon is running.
+is in memory, queried automatically by the CLI when the daemon is running. Every
+daemon session also writes a persistent JSONL request log at
+`<project>/.tldr/cache/daemon.log` — `tldr daemon log` filters it by `--event`,
+`--command` and `--tail`, which is where you look when a warmed query silently
+fell back to local compute or a request failed after the fact.
 
 ## Editing code with fastedit (the WRITE companion)
 
