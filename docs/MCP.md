@@ -77,7 +77,7 @@ The MCP server exposes these tool categories:
 | Tool | Description | Arguments |
 |------|-------------|-----------|
 | `tldr_tree` | Show file tree structure | `path?`, `extensions?`, `include_hidden?` |
-| `tldr_structure` | Extract code structure | `path?`, `max_results?` |
+| `tldr_structure` | Extract code structure | `path`, `language`, `max_results?`, `max_depth?` |
 | `tldr_extract` | Complete module info | `file` |
 | `tldr_imports` | Parse imports | `file` |
 

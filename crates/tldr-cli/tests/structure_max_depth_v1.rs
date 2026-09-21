@@ -263,3 +263,89 @@ fn text_mode_5mib_xml_max_depth_2_indented_tree_and_cap_line() {
          expected {expected_hidden:?} hidden, got:\n{text}"
     );
 }
+
+// -----------------------------------------------------------------------------
+// max_depth × max_results interplay (FIX-2 3g): BOTH knobs on one invocation
+// over a multi-file directory. `--max-results 1` picks the surviving FILE
+// (first in walk order), `--max-depth 1` then narrows THAT file's element
+// tree, and the renderer's cap message still fires — carrying BOTH hint
+// strings — because depth-filtering alone does not clear the 200-row cap.
+//
+// TIME-BOXED sizing: the knobs are element-count-driven, not byte-driven —
+// 250 three-level units per file ≈ 750 elements each (17 KB), fast to parse
+// while still 2.5× over the render cap. The byte-scale (5.8 MB) probe lives
+// in the test above.
+// -----------------------------------------------------------------------------
+
+/// Units per interplay fixture file.
+const INTERPLAY_UNITS: usize = 250;
+/// One three-level chain unit: `<n0 id="u{i}i0">` → `<n1 id="u{i}i1">` →
+/// `<n2 id="u{i}i2">`, 6 lines, 3 elements at depths 0/1/2.
+fn interplay_unit(i: usize) -> String {
+    format!("<n0 id=\"u{i}i0\">\n<n1 id=\"u{i}i1\">\n<n2 id=\"u{i}i2\">\n</n2>\n</n1>\n</n0>\n")
+}
+
+/// `--max-results 1 --max-depth 1` on a two-file directory: exactly one file
+/// section survives, its depth-2 elements are gone (the depth filter ran on
+/// the SURVIVING file, after the file quota), and the cap message fires with
+/// both knob hints intact.
+#[test]
+fn max_results_1_with_max_depth_1_filters_the_surviving_file_and_keeps_both_hints() {
+    let dir = TempDir::new().expect("tempdir");
+    for (name, salt) in [("a.xml", 0), ("b.xml", 1_000_000)] {
+        let mut body = String::with_capacity(INTERPLAY_UNITS * 48);
+        for i in 0..INTERPLAY_UNITS {
+            body.push_str(&interplay_unit(i + salt));
+        }
+        fs::write(dir.path().join(name), body.as_bytes())
+            .unwrap_or_else(|e| panic!("write {name} fixture: {e}"));
+    }
+
+    let text = run_structure_text(dir.path(), &["--max-results", "1", "--max-depth", "1"]);
+
+    // --max-results 1: the report carries exactly one file, the first in
+    // walk order (a.xml); b.xml never appears anywhere in the output.
+    assert!(
+        text.contains("(1 files)"),
+        "the file quota must keep exactly one file, got:\n{text}"
+    );
+    assert!(
+        text.contains("a.xml"),
+        "the surviving file section must be a.xml, got:\n{text}"
+    );
+    assert!(
+        !text.contains("b.xml"),
+        "the second file must be dropped by --max-results 1, got:\n{text}"
+    );
+
+    // --max-depth 1 applied to the SURVIVING file: depth-0/1 rows render
+    // (indented by depth), depth-2 rows are filtered out before rendering.
+    assert!(
+        text.contains("    - element n0#u0i0 (L1-L6)\n"),
+        "the surviving file's root-level rows must render, got:\n{text}"
+    );
+    assert!(
+        text.contains("      - element n1#u0i1 (L2-L5)\n"),
+        "depth-1 rows must render one level deeper, got:\n{text}"
+    );
+    assert!(
+        !text.contains("element n2#"),
+        "depth-2 rows must be filtered out by --max-depth 1 even though \
+         --max-results already capped the files, got:\n{text}"
+    );
+
+    // The cap message: 2 depth-levels × 250 units = 500 kept rows − 200
+    // rendered = 300 hidden — and BOTH knob hints stay in the line: the
+    // depth filter did not clear the render cap, and the message still
+    // points at both knobs.
+    let expected_hidden = INTERPLAY_UNITS * 2 - TEXT_ELEMENT_CAP;
+    let expected_cap_line = format!(
+        "    … {expected_hidden} more elements (use --max-depth to narrow, \
+         --max-results to cap, -f json for all)\n"
+    );
+    assert!(
+        text.contains(&expected_cap_line),
+        "the cap message must fire with both hint strings after both knobs \
+         ran, expected {expected_hidden} hidden, got:\n{text}"
+    );
+}

@@ -367,6 +367,12 @@ pub struct DaemonLogger {
     path: PathBuf,
     file: Mutex<Option<File>>,
     dropped_writes: AtomicU64,
+    /// Rotation cap in bytes. Production loggers carry [`MAX_LOG_BYTES`]
+    /// (see [`DaemonLogger::new`]); the test-only
+    /// [`DaemonLogger::with_max_bytes`] injects a tiny value so the
+    /// rotation decisions are exercisable without multi-megabyte fixtures —
+    /// injected and default caps route through the SAME decision code.
+    max_bytes: u64,
 }
 
 impl DaemonLogger {
@@ -382,7 +388,18 @@ impl DaemonLogger {
             path,
             file: Mutex::new(None),
             dropped_writes: AtomicU64::new(0),
+            max_bytes: MAX_LOG_BYTES,
         }
+    }
+
+    /// Test-only rotation-cap override (injectable [`MAX_LOG_BYTES`]): the
+    /// SAME logger with a tiny cap, so lib pins can drive the rotation
+    /// decisions with small fixtures. Not part of the public surface —
+    /// production loggers always carry [`MAX_LOG_BYTES`].
+    #[cfg(test)]
+    fn with_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.max_bytes = max_bytes;
+        self
     }
 
     /// The log file path (exposed through `tldr daemon status` as
@@ -442,7 +459,7 @@ impl DaemonLogger {
         // checked again before every append below) pushed the file past
         // the cap, truncate-and-restart. `File::create` truncates.
         if let Ok(meta) = std::fs::metadata(&self.path) {
-            if meta.len() > MAX_LOG_BYTES {
+            if meta.len() > self.max_bytes {
                 std::fs::remove_file(&self.path).ok()?;
             }
         }
@@ -500,7 +517,7 @@ impl DaemonLogger {
         // never restarts still honors the bound.
         let file = guard.as_mut().expect("handle opened above");
         if let Ok(meta) = file.metadata() {
-            if meta.len() + serialized.len() as u64 > MAX_LOG_BYTES {
+            if meta.len() + serialized.len() as u64 > self.max_bytes {
                 match self.open_file() {
                     Some(f) => {
                         *guard = Some(f);
@@ -750,6 +767,82 @@ mod tests {
         let lines = read_lines(&log_path);
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0]["event"], "response");
+    }
+
+    /// Rotation MID-REQUEST (injectable tiny cap — same decision code as the
+    /// production `MAX_LOG_BYTES`, never a megabyte fixture): the file starts
+    /// under the cap, the `request` line's append pushes it OVER (rotation is
+    /// DEFERRED — the pre-append size was still under, so the line is written
+    /// anyway), and the following `response` append performs the actual
+    /// truncate-and-restart: the newest line wins, the now-orphaned request
+    /// line is gone, and the reader parses the aftermath as a clean, conforming
+    /// log (1 entry, 0 skipped).
+    #[test]
+    fn mid_request_rotation_drops_the_orphaned_request_and_keeps_the_response_readable() {
+        const CAP: u64 = 512;
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().canonicalize().unwrap();
+        let logger = DaemonLogger::new(project.clone()).with_max_bytes(CAP);
+
+        let log_path = daemon_log_path(&project);
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        // Filler: one non-JSON line, strictly under the cap.
+        std::fs::write(&log_path, format!("{}\n", "x".repeat(300))).unwrap();
+
+        // A request line padded (via the path field) far past CAP − filler:
+        // its append overflows the cap while the pre-append size stays under.
+        let big_file = format!("{}.py", "p".repeat(400));
+        let big_path = project.join(&big_file);
+        logger.emit(
+            EVENT_REQUEST,
+            "extract",
+            Some(&big_path),
+            None,
+            "accepted",
+            None,
+        );
+
+        let size_after_request = std::fs::metadata(&log_path).unwrap().len();
+        assert!(
+            size_after_request > CAP,
+            "fixture assumption: the request line must push the file over the \
+             cap (deferred rotation), got {size_after_request} bytes"
+        );
+        let raw_after_request = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            raw_after_request.contains(&big_file),
+            "the over-cap request line itself must still be appended — \
+             rotation is deferred to the NEXT append, not skipped"
+        );
+
+        // The response's append performs the truncate-and-restart.
+        logger.emit(EVENT_RESPONSE, "extract", None, Some(1.5), "ok", None);
+
+        let raw = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            !raw.contains(&big_file),
+            "the orphaned request line must not survive the mid-request rotation"
+        );
+        let lines = read_lines(&log_path);
+        assert_eq!(
+            lines.len(),
+            1,
+            "truncate-and-restart keeps exactly the newest line: {raw}"
+        );
+        assert_eq!(lines[0]["event"], "response");
+        assert_eq!(lines[0]["status"], "ok");
+        assert!(
+            std::fs::metadata(&log_path).unwrap().len() <= CAP,
+            "the file is back under the cap after the rotation"
+        );
+
+        // The reader sees a clean, conforming log — no garbage fragments, no
+        // skipped lines, the surviving response parsed through the shared type.
+        let read = read_daemon_log(&log_path, &LogQuery::default());
+        assert_eq!(read.entries.len(), 1);
+        assert_eq!(read.entries[0].event, EVENT_RESPONSE);
+        assert_eq!(read.entries[0].command, "extract");
+        assert_eq!(read.skipped, 0, "no unparseable fragments after rotation");
     }
 
     #[test]

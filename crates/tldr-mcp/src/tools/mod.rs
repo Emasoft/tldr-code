@@ -219,6 +219,10 @@ impl ToolRegistry {
                         "max_results": {
                             "type": "integer",
                             "description": "Maximum number of files to return (0 = unlimited)"
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "description": "Narrow markup element trees to nesting depth <= N (0 = root elements only; None-depth rows are never filtered). Omit for the full tree."
                         }
                     },
                     "required": ["path", "language"]

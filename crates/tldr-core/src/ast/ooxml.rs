@@ -560,6 +560,89 @@ mod tests {
         }
     }
 
+    /// ooxml-boundary (FIX-2 3e): a docx part containing the SVG
+    /// `<foreignObject>` + inline `<script>` pattern stays PLAIN elements.
+    ///
+    /// Nameless hosts (OPC parts) cannot name a virtual document, so
+    /// (elements.rs module docs) the foreignObject subtree is NOT handed to
+    /// a `#fo-N` virtual html document and its inline script NEVER becomes a
+    /// `#script-N` JS document — nothing recurses, the subtree is walked as
+    /// ordinary elements exactly like the pre-VD-2 engine. Every row keeps
+    /// `container: None`, every row is an `element`, and the depth climbs
+    /// straight through the embedded markup.
+    #[test]
+    fn docx_part_with_foreignobject_script_stays_plain_elements() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.docx");
+        let document = "<?xml version=\"1.0\"?>\n<w:doc><w:body><svg><foreignObject>\
+<div><p id=\"p1\">text</p><script>var x = 1;</script></div></foreignObject></svg>\
+</w:body></w:doc>";
+        write_zip(&path, &[("word/document.xml", document)]);
+
+        let (defs, warnings) = extract_ooxml(&path).unwrap();
+        assert!(
+            warnings.is_empty(),
+            "a well-formed part must not warn: {warnings:?}"
+        );
+
+        // No virtual documents: every row is a plain element with no
+        // container and no virtual-document naming.
+        assert!(!defs.is_empty());
+        for def in &defs {
+            assert_eq!(
+                def.kind, "element",
+                "no virtual-document (JS/CSS) rows inside a container part: {}",
+                def.name
+            );
+            assert_eq!(
+                def.container, None,
+                "container must stay None inside a container part: {}",
+                def.name
+            );
+            assert!(
+                !def.name.contains("#fo-") && !def.name.contains("#script-"),
+                "no virtual-document naming inside a container part: {}",
+                def.name
+            );
+        }
+
+        // The foreignObject subtree was WALKED (not skipped, not re-owned):
+        // its elements emit as ordinary rows.
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        for expected in [
+            "w:doc",
+            "w:body",
+            "svg",
+            "foreignObject",
+            "div",
+            "p#p1",
+            "script",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "the embedded subtree must emit as plain elements; expected \
+                 {expected} in {names:?}"
+            );
+        }
+
+        // Depth climbs straight through the embedded markup (per-part depth,
+        // no restart at the foreignObject boundary — nothing re-owned it).
+        let depths: Vec<Option<u32>> = defs.iter().map(|d| d.depth).collect();
+        assert_eq!(
+            depths,
+            vec![
+                Some(0),
+                Some(1),
+                Some(2),
+                Some(3),
+                Some(4),
+                Some(5),
+                Some(5)
+            ],
+            "one continuous per-part element tree through the foreignObject"
+        );
+    }
+
     #[test]
     fn extract_errors_on_not_a_zip() {
         let dir = tempfile::tempdir().unwrap();
