@@ -3514,6 +3514,7 @@ dependencies = [
  "tree-sitter-java",
  "tree-sitter-json",
  "tree-sitter-kotlin-ng",
+ "tree-sitter-language",
  "tree-sitter-lua",
  "tree-sitter-luau",
  "tree-sitter-md",

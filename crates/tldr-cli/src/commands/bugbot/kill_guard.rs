@@ -28,6 +28,12 @@
 //! The guard only ever signals the SINGLE verified PID — never a process
 //! group, never a pid-range.
 //!
+//! Residual window (accepted): the ownership check and the kill are two
+//! separate steps, so a PID recycled in the microseconds BETWEEN
+//! `snapshot_start_time` and `platform_kill` would still be signalled;
+//! closing it would require kill-atomic verification the OS does not offer
+//! (the check shrinks the original seconds-wide window to that gap).
+//!
 //! Start-time sources (std + the already-vendored `libc`, no new deps):
 //! - macOS: `proc_pidinfo(pid, PROC_PIDTBSDINFO, …)` → `pbi_start_tvsec` /
 //!   `pbi_start_tvusec` (identity at microsecond resolution).

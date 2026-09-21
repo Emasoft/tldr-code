@@ -292,6 +292,20 @@
 //! `structure --max-depth N` keeps every definition whose depth is `None`
 //! (the filter narrows markup elements only) or whose depth is `<= N`.
 //!
+//! # Depth cap (stack safety)
+//!
+//! Tree-sitter imposes NO tree-depth limit, and every walker here is a
+//! recursive pre-order descent over its tree — a pathological
+//! tens-of-thousands-deep nested file (machine-generated JSON/XML/YAML do
+//! exist) used to overflow the 2 MiB rayon worker stack (8 MiB main thread)
+//! and SIGSEGV-abort the process. Every walker therefore refuses to descend
+//! past [`MAX_ELEMENT_DEPTH`] (2,000 levels): deeper nodes AND their subtrees
+//! are skipped with ONE warning per file ("markup nesting exceeds depth
+//! …; deeper elements skipped"), latched through [`EmbedBudget`] so a host
+//! plus its embedded documents never repeat it. Parents always emit before
+//! children (pre-order), so what survives the cap is a consistent tree
+//! prefix.
+//!
 //! # Determinism
 //!
 //! Every walker is a pre-order depth-first traversal emitting in source order.
@@ -317,6 +331,35 @@ pub(crate) const MAX_EMBED_DEPTH: usize = 8;
 /// warning. Belt and braces ONLY — guards against quadratic blowup on a
 /// pathologically script-stuffed file.
 pub(crate) const MAX_VIRTUAL_DOCS_PER_FILE: usize = 256;
+
+/// FIX-1a (walker depth cap): the deepest nesting level any format walker
+/// still descends into. At deeper nodes the walk stops (the node AND its
+/// subtree are skipped) after ONE per-tree warning.
+///
+/// Why it exists: tree-sitter 0.25 imposes NO tree-depth limit, and every
+/// walker below is a recursive pre-order descent over that tree. Rayon
+/// workers run 2 MiB stacks (the main thread 8 MiB), so a pathological
+/// tens-of-thousands-deep nested file — machine-generated JSON/XML/YAML do
+/// exist — used to overflow the stack and SIGSEGV-abort the process,
+/// uncatchable and worse under the parallel extraction fan-out. The cap
+/// turns the abort into a warned, bounded truncation.
+///
+/// What the depth counts: for the markup walkers ([`walk_xml`],
+/// [`walk_html`], [`walk_embedded_html`]) it is the EXISTING element depth
+/// (root elements = 0, transparent grammar wrappers skipped); for the
+/// format walkers ([`walk_json`], [`walk_toml`], [`walk_yaml`]) it is raw
+/// TREE nesting (every node visit +1) — either way it is exactly the
+/// recursion the cap bounds. 2,000 levels is orders of magnitude beyond
+/// real files (the deepest hand-written markup nests a few dozen levels)
+/// while keeping the recursion cost comfortably inside a 2 MiB worker
+/// stack.
+///
+/// Scope: per TREE (one [`extract_elements_inner`] dispatch — a file, an
+/// OOXML part, a virtual document), with the warning LATCHED per FILE via
+/// [`EmbedBudget::depth_cap_warned`], so a host plus its embedded documents
+/// produce at most ONE depth warning. Parents always emit before their
+/// children (pre-order), so the emitted prefix is a consistent tree prefix.
+pub(crate) const MAX_ELEMENT_DEPTH: u32 = 2_000;
 
 /// Extract format elements as `DefinitionInfo` entries.
 ///
@@ -404,9 +447,12 @@ fn extract_elements_inner(
     let root = tree.root_node();
 
     match language {
-        Language::Json => walk_json(root, source, &mut elements),
-        Language::Toml => walk_toml(root, source, &mut elements),
-        Language::Yaml => walk_yaml(root, source, &mut elements),
+        // FIX-1a: every walker takes the shared `state` (warnings + the
+        // per-file depth-cap latch) and a depth counter — the recursion
+        // guard of `MAX_ELEMENT_DEPTH`.
+        Language::Json => walk_json(root, source, &mut state, &mut elements, 0),
+        Language::Toml => walk_toml(root, source, &mut state, &mut elements, 0),
+        Language::Yaml => walk_yaml(root, source, &mut state, &mut elements, 0),
         Language::Bash => walk_bash(root, source, &mut elements),
         // Formats extension, batch E2: markup/stylesheets flow through the
         // same element engine (kinds `element` / `selector` / `at-rule`).
@@ -502,6 +548,10 @@ struct EmbedBudget<'h> {
     budget_warned: bool,
     /// Latch: the depth-cap warning is emitted once per file.
     depth_warned: bool,
+    /// FIX-1a: latch for the element-tree depth cap ([`MAX_ELEMENT_DEPTH`])
+    /// — shared by the HOST walk and every embedded-document walk of the
+    /// file, so one file yields at most ONE depth warning.
+    depth_cap_warned: bool,
 }
 
 impl<'h> EmbedBudget<'h> {
@@ -513,7 +563,20 @@ impl<'h> EmbedBudget<'h> {
             limit: MAX_VIRTUAL_DOCS_PER_FILE,
             budget_warned: false,
             depth_warned: false,
+            depth_cap_warned: false,
         }
+    }
+}
+
+/// FIX-1a: fire the ONE per-file element-depth-cap warning (the
+/// embed-budget latch pattern). Called at the node a walker refuses to
+/// descend past — [`MAX_ELEMENT_DEPTH`] has the full semantics.
+fn warn_element_depth_cap(budget: &mut EmbedBudget, warnings: &mut Vec<String>) {
+    if !budget.depth_cap_warned {
+        budget.depth_cap_warned = true;
+        warnings.push(format!(
+            "markup nesting exceeds depth {MAX_ELEMENT_DEPTH}; deeper elements skipped"
+        ));
     }
 }
 
@@ -648,7 +711,21 @@ fn unquote(text: &str) -> String {
 // JSON — kind "key" per object property (nested keys recurse)
 // =============================================================================
 
-fn walk_json(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
+/// FIX-1a: `depth` is the raw TREE nesting level (every node visit +1) —
+/// the recursion this walk performs; past [`MAX_ELEMENT_DEPTH`] the node
+/// and its subtree are skipped with the one per-file depth warning.
+fn walk_json(
+    node: Node,
+    source: &str,
+    state: &mut WalkState,
+    out: &mut Vec<DefinitionInfo>,
+    depth: u32,
+) {
+    if depth > MAX_ELEMENT_DEPTH {
+        warn_element_depth_cap(&mut state.budget, &mut state.warnings);
+        return;
+    }
+
     if node.kind() == "pair" {
         // `pair` fields: key (string), value (_value). A pair IS the region
         // (key + value, whatever the value is — object, array, scalar), so a
@@ -666,7 +743,7 @@ fn walk_json(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_json(child, source, out);
+        walk_json(child, source, state, out, depth + 1);
     }
 }
 
@@ -686,7 +763,21 @@ fn json_key_name(key: &Node, source: &str) -> String {
 // TOML — kind "section" per table header + kind "key" per pair
 // =============================================================================
 
-fn walk_toml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
+/// FIX-1a: `depth` is the raw TREE nesting level (every node visit +1) —
+/// the recursion this walk performs; past [`MAX_ELEMENT_DEPTH`] the node
+/// and its subtree are skipped with the one per-file depth warning.
+fn walk_toml(
+    node: Node,
+    source: &str,
+    state: &mut WalkState,
+    out: &mut Vec<DefinitionInfo>,
+    depth: u32,
+) {
+    if depth > MAX_ELEMENT_DEPTH {
+        warn_element_depth_cap(&mut state.budget, &mut state.warnings);
+        return;
+    }
+
     match node.kind() {
         "table" | "table_array_element" => {
             // Header = the key-part children before the first `pair`.
@@ -696,7 +787,7 @@ fn walk_toml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
             }
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                walk_toml(child, source, out);
+                walk_toml(child, source, state, out, depth + 1);
             }
         }
         "pair" => {
@@ -706,13 +797,13 @@ fn walk_toml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
             // Recurse so inline-table pairs (`x = { a = 1 }`) surface too.
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                walk_toml(child, source, out);
+                walk_toml(child, source, state, out, depth + 1);
             }
         }
         _ => {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                walk_toml(child, source, out);
+                walk_toml(child, source, state, out, depth + 1);
             }
         }
     }
@@ -781,21 +872,45 @@ fn collect_key_parts(node: Node, source: &str, parts: &mut Vec<String>) {
 // patched grammar, so keys at every depth are grammar nodes we can name)
 // =============================================================================
 
-fn walk_yaml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
+/// FIX-1a: `depth` is the raw TREE nesting level (every node visit +1) —
+/// the recursion this walk performs; past [`MAX_ELEMENT_DEPTH`] the node
+/// and its subtree are skipped with the one per-file depth warning.
+fn walk_yaml(
+    node: Node,
+    source: &str,
+    state: &mut WalkState,
+    out: &mut Vec<DefinitionInfo>,
+    depth: u32,
+) {
+    if depth > MAX_ELEMENT_DEPTH {
+        warn_element_depth_cap(&mut state.budget, &mut state.warnings);
+        return;
+    }
+
     // The root is a `stream` of `document` nodes (multi-doc files repeat the
     // node; the `---` marker is INSIDE its document's span).
+    //
+    // FIX-1a (F11, document numbering): the `document-N` counter runs over
+    // `document` children ONLY. Numbering via `enumerate()` over ALL stream
+    // children let an error-recovery child (an `ERROR` node the grammar
+    // inserts for malformed bytes between documents) shift every later
+    // document's number — `document-3` could be the second real document.
+    // Real documents are numbered 1..k in source order now, regardless of
+    // whatever recovery nodes sit between them.
     if node.kind() == "stream" {
+        let mut doc_no: usize = 0;
         let mut cursor = node.walk();
-        for (idx, child) in node.children(&mut cursor).enumerate() {
+        for child in node.children(&mut cursor) {
             if child.kind() == "document" {
+                doc_no += 1;
                 out.push(element_def(
                     "document",
-                    format!("document-{}", idx + 1),
+                    format!("document-{doc_no}"),
                     child,
                     source,
                     None,
                 ));
-                walk_yaml(child, source, out);
+                walk_yaml(child, source, state, out, depth + 1);
             }
         }
         return;
@@ -813,7 +928,7 @@ fn walk_yaml(node: Node, source: &str, out: &mut Vec<DefinitionInfo>) {
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_yaml(child, source, out);
+        walk_yaml(child, source, state, out, depth + 1);
     }
 }
 
@@ -915,6 +1030,17 @@ fn walk_xml(
     out: &mut Vec<DefinitionInfo>,
     depth: u32,
 ) {
+    // FIX-1a: depth cap — tree-sitter imposes no tree-depth limit and this
+    // recursive walk runs on a 2 MiB rayon worker stack, so a pathological
+    // tens-of-thousands-deep document used to SIGSEGV. Past the cap the node
+    // AND its subtree are skipped (the element was not emitted yet — the
+    // emitted prefix stays a consistent parent-before-children tree) with
+    // ONE per-file warning.
+    if depth > MAX_ELEMENT_DEPTH {
+        warn_element_depth_cap(&mut state.budget, &mut state.warnings);
+        return;
+    }
+
     // VD-2: true after a foreignObject handed its content to a nested virtual
     // document — the subtree is the document's, not the host walk's.
     let mut skip_children = false;
@@ -1229,6 +1355,15 @@ fn walk_html(
     out: &mut Vec<DefinitionInfo>,
     depth: u32,
 ) {
+    // FIX-1a: depth cap — same rationale as [`walk_xml`] (no tree-depth
+    // limit in tree-sitter, 2 MiB rayon worker stacks): past
+    // [`MAX_ELEMENT_DEPTH`] the node and its subtree are skipped with ONE
+    // per-file warning.
+    if depth > MAX_ELEMENT_DEPTH {
+        warn_element_depth_cap(&mut state.budget, &mut state.warnings);
+        return;
+    }
+
     // VD-2: true after a foreignObject handed its content to a nested virtual
     // document — the subtree is the document's, not the host walk's.
     let mut skip_children = false;
@@ -1994,6 +2129,14 @@ fn walk_embedded_html(
     // VD-2: true after a nested foreignObject handed its content to its own
     // virtual document — the subtree is that document's.
     let mut skip_children = false;
+    // FIX-1a: same element-depth cap as the host walkers, applied to this
+    // virtual document's own element nesting (`elem_depth` restarts at 0 per
+    // document). The warning rides the FILE's budget latch, so a host plus
+    // its embedded documents still produce at most ONE depth warning.
+    if elem_depth > MAX_ELEMENT_DEPTH {
+        warn_element_depth_cap(budget, warnings);
+        return;
+    }
     match node.kind() {
         "element" => {
             if let Some(name) = html_element_name(&node, html) {
@@ -2481,6 +2624,53 @@ fn markdown_table_name(table: &Node, source: &str) -> String {
 mod tests {
     use super::*;
     use crate::ast::parser::parse;
+
+    /// FIX-1a (F11): yaml `document-N` numbering runs over `document`
+    /// children ONLY. An error-recovery child the grammar inserts INTO THE
+    /// STREAM between documents must not shift the numbering of every later
+    /// document (the pre-fix `enumerate()` over ALL stream children numbered
+    /// the third real document `document-4` here).
+    ///
+    /// Fixture: an unterminated double-quote line between documents. The
+    /// vendored grammar recovers with an ERROR child in the stream — verified
+    /// child shape (and pinned below): document, document, ERROR, document.
+    #[test]
+    fn yaml_document_numbering_skips_error_recovery_children() {
+        let src = "a: 1\n---\n\"\n---\nb: 2\n";
+        let tree = parse(src, Language::Yaml).unwrap();
+
+        // Sanity: the fixture really triggers a stream-level recovery child
+        // BETWEEN documents. If the grammar's recovery shape ever changes,
+        // re-derive this pin from the new shape.
+        {
+            let root = tree.root_node();
+            let mut cursor = root.walk();
+            let kinds: Vec<&str> = root.children(&mut cursor).map(|c| c.kind()).collect();
+            assert_eq!(
+                kinds,
+                vec!["document", "document", "ERROR", "document"],
+                "fixture no longer triggers stream-level error recovery between documents"
+            );
+        }
+
+        let defs = extract_elements(Language::Yaml, &tree, src, None);
+        let docs: Vec<&str> = defs
+            .iter()
+            .filter(|d| d.kind == "document")
+            .map(|d| d.name.as_str())
+            .collect();
+        assert_eq!(
+            docs,
+            vec!["document-1", "document-2", "document-3"],
+            "the three REAL documents are numbered 1..3 in source order, whatever recovery \
+             nodes sit between them"
+        );
+        // The last document's content is intact too (its keys still emit).
+        assert!(
+            defs.iter().any(|d| d.kind == "key" && d.name == "b"),
+            "the document after the recovery node still extracts: {defs:#?}"
+        );
+    }
 
     #[test]
     fn non_format_languages_return_empty() {

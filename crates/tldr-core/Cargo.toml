@@ -130,6 +130,12 @@ md5 = { workspace = true }
 serde_json = { workspace = true }
 proptest = "1.4"
 criterion = { version = "0.5", features = ["html_reports"] }
+# FIX-1a (F2) test support: the grammar-load-failure pins build a SYNTHETIC
+# `Language` whose ABI version is out of range. `Language::new` takes the
+# bridge's `LanguageFn` (already in the dependency tree as a transitive dep of
+# tree-sitter 0.25 — the same version resolves), so this is a dev-only,
+# zero-new-build-artifact dependency.
+tree-sitter-language = "0.1"
 
 [[bench]]
 name = "core_benchmarks"

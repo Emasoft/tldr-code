@@ -307,26 +307,16 @@ impl ParserPool {
         let dialect = TsDialect::from_path_and_lang(path, lang);
         let key = ParserKey::new(lang, dialect);
 
-        // Get or create parser for this (lang, dialect) pair.
+        // Get or create parser for this (lang, dialect) pair, load its
+        // grammar, and parse. Slot creation is `Parser::new()` ONLY: the
+        // grammar load below is the fallible `set_language`, so a first-use
+        // failure maps onto `TldrError::ParseError` like every other
+        // grammar failure (FIX-1a: the old `.expect` inside the
+        // slot-creation closure panicked on first use — on a rayon worker
+        // that aborts the whole process — while the very next statement
+        // mapped the SAME failure into a typed error).
         let mut parsers = self.parsers.lock().unwrap();
-        let parser = parsers.entry(key).or_insert_with(|| {
-            let mut p = Parser::new();
-            p.set_language(&ts_lang).expect("Error loading grammar");
-            p
-        });
-
-        // Defensive re-set: if a previous borrow left the cached parser
-        // on a different grammar (shouldn't happen with the new key, but
-        // cheap insurance) this snaps it back before parsing.
-        parser
-            .set_language(&ts_lang)
-            .map_err(|e| TldrError::ParseError {
-                file: path
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| std::path::PathBuf::from("<source>")),
-                line: None,
-                message: format!("Failed to set language: {}", e),
-            })?;
+        let parser = acquire_pooled_parser(&mut parsers, key, &ts_lang, path)?;
 
         parser
             .parse(source, None)
@@ -386,6 +376,41 @@ impl ParserPool {
     ) -> TldrResult<(Tree, String, TldrLanguage)> {
         parse_file_pipeline(path, lang_hint, &ParseStrategy::Pool(self))
     }
+}
+
+/// Get or create the pooled parser for `key` and put it on `ts_lang`.
+///
+/// FIX-1a (grammar-load panic): the slot is created as a bare
+/// `Parser::new()` — no `set_language` inside the `or_insert_with` closure —
+/// and the grammar load below is the SAME fallible call the pool already ran
+/// defensively on every borrow. A grammar that fails to load therefore maps
+/// onto `TldrError::ParseError` on first use exactly like on reuse, instead
+/// of `.expect`-panicking inside a slot-creation closure (a panic in a rayon
+/// worker aborts the whole process). On success the behavior is unchanged:
+/// the slot's grammar is (re-)set once per parse, as before.
+fn acquire_pooled_parser<'m>(
+    parsers: &'m mut HashMap<ParserKey, Parser>,
+    key: ParserKey,
+    ts_lang: &Language,
+    path: Option<&Path>,
+) -> TldrResult<&'m mut Parser> {
+    // `Parser: Default` and `Parser::default()` IS `Parser::new()` — the
+    // slot is a bare parser, the grammar load below is the fallible step.
+    let parser = parsers.entry(key).or_default();
+    // Defensive re-set: if a previous borrow left the cached parser on a
+    // different grammar (shouldn't happen with the new key, but cheap
+    // insurance) this snaps it back before parsing — and on a FRESH slot it
+    // IS the first grammar load.
+    parser
+        .set_language(ts_lang)
+        .map_err(|e| TldrError::ParseError {
+            file: path
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::path::PathBuf::from("<source>")),
+            line: None,
+            message: format!("Failed to set language: {}", e),
+        })?;
+    Ok(parser)
 }
 
 /// Where the file-parse pipeline acquires its `tree_sitter::Parser`
@@ -674,6 +699,13 @@ thread_local! {
     /// zero contention, and one grammar setup per thread instead of one
     /// per file.
     ///
+    /// Memory shape (documented, accepted): the cache is bounded by
+    /// `threads × (language, dialect)` slots and entries are NEVER evicted
+    /// — each `Parser` holds one grammar (static, process-lifetime data),
+    /// so the worst case is one parser per grammar per worker thread for
+    /// the thread's lifetime. Acceptable by design; revisit only if the
+    /// grammar count or the worker pool size ever grows unboundedly.
+    ///
     /// Used ONLY by the parallel hot paths (structure fan-out, references
     /// AST verification, deps/import-graph import extraction, callgraph
     /// `parse_source`). Single-file callers keep using the global pool.
@@ -685,6 +717,12 @@ thread_local! {
 /// on first use. Mirrors the pool's slot semantics, including the defensive
 /// `set_language` re-set before every parse (cheap insurance that a cached
 /// parser is always on the grammar the caller just resolved).
+///
+/// FIX-1a (grammar-load panic): as in the pool, slot creation is a bare
+/// `Parser::new()` and the fallible `set_language` runs OUTSIDE the
+/// `or_insert_with` closure, so a first-use grammar-load failure returns
+/// `TldrError::ParseError` instead of `.expect`-panicking on a rayon worker
+/// (which would abort the process). On success the behavior is unchanged.
 fn with_thread_local_parser<R>(
     key: ParserKey,
     ts_lang: Language,
@@ -693,11 +731,7 @@ fn with_thread_local_parser<R>(
 ) -> TldrResult<R> {
     THREAD_LOCAL_PARSERS.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let parser = cache.entry(key).or_insert_with(|| {
-            let mut p = Parser::new();
-            p.set_language(&ts_lang).expect("Error loading grammar");
-            p
-        });
+        let parser = cache.entry(key).or_default();
         parser
             .set_language(&ts_lang)
             .map_err(|e| TldrError::ParseError {
@@ -1153,5 +1187,128 @@ mod tests {
             "Parser audit failures (VAL-008): {}",
             failures.join(" | ")
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // FIX-1a (F2): a first-use grammar-load failure must map onto
+    // `TldrError::ParseError`, not `.expect`-panic. The panic lived inside
+    // the slot-creation closures (pool + thread-local); on a rayon worker a
+    // panic aborts the whole process, so the very first use of a slot whose
+    // grammar fails to load used to be a process kill while the SECOND use
+    // of the same broken grammar returned a typed error.
+    //
+    // The tests drive both first-use paths with a SYNTHETIC `Language` whose
+    // `TSLanguage.abi_version` is far below tree-sitter's minimum supported
+    // ABI — the only field `Parser::set_language` reads before rejecting
+    // (`ts_language_abi_version`), so the zeroed remainder of the static is
+    // never dereferenced on the error path. `ts_language_copy`/`_delete` are
+    // no-ops for non-WASM languages, so dropping the wrapper is safe.
+    // ---------------------------------------------------------------------
+
+    /// A `TSLanguage`-shaped static whose ABI version is out of range.
+    #[repr(C)]
+    struct BadAbiLanguage {
+        abi_version: u32,
+        /// Zeroed remainder: keeps any speculative later-field read inside
+        /// our own static at NULL (nothing reads past `abi_version` on the
+        /// rejection path today, but the padding makes the layout honest).
+        _rest: [u32; 64],
+    }
+
+    static BAD_ABI_LANGUAGE: BadAbiLanguage = BadAbiLanguage {
+        // Far below tree-sitter 0.25's MIN_COMPATIBLE_LANGUAGE_VERSION (13).
+        abi_version: 1,
+        _rest: [0; 64],
+    };
+
+    /// The grammar-factory shape the `tree-sitter-language` bridge wraps: a C
+    /// function returning the `TSLanguage` static. `Language::new` calls it
+    /// once and wraps the pointer.
+    unsafe extern "C" fn bad_abi_language_fn() -> *const () {
+        &BAD_ABI_LANGUAGE as *const BadAbiLanguage as *const ()
+    }
+
+    /// A `Language` whose grammar fails to load (`set_language` → Err).
+    fn bad_grammar() -> Language {
+        // SAFETY: the pointer targets our own `'static` struct, laid out
+        // with `abi_version` first exactly like the C `TSLanguage`; the
+        // rejection path reads that one field and nothing else.
+        unsafe {
+            Language::new(tree_sitter_language::LanguageFn::from_raw(
+                bad_abi_language_fn,
+            ))
+        }
+    }
+
+    #[test]
+    fn first_use_grammar_load_failure_maps_to_typed_error_pool() {
+        let mut parsers: HashMap<ParserKey, Parser> = HashMap::new();
+        let key = ParserKey::new(TldrLanguage::Python, TsDialect::None);
+        let bad = bad_grammar();
+
+        // Sanity: the synthetic language really is rejected by set_language.
+        let mut probe = Parser::new();
+        let err = probe.set_language(&bad).unwrap_err();
+        assert!(err.to_string().contains("Incompatible language version"));
+
+        // FIRST use of the slot: typed error, NOT a panic (this test passing
+        // is the pin — the pre-fix code `.expect`-aborted right here).
+        // (`.err()`, not `unwrap_err()`: the Ok side is `&mut Parser`, which
+        // is not `Debug`.)
+        let err = acquire_pooled_parser(&mut parsers, key, &bad, None)
+            .err()
+            .expect("the bad-grammar first use must fail");
+        match &err {
+            TldrError::ParseError {
+                file,
+                line,
+                message,
+            } => {
+                assert_eq!(file, &std::path::PathBuf::from("<source>"));
+                assert!(line.is_none());
+                assert!(
+                    message.contains("Failed to set language"),
+                    "the pool must map the grammar-load failure onto its typed message: {message}"
+                );
+            }
+            other => panic!("expected TldrError::ParseError, got {other:?}"),
+        }
+
+        // The slot is created but UNSET — a later call with a REAL grammar
+        // on the same slot must succeed (a failed first use does not poison
+        // the cache).
+        let good = ParserPool::get_ts_language(TldrLanguage::Python).unwrap();
+        let parser = acquire_pooled_parser(&mut parsers, key, &good, None).unwrap();
+        assert!(parser.parse("def foo(): pass", None).is_some());
+    }
+
+    #[test]
+    fn first_use_grammar_load_failure_maps_to_typed_error_thread_local() {
+        let key = ParserKey::new(TldrLanguage::Python, TsDialect::None);
+        let bad = bad_grammar();
+
+        // FIRST use of this thread's slot: typed error, NOT a panic (the
+        // pre-fix code `.expect`-aborted right here, on the rayon-worker
+        // stack this cache exists for).
+        let err = with_thread_local_parser(key, bad, None, |_| 42).unwrap_err();
+        match &err {
+            TldrError::ParseError { message, .. } => {
+                assert!(
+                    message.contains("Failed to set language"),
+                    "the thread-local cache must map the grammar-load failure onto its \
+                     typed message: {message}"
+                );
+            }
+            other => panic!("expected TldrError::ParseError, got {other:?}"),
+        }
+
+        // The unset slot stays usable: the same key with a REAL grammar
+        // loads and parses (no poisoned cache).
+        let good = ParserPool::get_ts_language(TldrLanguage::Python).unwrap();
+        let trees = with_thread_local_parser(key, good, None, |parser| {
+            parser.parse("def foo(): pass", None)
+        })
+        .unwrap();
+        assert!(trees.is_some());
     }
 }

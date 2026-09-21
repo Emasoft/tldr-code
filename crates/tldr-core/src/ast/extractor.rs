@@ -435,34 +435,42 @@ pub fn get_code_structure(
         .iter()
         .map(|f| std::fs::metadata(f).map(|m| m.len()).unwrap_or(0))
         .sum();
-    // `max_results` bounds the work on the candidate files, mirroring the
-    // pre-parallel loop's leading `take` behaviour; the merge below still
-    // counts only SUCCESSFUL extractions toward the limit.
-    let take = if max_results > 0 {
-        max_results.min(files.len())
-    } else {
-        files.len()
-    };
+    // max_results success-quota (FIX-1a): the fan-out deliberately has NO
+    // leading `take`. The pre-parallel loop counted only SUCCESSFUL
+    // extractions against the quota — a file that failed (oversize, wide
+    // encoding, recoverable error) did NOT consume it and the next file
+    // still got processed — so the quota can only be applied AFTER
+    // extraction, in the ordered merge below. We therefore over-fetch:
+    // every candidate is processed and the merge keeps the FIRST
+    // `max_results` successful extractions. The trade-off is deliberate:
+    // with `--max-results N` the fan-out does more work than the sequential
+    // loop strictly needed (files past the quota point are extracted and
+    // then dropped), but the quota semantics stay correct regardless of how
+    // many leading files fail.
     let results: Vec<TldrResult<(FileStructure, Vec<String>)>> =
         if files.len() > PARALLEL_MIN_FILES && total_bytes > PARALLEL_MIN_TOTAL_BYTES {
             files
                 .par_iter()
-                .take(take)
                 .map(|file_path| extract_file_structure(file_path, root, language, true))
                 .collect()
         } else {
             files
                 .iter()
-                .take(take)
                 .map(|file_path| extract_file_structure(file_path, root, language, false))
                 .collect()
         };
 
     let mut file_structures = Vec::new();
 
-    // Merge in input order — identical bookkeeping to the sequential loop
-    // this replaced (max_results counts successful extractions only).
-    for (file_path, result) in files.iter().take(take).zip(results) {
+    // Merge in input order. The quota counts SUCCESSFUL extractions only —
+    // the same bookkeeping as the sequential loop this replaced: failures
+    // BEFORE the quota point surface their skip warning / `files_skipped`
+    // counter and leave the quota intact; once `max_results` successes are
+    // kept, the remaining results (including everything the over-fetch
+    // produced past the quota point) are dropped WITHOUT bookkeeping — the
+    // sequential loop never processed past the quota point, so those files
+    // contribute no warnings and no skip counts here either.
+    for (file_path, result) in files.iter().zip(results) {
         // Apply max_results limit
         if max_results > 0 && file_structures.len() >= max_results {
             break;
@@ -5692,5 +5700,92 @@ interface IFace {
         let source = "<?php\ntest(\"double quoted\", function () {\n    return 1;\n});\n";
         let defs = call_defs(source, Language::Php);
         assert_eq!(defs, vec![("test:double-quoted".to_string(), 2, 4)]);
+    }
+
+    // ---------------------------------------------------------------------
+    // FIX-1a (F1): the `max_results` quota counts SUCCESSFUL extractions
+    // only — a file that fails (oversize, wide encoding) does NOT consume
+    // it, and the next file is still processed. The pre-parallel loop did
+    // this; the parallel fan-out port broke it by taking the quota up
+    // front (`files.iter().take(max_results)`), so with a failing FIRST
+    // file and `--max-results 1` the report came back EMPTY: the quota was
+    // spent on the failure. These pins exercise the ordered merge through
+    // the public `get_code_structure` on a directory whose FIRST file
+    // fails the size policy.
+    //
+    // Fixture: a sparse (never-read) oversize `.d.ts` sorts FIRST
+    // (`aaa…`), so the fan-out's first candidate fails with
+    // `FileTooLarge`; 4 healthy `.ts` files follow and 5 files > 4
+    // (`PARALLEL_MIN_FILES`) + a >1 MB total puts the fan-out on the
+    // PARALLEL arm — where the regression lived. Sparse via
+    // `File::set_len` (the `fs::oversize` boundary-test trick): the size
+    // policy only stats the file, extraction never opens it.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn max_results_quota_ignores_failing_files_and_keeps_processing() {
+        use std::fs::File;
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        // FIRST candidate: oversize auto-generated file (cap + 1 byte, sparse).
+        let huge = dir.path().join("aaa.generated.d.ts");
+        let mut f = File::create(&huge).unwrap();
+        write!(f, "export declare const seed: string;\n").unwrap();
+        f.set_len(crate::fs::oversize::MAX_AUTOGEN_FILE_SIZE_BYTES + 1)
+            .unwrap();
+        drop(f);
+        // 4 healthy files — also pushes the corpus onto the parallel arm.
+        for (i, name) in ["bbb.ts", "ccc.ts", "ddd.ts", "eee.ts"].iter().enumerate() {
+            std::fs::write(
+                dir.path().join(name),
+                format!("export function fn{i}(): number {{ return {i}; }}\n"),
+            )
+            .unwrap();
+        }
+
+        // Quota 1: the oversize FIRST file must NOT consume the quota —
+        // bbb.ts is extracted, the skip is still surfaced.
+        let structure = get_code_structure(dir.path(), Language::TypeScript, 1, None).unwrap();
+        assert_eq!(
+            structure.files.len(),
+            1,
+            "quota 1 with a failing first file must still yield ONE successful extraction \
+             (files: {:?})",
+            structure
+                .files
+                .iter()
+                .map(|f| f.path.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            structure.files[0].path.ends_with("bbb.ts"),
+            "the quota must land on the first SUCCESSFUL file, got {:?}",
+            structure.files[0].path
+        );
+        assert_eq!(structure.files_skipped, 1, "the oversize skip is surfaced");
+        assert!(
+            structure
+                .warnings
+                .iter()
+                .any(|w| w.contains("aaa.generated.d.ts")),
+            "the oversize warning must survive the merge: {:?}",
+            structure.warnings
+        );
+
+        // Quota 2: two successes — the failure consumed neither.
+        let structure = get_code_structure(dir.path(), Language::TypeScript, 2, None).unwrap();
+        let got: Vec<String> = structure
+            .files
+            .iter()
+            .map(|f| f.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(got, vec!["bbb.ts", "ccc.ts"]);
+        assert_eq!(structure.files_skipped, 1);
+
+        // Unlimited: everything (the failure never blocked the rest).
+        let structure = get_code_structure(dir.path(), Language::TypeScript, 0, None).unwrap();
+        assert_eq!(structure.files.len(), 4);
+        assert_eq!(structure.files_skipped, 1);
     }
 }

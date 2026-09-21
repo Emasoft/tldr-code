@@ -3040,3 +3040,150 @@ fn max_depth_filter_keeps_depthless_rows_and_narrows_elements() {
         "key rows are depth-less, never filtered"
     );
 }
+
+// =============================================================================
+// FIX-1a (F3): walker depth cap — pathological nesting is a WARNED, BOUNDED
+// truncation, not a stack-overflow abort.
+//
+// Tree-sitter imposes no tree-depth limit and every format walker used to be
+// a recursive pre-order descent over its tree: a machine-generated
+// tens-of-thousands-deep file overflowed the 2 MiB rayon worker stack (8 MiB
+// main thread) and SIGSEGV-aborted the process, uncatchable. Every walker now
+// refuses to descend past MAX_ELEMENT_DEPTH (2,000 — the const lives in
+// `ast::elements`, pub(crate), so this pin hard-codes the number with a
+// cross-reference comment) and skips deeper subtrees with ONE per-file
+// warning, latched through the embed budget.
+//
+// ONE pin is enough — the cap logic is IDENTICAL across all six walkers
+// (json/toml/yaml count raw tree nesting, xml/html/embedded_html count
+// element depth): the same `depth > MAX_ELEMENT_DEPTH` guard, the same
+// `warn_element_depth_cap` one-per-file latch, the same parent-before-
+// children pre-order prefix. The pin below drives the json walker through
+// the PUBLIC `get_code_structure` entry point and proves those mechanics
+// once; the other five walkers differ only in which counter the recursion
+// increments, and the doclinks ref-link scans (`ast::doclinks`) share the
+// same constant the same way. (A prior 50,000-deep multi-walker matrix was
+// pathological — multi-second parses — and, for XML, pointless: VERIFIED
+// with the shipped grammars, the XML grammar recovers from deep nesting by
+// FLATTENING the document into one root-level ERROR node holding sibling
+// `STag`s (max tree depth 2), so a parsed XML tree never approaches the cap.
+// The fixture here is deliberately JUST over the cap — 2,100 levels — which
+// proves the identical logic in milliseconds.)
+//
+// Fixture shape: 2,100 nested one-key objects, `{"a":{"a":…{"a":1}…}}`.
+// The json walker counts RAW TREE nesting (every node visit +1) and the
+// vendored json grammar puts the k-th data-level pair at raw tree depth 2k
+// (verified against the shipped grammar), so this fixture reaches ~4,200 raw
+// levels — comfortably past the 2,000 cap while parsing in milliseconds —
+// and the kept pairs are exactly those at depth ≤ 2,000 (1,000 rows).
+//
+// The extraction runs on a dedicated 64 MiB thread. NOT because the capped
+// element walk needs it (its bounded 2,001-level recursion fits a 2 MiB
+// stack in release frames): the fixture's deep tree ALSO flows through the
+// pipeline's other per-stage walks, notably the unified definition walk
+// (`ast::extractor::collect_definition_entries` — still an UNCAPPED
+// recursive descent, residual FIX-1a exposure tracked separately), whose
+// DEBUG frames at this depth overflow the harness thread's default 2 MiB
+// stack (measured: overflow at 8 MiB, pass at 16 MiB). 64 MiB isolates the
+// pin from harness stack defaults so it measures the CAP, not the thread.
+// =============================================================================
+
+/// Extraction through the public entry point, returning the per-file
+/// definitions AND the report warnings (the depth-cap warning rides
+/// `CodeStructure.warnings`).
+fn extract_with_warnings(
+    filename: &str,
+    content: &str,
+    language: Language,
+) -> (Vec<DefinitionInfo>, Vec<String>) {
+    let dir =
+        TempDir::new().unwrap_or_else(|e| panic!("element-extraction-v1: tempdir failed: {e}"));
+    let path = dir.path().join(filename);
+    fs::write(&path, content)
+        .unwrap_or_else(|e| panic!("element-extraction-v1: failed to write {filename}: {e}"));
+    let structure = get_code_structure(&path, language, 0, None)
+        .unwrap_or_else(|e| panic!("element-extraction-v1 [{filename}]: extraction failed: {e}"));
+    assert_eq!(
+        structure.files.len(),
+        1,
+        "element-extraction-v1 [{filename}]: exactly one FileStructure"
+    );
+    (structure.files[0].definitions.clone(), structure.warnings)
+}
+
+fn depth_cap_warnings(warnings: &[String]) -> usize {
+    warnings
+        .iter()
+        .filter(|w| w.contains("markup nesting exceeds depth"))
+        .count()
+}
+
+#[test]
+fn deep_json_beyond_the_cap_is_a_capped_truncation_not_a_crash() {
+    // 2,100 nested one-key objects: {"a":{"a":…{"a":1}…}} — JUST over
+    // MAX_ELEMENT_DEPTH (2,000) in data levels (~6,300 in raw tree levels,
+    // which is what this walker counts). Milliseconds to parse, unlike the
+    // pathological 50,000-deep fixtures this replaced.
+    // 2,100 nested one-key objects: {"a":{"a":…{"a":1}…}} — JUST over
+    // MAX_ELEMENT_DEPTH (2,000) in data levels (~4,200 in raw tree levels,
+    // which is what this walker counts). Milliseconds to parse, unlike the
+    // pathological 50,000-deep fixtures this replaced.
+    const DEPTH: usize = 2_100;
+    let content = format!("{}1{}", "{\"a\":".repeat(DEPTH), "}".repeat(DEPTH));
+
+    // Dedicated 64 MiB thread — see the section comment for WHY (the
+    // pipeline's still-uncapped definition walk needs debug-frame headroom
+    // at this depth; the pin must measure the cap, not the thread).
+    let handle = std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || extract_with_warnings("deep.json", &content, Language::Json))
+        .expect("spawn deep-fixture thread");
+    let (defs, warnings) = handle.join().expect("deep-fixture extraction panicked");
+
+    // No crash (this test completing IS the pin — pre-fix, deep enough
+    // fixtures SIGSEGV-aborted the process) and ONE warning, exactly
+    // (latched per file).
+    assert_eq!(
+        depth_cap_warnings(&warnings),
+        1,
+        "{DEPTH}-deep json must warn exactly once, got: {warnings:?}"
+    );
+
+    // The root-level element survives: the outermost pair is the FIRST
+    // emitted row. A json `pair` node starts at its KEY (byte 1 — the `{`
+    // belongs to the enclosing object), and spans everything nested inside.
+    assert_eq!(
+        defs.len(),
+        1_000,
+        "expected exactly 1,000 key rows (pairs at raw depth 2k ≤ 2,000), got {}",
+        defs.len()
+    );
+    let first = &defs[0];
+    assert_eq!(first.kind, "key", "json emits one key row per pair");
+    assert_eq!(first.name, "a", "every fixture pair is keyed \"a\"");
+    assert_eq!(
+        first.byte_start,
+        Some(1),
+        "the first row IS the root-level pair (kind {}, name {:?}, byte_end {:?})",
+        first.kind,
+        first.name,
+        first.byte_end
+    );
+
+    // The emitted rows are the consistent tree PREFIX: parents always emit
+    // before children (pre-order), so byte ranges strictly increase and
+    // nothing is skipped in the middle. (No `{defs:#?}` in messages — each
+    // row's signature is the whole 12 KB first line.)
+    assert!(
+        defs.iter().all(|d| d.kind == "key" && d.name == "a"),
+        "only fixture key rows are emitted (first {:?}, last {:?}, {} rows)",
+        defs.first().map(|d| (&d.kind, &d.name)),
+        defs.last().map(|d| (&d.kind, &d.name)),
+        defs.len()
+    );
+    let starts: Vec<u64> = defs.iter().filter_map(|d| d.byte_start).collect();
+    assert!(
+        starts.windows(2).all(|w| w[0] < w[1]),
+        "emitted rows must be a strictly-increasing pre-order prefix"
+    );
+}

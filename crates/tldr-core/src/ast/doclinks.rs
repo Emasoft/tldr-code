@@ -349,7 +349,7 @@ fn extract_json_ref_links(source: &str, tree: Option<&Tree>) -> Vec<ImportInfo> 
         return Vec::new();
     };
     let mut imports = Vec::new();
-    walk_json_pairs(tree.root_node(), source, &mut |key, value| {
+    walk_json_pairs(tree.root_node(), source, 0, &mut |key, value| {
         if REF_KEYS.contains(&key) && emittable(value) {
             imports.push(doc_import(value, key));
         }
@@ -361,7 +361,23 @@ fn extract_json_ref_links(source: &str, tree: Option<&Tree>) -> Vec<ImportInfo> 
 /// pair's key text (exact, unquoted) and its string value, when the value
 /// IS a string. Non-string values (number/bool/null/object/array) call
 /// nothing for that pair but do not stop the recursion.
-fn walk_json_pairs<'a>(node: Node<'a>, source: &'a str, f: &mut impl FnMut(&str, &str)) {
+///
+/// FIX-1a: recursion is capped at [`super::elements::MAX_ELEMENT_DEPTH`] —
+/// tree-sitter imposes no tree-depth limit and this walk is a recursive
+/// pre-order descent over an untrusted tree, so a pathological
+/// tens-of-thousands-deep JSON document overflowed the 2 MiB test/worker
+/// stack before the (capped) element walk ever ran. The imports half has no
+/// warning channel, so past the cap the scan simply STOPS (a deep real-world
+/// `$ref` config nests a few dozen levels; nothing deeper is scanned).
+fn walk_json_pairs<'a>(
+    node: Node<'a>,
+    source: &'a str,
+    depth: u32,
+    f: &mut impl FnMut(&str, &str),
+) {
+    if depth > super::elements::MAX_ELEMENT_DEPTH {
+        return;
+    }
     if node.kind() == "pair" {
         // Grammar (tree-sitter-json): `pair` fields `key: string` and
         // `value: _value` (the supertype lands as a concrete node —
@@ -386,7 +402,7 @@ fn walk_json_pairs<'a>(node: Node<'a>, source: &'a str, f: &mut impl FnMut(&str,
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_json_pairs(child, source, f);
+        walk_json_pairs(child, source, depth + 1, f);
     }
 }
 
@@ -409,7 +425,7 @@ fn extract_yaml_ref_links(source: &str, tree: Option<&Tree>) -> Vec<ImportInfo> 
         return Vec::new();
     };
     let mut imports = Vec::new();
-    walk_yaml_pairs(tree.root_node(), source, &mut |key, value| {
+    walk_yaml_pairs(tree.root_node(), source, 0, &mut |key, value| {
         if REF_KEYS.contains(&key) && emittable(value) {
             imports.push(doc_import(value, key));
         }
@@ -421,7 +437,18 @@ fn extract_yaml_ref_links(source: &str, tree: Option<&Tree>) -> Vec<ImportInfo> 
 /// value text when both resolve. Handles both pair kinds (the grammar wraps
 /// pair fields in `block_node`/`flow_node`; the scalar hides one level down,
 /// the same structure `ast::elements` walks for definitions).
-fn walk_yaml_pairs<'a>(node: Node<'a>, source: &'a str, f: &mut impl FnMut(&str, &str)) {
+///
+/// FIX-1a: recursion is capped at [`super::elements::MAX_ELEMENT_DEPTH`] —
+/// same rationale and same silent-stop behavior as [`walk_json_pairs`].
+fn walk_yaml_pairs<'a>(
+    node: Node<'a>,
+    source: &'a str,
+    depth: u32,
+    f: &mut impl FnMut(&str, &str),
+) {
+    if depth > super::elements::MAX_ELEMENT_DEPTH {
+        return;
+    }
     if node.kind() == "block_mapping_pair" || node.kind() == "flow_pair" {
         let key = node
             .child_by_field_name("key")
@@ -435,7 +462,7 @@ fn walk_yaml_pairs<'a>(node: Node<'a>, source: &'a str, f: &mut impl FnMut(&str,
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_yaml_pairs(child, source, f);
+        walk_yaml_pairs(child, source, depth + 1, f);
     }
 }
 
@@ -489,7 +516,7 @@ fn extract_toml_path_links(source: &str, tree: Option<&Tree>) -> Vec<ImportInfo>
         return Vec::new();
     };
     let mut imports = Vec::new();
-    walk_toml_strings(tree.root_node(), source, &mut |value| {
+    walk_toml_strings(tree.root_node(), source, 0, &mut |value| {
         if looks_like_path_or_url(value) && emittable(value) {
             imports.push(doc_import(value, "path"));
         }
@@ -506,7 +533,13 @@ fn extract_toml_path_links(source: &str, tree: Option<&Tree>) -> Vec<ImportInfo>
 /// `string_content` node — the `string` node's own byte range INCLUDES the
 /// quote tokens (verified against tree-sitter-toml-ng-0.7.0 grammar.js), so
 /// the quotes are stripped here.
-fn walk_toml_strings(node: Node, source: &str, f: &mut impl FnMut(&str)) {
+///
+/// FIX-1a: recursion is capped at [`super::elements::MAX_ELEMENT_DEPTH`] —
+/// same rationale and same silent-stop behavior as [`walk_json_pairs`].
+fn walk_toml_strings(node: Node, source: &str, depth: u32, f: &mut impl FnMut(&str)) {
+    if depth > super::elements::MAX_ELEMENT_DEPTH {
+        return;
+    }
     if node.kind() == "pair" {
         let value = node
             .children(&mut node.walk())
@@ -517,7 +550,7 @@ fn walk_toml_strings(node: Node, source: &str, f: &mut impl FnMut(&str)) {
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_toml_strings(child, source, f);
+        walk_toml_strings(child, source, depth + 1, f);
     }
 }
 

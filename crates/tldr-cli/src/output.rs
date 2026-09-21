@@ -462,7 +462,14 @@ pub fn format_structure_text(structure: &tldr_core::CodeStructure) -> String {
             output.push_str("  Elements:\n");
             let hidden = elements.len().saturating_sub(STRUCTURE_TEXT_ELEMENT_CAP);
             for e in elements.iter().take(STRUCTURE_TEXT_ELEMENT_CAP) {
-                let indent = "    ".to_string() + &"  ".repeat(e.depth.unwrap_or(0) as usize);
+                // FIX-1a: clamp the indent. The upstream walker caps tree depth
+                // at [`tldr_core::ast::elements`] `MAX_ELEMENT_DEPTH` (2,000),
+                // but depth is data — a hand-written or cached report could
+                // carry a much larger value, and `"  ".repeat(depth)` would
+                // happily allocate a multi-megabyte line for it. 64 levels is
+                // far past anything readable; the row content is unchanged.
+                let indent =
+                    "    ".to_string() + &"  ".repeat(e.depth.unwrap_or(0).min(64) as usize);
                 output.push_str(&format!(
                     "{indent}- {} {} (L{}-L{})\n",
                     e.kind, e.name, e.line_start, e.line_end
