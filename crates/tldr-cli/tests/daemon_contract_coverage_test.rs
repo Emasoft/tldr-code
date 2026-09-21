@@ -79,7 +79,7 @@
 
 #![cfg(unix)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -712,9 +712,131 @@ async fn search_invalidation_cycle_reflects_file_edits_over_ipc() {
         .expect("graceful shutdown returns Ok");
 }
 
-// =============================================================================
-// Issue #65 — enriched search daemon route (CLI `tldr search`)
-// =============================================================================
+/// FIX-1b (F5): the `Structure` arm registered the requested path's FILE
+/// input hashes — but `get_code_structure` accepts DIRECTORIES, so a
+/// structure slot over a SUBDIR was indexed under the subdir's own path
+/// hashes and a Notify for a file UNDER the subdir could never reach it: the
+/// stale structure survived forever, violating the #51 conservative-never-
+/// stale contract. The fix registers the served-project + request-path
+/// hashes (the Tree arm's shape), so a notify for any file in the served
+/// project invalidates the slot.
+///
+/// Full cycle over the real IPC transport (mirrors
+/// `search_invalidation_cycle_reflects_file_edits_over_ipc`): structure over
+/// a SUBDIR → cache-hit proof → edit a file INSIDE the subdir → Notify
+/// naming the FILE (never the subdir) → re-query must be recomputed.
+#[tokio::test]
+async fn structure_over_subdir_invalidation_cycle_reflects_file_edits_over_ipc() {
+    let temp = project_dir("dc-struct-subdir-");
+    let project = temp.path().canonicalize().unwrap();
+    let subdir = project.join("src");
+    std::fs::create_dir_all(&subdir).expect("create src subdir");
+    let inner = subdir.join("inner.py");
+    std::fs::write(&inner, "def helper():\n    return 'help'\n").expect("write inner.py");
+    // A top-level file so the subdir slot cannot be satisfied by accident
+    // and the fixture is not degenerate.
+    std::fs::write(project.join("outer.py"), "def outerfn():\n    return 2\n")
+        .expect("write outer.py");
+
+    let handle = start_in_process_daemon(&project, default_config()).await;
+
+    let structure = |subdir: PathBuf| {
+        let project = project.clone();
+        async move {
+            send_command(
+                &project,
+                &DaemonCommand::Structure {
+                    path: subdir,
+                    lang: Some("python".to_string()),
+                    max_depth: None,
+                },
+            )
+            .await
+        }
+    };
+
+    // 1. Populate the SUBDIR structure slot and prove it is served from
+    //    cache (hit, identical payload) BEFORE the edit.
+    let first = match structure(subdir.clone()).await.expect("first structure") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("first structure must return a Result, got {other:?}"),
+    };
+    let first_str = serde_json::to_string(&first).unwrap();
+    assert!(
+        first_str.contains("helper") && !first_str.contains("new_func"),
+        "fixture precondition: the subdir structure must know helper only, \
+         got {first_str}"
+    );
+    let repeat = match structure(subdir.clone()).await.expect("repeat structure") {
+        DaemonResponse::Result(v) => v,
+        other => panic!("repeat structure must return a Result, got {other:?}"),
+    };
+    assert_eq!(
+        first_str,
+        serde_json::to_string(&repeat).unwrap(),
+        "precondition: the repeat structure query must be a cache hit"
+    );
+
+    // 2. Edit a file UNDER the subdir: a new function appears.
+    std::fs::write(
+        &inner,
+        "def helper():\n    return 'help'\n\ndef new_func():\n    helper()\n",
+    )
+    .expect("edit inner.py");
+
+    // 3. Notify over IPC — the event names the FILE, not the subdir.
+    let notify = send_command(
+        &project,
+        &DaemonCommand::Notify {
+            file: inner.clone(),
+        },
+    )
+    .await
+    .expect("notify round-trip");
+    match notify {
+        DaemonResponse::NotifyResponse { status, .. } => assert_eq!(status, "ok"),
+        other => panic!("expected NotifyResponse, got {other:?}"),
+    }
+
+    // 4. Re-query the SAME subdir — must be recomputed and surface the new
+    //    function (pre-fix: stale cached HIT without new_func).
+    let after = match structure(subdir.clone())
+        .await
+        .expect("post-notify structure")
+    {
+        DaemonResponse::Result(v) => v,
+        other => panic!("post-notify structure must return a Result, got {other:?}"),
+    };
+    let after_str = serde_json::to_string(&after).unwrap();
+    assert!(
+        after_str.contains("new_func"),
+        "after Notify the re-queried subdir structure must reflect the file \
+         edited UNDER it — a stale cached structure was served (F5): \
+         {after_str}"
+    );
+
+    // 5. Externally observable: the cycle moved the invalidation counter.
+    let status = send_command(&project, &DaemonCommand::Status { session: None })
+        .await
+        .expect("status round-trip");
+    match status {
+        DaemonResponse::FullStatus { salsa_stats, .. } => assert!(
+            salsa_stats.invalidations >= 1,
+            "the Notify must have invalidated at least one cache entry, got {}",
+            salsa_stats.invalidations
+        ),
+        other => panic!("expected FullStatus response, got {:?}", other),
+    }
+
+    send_command(&project, &DaemonCommand::Shutdown)
+        .await
+        .expect("shutdown acknowledged");
+    tokio::time::timeout(Duration::from_secs(10), handle)
+        .await
+        .expect("daemon exits after shutdown")
+        .expect("run task must not panic")
+        .expect("graceful shutdown returns Ok");
+}
 //
 // The CLI enriched search (`SmartSearchArgs::run`) used to compute strictly
 // client-local: the BM25 index was rebuilt over the project on EVERY

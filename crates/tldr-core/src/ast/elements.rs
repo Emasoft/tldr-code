@@ -1380,6 +1380,12 @@ fn walk_html(
             // foreignObjects recursing depth-bounded. The subtree is then
             // SKIPPED — the document owns its elements. Nameless hosts keep
             // the pre-VD-2 behavior (no name → no document → normal descent).
+            // FIX-1b (F6): the skip is gated on the content range EXISTING,
+            // mirroring the xml arm — a start-tag-only foreignObject (html
+            // error recovery for an unclosed tag: an `element` with a
+            // `start_tag` but no `end_tag` → no content range) has nothing
+            // to hand off, and its children must stay in the HOST walk
+            // instead of being silently dropped.
             if html_tag_is_foreign_object(&node, source) && state.host().is_some() {
                 if let Some((start, end)) = html_element_content_range(&node) {
                     let host = state.host().unwrap_or_default();
@@ -1400,8 +1406,8 @@ fn walk_html(
                         out,
                         refs,
                     );
+                    skip_children = true;
                 }
-                skip_children = true;
             }
         }
         "script_element" => {

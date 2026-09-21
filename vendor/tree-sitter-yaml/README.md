@@ -50,6 +50,8 @@ The patch is documented inline in `src/scanner.c` (file header + every site).
 Cargo.toml            crate manifest (path-dep member of the tldr workspace)
 build.rs              upstream's cc build (parser.c + scanner.c, same flags)
 lib.rs                LANGUAGE bridge LanguageFn + NODE_TYPES (repo API surface)
+LICENSE               verbatim upstream 0.7.0 MIT license (the grammar sources
+                      carry it; the patch in scanner.c stays under the same MIT)
 src/parser.c          verbatim upstream 0.7.0 (40,548 lines)
 src/scanner.c         upstream 0.7.0 + the 31-line int32 patch
 src/schema.core.c     verbatim upstream (included by scanner.c, YAML_SCHEMA=core)

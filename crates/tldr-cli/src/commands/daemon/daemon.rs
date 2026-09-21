@@ -1301,11 +1301,19 @@ impl TLDRDaemon {
                     match get_code_structure(&path, language, 0, None) {
                         Ok(result) => {
                             let val = serde_json::to_value(&result).unwrap_or_default();
-                            // Issue #51 follow-up (W5b): structure is FILE-scoped
-                            // — register the file's input hashes (canonical + raw
-                            // spellings) exactly like the Extract arm, so Notify
-                            // invalidates the slot.
-                            let deps = file_input_hashes(&path);
+                            // FIX-1b (F5): get_code_structure accepts DIRECTORIES
+                            // too — the Structure arm used to register the path's
+                            // FILE input hashes, so a slot over a SUBDIR was
+                            // reachable only from a notify naming the subdir
+                            // itself and an edit UNDER the subdir never
+                            // invalidated it (stale forever — violating the #51
+                            // conservative-never-stale contract). Register the
+                            // served-project + request-path hashes, the Tree
+                            // arm's shape: the served-root hash gives every
+                            // notify event in the project a handle on the slot,
+                            // and the request spelling keeps the canonical/raw
+                            // coverage for file-scoped requests.
+                            let deps = project_input_hashes(&self.project, &path);
                             self.cache.insert(key, &val, deps);
                             val
                         }
@@ -1867,10 +1875,13 @@ impl TLDRDaemon {
             // 3. structure for this single file — mirrors the
             //    DaemonCommand::Structure handler for the request shape the
             //    CLI sends (`tldr structure <file>` always passes an explicit
-            //    language string). The handler registers the file's input
-            //    hashes; warm must register the SAME hashes, else a warmed
-            //    structure slot would survive a Notify and serve the pre-edit
-            //    structure forever (issue #51 follow-up, W5b).
+            //    language string). FIX-1b (F5): the handler now registers the
+            //    served-project + request-path hashes (a structure request may
+            //    name a DIRECTORY); warm registers the FILE's own hashes — the
+            //    precise dependency set for a file-scoped slot, and a Notify
+            //    for this file always carries them, so a warmed slot can never
+            //    survive an edit to the file it mirrors (issue #51 follow-up,
+            //    W5b).
             let file_struct_key = structure_query_key(path, lang.as_str(), lang);
             if self
                 .cache

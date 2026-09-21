@@ -32,7 +32,11 @@
 //!
 //! Writers outside this module do not exist: every registry mutation goes
 //! through [`add_entry`], [`remove_entry`], or the prune/migration
-//! write-back in [`read_registry`], all of which hold the lock.
+//! write-back in [`read_registry`], all of which hold the lock — FIX-1b
+//! (F7): when the lock itself is unavailable, [`read_registry`] degrades to
+//! an unlocked read that never writes (the prune write-back is skipped), so
+//! no unlocked read-modify-write cycle on the shared file survives issue
+//! #64.
 //!
 //! # Migration from v0.2.x
 //!
@@ -203,8 +207,9 @@ fn write_registry_atomic(registry: &DaemonRegistry) -> std::io::Result<()> {
 }
 
 /// Read the registry from disk, run one-shot v0.2.x migration if needed,
-/// and prune dead-PID entries. The pruned-and-migrated registry is also
-/// written back so subsequent reads observe a clean state.
+/// and prune dead-PID entries. When the registry lock is held, the
+/// pruned-and-migrated registry is also written back so subsequent reads
+/// observe a clean state.
 ///
 /// Issue #64: the prune write-back is a WRITE to the shared registry file,
 /// so it runs under the registry lock like every other mutation — without
@@ -212,20 +217,32 @@ fn write_registry_atomic(registry: &DaemonRegistry) -> std::io::Result<()> {
 /// registration with a snapshot that predates it.
 ///
 /// Auxiliary state — a missing/corrupt file simply yields an empty registry.
-/// If the lock file itself cannot be created (e.g. read-only cache dir),
-/// the read degrades to unlocked: callers lose only the prune write-back,
-/// which is best-effort.
+/// If the lock file itself cannot be created (e.g. read-only cache dir), the
+/// read degrades to unlocked and NEVER writes: the caller loses the prune
+/// write-back (best-effort by design; the next locked read flushes it) and,
+/// with it, the last unlocked read-modify-write cycle on the shared file.
 pub fn read_registry() -> DaemonRegistry {
     // Hold the lock for the whole read + prune write-back. If the lock
-    // file itself cannot be created/opened, degrade to unlocked: the
-    // caller loses only the prune write-back, which is best-effort.
-    let _guard = RegistryLock::acquire().ok();
-    read_registry_unlocked()
+    // file itself cannot be created/opened (e.g. a read-only cache dir),
+    // degrade to an unlocked read that never writes — FIX-1b (F7): the
+    // pruned state stays in memory and the write-back is skipped, because
+    // an unlocked prune write-back is exactly the read-modify-write cycle
+    // issue #64 eliminated.
+    let guard = RegistryLock::acquire().ok();
+    read_registry_unlocked(guard.is_some())
 }
 
-/// Read the registry WITHOUT acquiring the lock. Callers must already hold
-/// the registry lock ([`RegistryLock::acquire`]).
-fn read_registry_unlocked() -> DaemonRegistry {
+/// Read the registry WITHOUT acquiring the lock, pruning dead-PID entries
+/// in memory.
+///
+/// `locked` tells the reader whether the CALLER holds the registry lock
+/// ([`RegistryLock::acquire`]). Only a locked caller may write the pruned
+/// state back: an unlocked prune write-back is a read-modify-write cycle on
+/// the shared registry file with no mutual exclusion, the exact
+/// last-writer-wins hazard issue #64 eliminated. Losing the write-back
+/// merely defers the on-disk cleanup to the next locked read — this
+/// caller's view is already pruned.
+fn read_registry_unlocked(locked: bool) -> DaemonRegistry {
     migrate_from_active_if_needed();
     let path = registry_file_path();
     let mut registry = match std::fs::read_to_string(&path) {
@@ -234,8 +251,9 @@ fn read_registry_unlocked() -> DaemonRegistry {
     };
     let original_len = registry.daemons.len();
     registry.daemons.retain(|d| is_pid_alive(d.pid));
-    if registry.daemons.len() != original_len {
-        // Pruned at least one stale entry — flush back. Best-effort.
+    if locked && registry.daemons.len() != original_len {
+        // Pruned at least one stale entry — flush back. Best-effort, and
+        // only ever under the registry lock (issue #64).
         let _ = write_registry_atomic(&registry);
     }
     registry
@@ -317,7 +335,7 @@ pub fn add_entry(project: &Path, pid: u32, socket: &Path) -> std::io::Result<()>
         .unwrap_or_else(|_| project.to_path_buf());
     let _lock = RegistryLock::acquire()?;
 
-    let mut registry = read_registry_unlocked();
+    let mut registry = read_registry_unlocked(true);
     registry.daemons.retain(|d| d.project != canon);
     registry.daemons.push(DaemonRegistryEntry {
         project: canon,
@@ -338,7 +356,7 @@ pub fn remove_entry(project: &Path) -> std::io::Result<()> {
         .unwrap_or_else(|_| project.to_path_buf());
     let _lock = RegistryLock::acquire()?;
 
-    let mut registry = read_registry_unlocked();
+    let mut registry = read_registry_unlocked(true);
     let before = registry.daemons.len();
     registry.daemons.retain(|d| d.project != canon);
     if registry.daemons.len() == before {
@@ -580,6 +598,83 @@ mod tests {
             assert!(
                 live.iter().all(|d| d.pid != dead_pid),
                 "dead PID entry should have been pruned on read"
+            );
+        });
+    }
+
+    /// FIX-1b (F7): an UNLOCKED registry read must never write the prune
+    /// back. The degrade path (lock file uncreatable, e.g. a read-only cache
+    /// dir) used to call the same write-back the locked path does — an
+    /// unlocked read-modify-write on the shared registry file, the exact
+    /// last-writer-wins hazard issue #64 eliminated. Contract: the unlocked
+    /// read still prunes IN MEMORY (liveness for this caller) but the file
+    /// is byte-for-byte untouched; the next LOCKED read flushes the prune.
+    #[test]
+    fn unlocked_read_prunes_in_memory_and_never_writes_back() {
+        with_registry_dir("unlocked-no-write", |dir| {
+            let project = dir.join("proj-unlocked");
+            std::fs::create_dir_all(&project).unwrap();
+            // Spawn `true` and reap → PID is now definitely dead (same
+            // recipe as dead_pid_entries_are_pruned_on_read).
+            let mut child = std::process::Command::new("true")
+                .spawn()
+                .expect("spawn true");
+            let dead_pid = child.id();
+            let _ = child.wait();
+
+            // Inject a dead-pid registry file DIRECTLY on disk — add_entry
+            // would acquire the lock and prune on its internal read.
+            let entry = DaemonRegistryEntry {
+                project: project.clone(),
+                pid: dead_pid,
+                socket: dir.join("proj-unlocked.sock"),
+                started_at: chrono::Utc::now().to_rfc3339(),
+            };
+            write_registry_atomic(&DaemonRegistry {
+                daemons: vec![entry],
+            })
+            .expect("seed registry file");
+            let before = std::fs::read_to_string(registry_file_path()).unwrap();
+            assert!(
+                before.contains(&dead_pid.to_string()),
+                "fixture precondition: the dead-PID entry is on disk"
+            );
+
+            // Unlocked read (locked = false): the dead entry is dropped from
+            // the RETURNED view, but the file must not be touched.
+            let unlocked = read_registry_unlocked(false);
+            assert!(
+                unlocked.daemons.is_empty(),
+                "the unlocked read still prunes in memory, got {:?}",
+                unlocked.daemons
+            );
+            let after_unlocked = std::fs::read_to_string(registry_file_path()).unwrap();
+            assert_eq!(
+                before, after_unlocked,
+                "FIX-1b (F7): an unlocked prune must NOT write the registry back"
+            );
+            assert!(
+                after_unlocked.contains(&dead_pid.to_string()),
+                "the dead-PID entry survives on disk after an unlocked read"
+            );
+
+            // Control: the same state under a LOCKED read flushes the prune.
+            let _lock = RegistryLock::acquire().expect("registry lock");
+            let locked = read_registry_unlocked(true);
+            assert!(
+                locked.daemons.is_empty(),
+                "the locked read prunes in memory too"
+            );
+            drop(_lock);
+            let after_locked = std::fs::read_to_string(registry_file_path()).unwrap();
+            assert_ne!(
+                before, after_locked,
+                "a locked prune must write the registry back (the issue-64 \
+                 sanctioned path)"
+            );
+            assert!(
+                !after_locked.contains(&dead_pid.to_string()),
+                "the dead-PID entry is gone from disk after the locked read"
             );
         });
     }

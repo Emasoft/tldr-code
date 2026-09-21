@@ -9,6 +9,11 @@ license = "MIT"
 description = "YAML grammar for tree-sitter (vendored, int32-row patched)"
 repository = "https://github.com/tree-sitter-grammars/tree-sitter-yaml"
 build = "build.rs"
+# FIX-1b (F9c): never publishable. This is a patched fork of upstream
+# tree-sitter-yaml (int32-row patch, README.md) kept as a versionless path
+# dependency — publishing it to crates.io would collide with upstream, and
+# the workspace-inherited dev-dependency below cannot be published anyway.
+publish = false
 autolib = false
 autobins = false
 autoexamples = false

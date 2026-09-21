@@ -2719,6 +2719,55 @@ fn malformed_foreign_object_content_warns_and_consumes_no_number() {
     );
 }
 
+/// FIX-1b (F6): a start-tag-only foreignObject — an unclosed tag, so the
+/// html error recovery produces an `element` with a `start_tag` but no
+/// `end_tag` and therefore NO content range — must NOT swallow its subtree.
+/// Pre-fix the html arm set `skip_children` unconditionally, so the child
+/// elements were silently dropped from the host walk (the xml arm only skips
+/// when the content slice exists). Post-fix the skip is gated on the content
+/// range existing, and the children stay in the HOST walk (container-less,
+/// no `#fo-N` document is created — there is nothing to hand off).
+#[test]
+fn start_tag_only_foreign_object_keeps_its_children_in_the_host_walk() {
+    let src = "\
+<!DOCTYPE html>
+<html>
+<body>
+<svg>
+  <foreignObject>
+    <p id=\"host-child\">host-owned content</p>
+</svg>
+</body>
+</html>
+";
+    let defs = extract_elements("start-tag-only.html", src, Language::Html);
+
+    // The unclosed foreignObject itself still emits its host element row.
+    assert!(
+        defs.iter()
+            .any(|d| d.kind == "element" && d.name == "foreignObject" && d.container.is_none()),
+        "the start-tag-only foreignObject must emit as a host element: {defs:#?}"
+    );
+
+    // Its child is NOT dropped: the host walk descends and the p emits as a
+    // HOST element row (no virtual document exists — no content range was
+    // ever handed off).
+    assert!(
+        defs.iter()
+            .any(|d| d.kind == "element" && d.name == "p#host-child" && d.container.is_none()),
+        "FIX-1b (F6): a start-tag-only foreignObject must not silently drop \
+         its children — the host walk must reach them: {defs:#?}"
+    );
+
+    // And no `#fo-N` virtual document was created for it.
+    assert!(
+        !defs
+            .iter()
+            .any(|d| d.container.as_deref().is_some_and(|c| c.contains("#fo-"))),
+        "no #fo-N document exists for a content-less foreignObject: {defs:#?}"
+    );
+}
+
 /// External references inside a foreignObject stay REFERENCES: a `src`
 /// script and a `data` object contribute their doclink rows to the HOST
 /// imports (host-level, via: None — the reference GRAPH owns cross-file
