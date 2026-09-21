@@ -6,7 +6,7 @@ Token-efficient code analysis for LLMs. 66 commands (63 in a default build, 3 be
 > ```sh
 > curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Emasoft/tldr-code/releases/download/v0.4.1-fork.1/tldr-cli-installer.sh | sh
 > ```
-> Windows (PowerShell): the same URL with `tldr-cli-installer.ps1`. Build from source instead: `cargo install --path crates/tldr-cli`. Verify: `tldr --version` → `0.4.1-fork.1`.
+> Windows: download `tldr-fork-v0.4.1-fork.1-x86_64-pc-windows-msvc.zip` from the [release page](https://github.com/Emasoft/tldr-code/releases/tag/v0.4.1-fork.1) and extract the three `.exe` files onto your PATH — no installer script is shipped for Windows. Build from source instead: `cargo install --path crates/tldr-cli`. Verify: `tldr --version` → `0.4.1-fork.1`.
 
 ## Why
 
