@@ -1,0 +1,155 @@
+# Fork release pipeline — builds LOCAL BINARIES ONLY (cargo-dist-style, self-contained).
+#
+# NOTE: This is the fork's own release machinery. `.github/workflows/release.yml`
+# is the upstream-inherited cargo-dist pipeline and stays DORMANT — do not delete
+# or "fix" it; it intentionally does not run because fork Actions require one-time
+# activation, and its dist-plan targets upstream config.
+#
+# What this does:
+#   * push of a `v*` tag, or a manual `workflow_dispatch`, builds
+#     tldr / tldr-daemon / tldr-mcp for 5 targets,
+#   * packages tar.gz (unix) / zip (windows) + sha256 checksums,
+#   * generates the curl-one-liner installer `tldr-cli-installer.sh` from the
+#     committed template `scripts/fork-install.sh` (sed of the tag placeholder),
+#     keeping the artifact name the README install URL points at,
+#   * publishes one GitHub Release with all artifacts.
+#
+# No cargo-dist CLI, no dist manifest, no reuse of release.yml.
+
+name: Fork Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {} # tag defaults to github.ref_name (run from a tag ref, or the release is created at the triggering commit)
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-15-intel # macos-13 label is retired (actionlint: unknown runner); this is the current Intel macOS runner
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v4.2.2 (same pin as release.yml)
+        with:
+          persist-credentials: false
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # `stable` branch head, resolved 2026-09-21 via git ls-remote
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build (release)
+        run: cargo build --release -p tldr-cli --target ${{ matrix.target }}
+
+      # ---------- Package (unix): flat tarball with the three binaries ----------
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          TARBALL="tldr-fork-${TAG}-${{ matrix.target }}.tar.gz"
+          tar -czf "$TARBALL" -C "target/${{ matrix.target }}/release" tldr tldr-daemon tldr-mcp
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$TARBALL" > "$TARBALL.sha256"
+          else
+            shasum -a 256 "$TARBALL" > "$TARBALL.sha256"
+          fi
+          cat "$TARBALL.sha256"
+
+      # ---------- Package (windows): zip with the three .exe binaries ----------
+      # Windows users get the zip (extract, add to PATH). No .ps1 installer is
+      # shipped by this pipeline; the zip + its checksum are the only windows
+      # artifacts, so the checksum line below IS the accompanying note.
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = "tldr-fork-$env:TAG-${{ matrix.target }}.zip"
+          Compress-Archive -Path `
+            "target/${{ matrix.target }}/release/tldr.exe",`
+            "target/${{ matrix.target }}/release/tldr-daemon.exe",`
+            "target/${{ matrix.target }}/release/tldr-mcp.exe" `
+            -DestinationPath $zip
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          "$hash  $zip" | Out-File -Encoding ascii "$zip.sha256"
+          Get-Content "$zip.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v4.x (same pin as release.yml)
+        with:
+          name: fork-release-${{ matrix.target }}
+          path: |
+            tldr-fork-${{ github.ref_name }}-*
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v4.2.2 (same pin as release.yml)
+        with:
+          persist-credentials: false
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v4.x (same pin as release.yml)
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # Generate the curl-one-liner installer from the committed template.
+      # The sed is ANCHORED to the `TAG_DEFAULT=` line so it bakes the concrete
+      # tag into the default WITHOUT touching the template-guard literal —
+      # TLDR_INSTALL_TAG (equal to the baked tag included) stays a valid
+      # override, and TLDR_INSTALL_URL_BASE allows local file:// testing.
+      - name: Generate tldr-cli-installer.sh
+        shell: bash
+        run: |
+          set -eu
+          sed "s|^TAG_DEFAULT=.*|TAG_DEFAULT=\"$TAG\"|" scripts/fork-install.sh > tldr-cli-installer.sh
+          grep -q "^TAG_DEFAULT=\"$TAG\"$" tldr-cli-installer.sh || { echo "installer generation failed: TAG_DEFAULT not baked" >&2; exit 1; }
+          chmod +x tldr-cli-installer.sh
+          sh -n tldr-cli-installer.sh # syntax smoke check
+          head -5 tldr-cli-installer.sh
+
+      - name: Create GitHub Release and upload artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -eu
+          # Create the release if it doesn't exist yet; --target pins the tag to
+          # this commit when workflow_dispatch runs without a pre-existing tag.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "tldr fork $TAG" --generate-notes --target "$GITHUB_SHA"
+          fi
+          # --clobber makes re-runs idempotent (overwrites same-named assets).
+          gh release upload "$TAG" --clobber tldr-cli-installer.sh artifacts/*
+          echo "--- Release contents ---"
+          gh release view "$TAG" --json assets --jq '.assets[].name'
