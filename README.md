@@ -2,6 +2,12 @@
 
 Token-efficient code analysis for LLMs. 66 commands (63 in a default build, 3 behind the `semantic` feature) across AST, call graph, data flow, security, and quality — output optimized for machine consumption.
 
+> **Install this fork** (precompiled, no Rust toolchain needed):
+> ```sh
+> curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Emasoft/tldr-code/releases/download/v0.4.1-fork.1/tldr-cli-installer.sh | sh
+> ```
+> Windows (PowerShell): the same URL with `tldr-cli-installer.ps1`. Build from source instead: `cargo install --path crates/tldr-cli`. Verify: `tldr --version` → `0.4.1-fork.1`.
+
 ## Why
 
 LLMs waste context on raw source dumps. tldr extracts the signal: function signatures, call graphs, taint flows, complexity metrics, dead code — as structured JSON that fits in a fraction of the tokens.
