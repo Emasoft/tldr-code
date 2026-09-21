@@ -1,9 +1,0 @@
-test cpp_deserialization_positive ... FAILED
-test java_deserialization_positive ... FAILED
-test ruby_command_injection_positive ... FAILED
-test rust_command_injection_positive ... FAILED
-test rust_path_traversal_positive ... FAILED
-test rust_ssrf_positive ... FAILED
-test rust_deserialization_positive ... FAILED
-test scala_deserialization_positive ... FAILED
-test result: FAILED. 158 passed; 8 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.16s

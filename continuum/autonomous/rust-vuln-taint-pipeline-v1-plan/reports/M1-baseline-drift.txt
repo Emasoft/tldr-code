@@ -1,2 +1,0 @@
-c86d701 feat(taint): Ruby subshell ShellExec dispatch arm (ruby-backtick-extraction-v1 M2)
-b577796 feat(taint): nested-constructor descent in extract_first_identifier_arg_ast (var-extract-nested-constructor-v1)

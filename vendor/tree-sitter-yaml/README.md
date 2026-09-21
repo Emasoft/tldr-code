@@ -42,6 +42,13 @@ kinds and indent columns). `parser.c`, `schema.core.c`, `schema.json.c`,
 are unchanged below the old threshold — byte-identical trees (pinned by
 tldr-code's `grammar_stability_test` and the element suites).
 
+Two corners the patch does NOT cover, for the record: `col` is now `int32_t`,
+so a single source LINE longer than 2^31−1 bytes (>2 GiB on one line, no
+newline) still overflows it — the fix is about line COUNT, not unbounded line
+LENGTH; and because `ind_len_stk` stays `int16_t`, a block-indent column of
+32768+ (`push_ind` receives `bgn_col`/`blk_imp_col` as `int16_t`) would still
+wrap — indentation past column 32767 is the honest bound of this vendor.
+
 The patch is documented inline in `src/scanner.c` (file header + every site).
 
 ## Layout
@@ -49,7 +56,9 @@ The patch is documented inline in `src/scanner.c` (file header + every site).
 ```
 Cargo.toml            crate manifest (path-dep member of the tldr workspace)
 build.rs              upstream's cc build (parser.c + scanner.c, same flags)
-lib.rs                LANGUAGE bridge LanguageFn + NODE_TYPES (repo API surface)
+lib.rs                LANGUAGE bridge LanguageFn + NODE_TYPES (NODE_TYPES is
+                      exported for upstream parity — nothing in tldr-code
+                      consumes it; the grammar loads through LANGUAGE only)
 LICENSE               verbatim upstream 0.7.0 MIT license (the grammar sources
                       carry it; the patch in scanner.c stays under the same MIT)
 src/parser.c          verbatim upstream 0.7.0 (40,548 lines)

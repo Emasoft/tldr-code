@@ -1,7 +1,0 @@
-default panic count: 0 (expect 0)
-with --include-smells: 1 (expect >=1)
-VulnFinding keys (with --include-smells): column,confidence,cwe_id,description,file,line,remediation,severity,taint_flow,title,vuln_type
-Top-level report keys default:
-files_scanned,findings,scan_duration_ms,summary
-Top-level report keys with flag:
-files_scanned,findings,scan_duration_ms,summary

@@ -27,10 +27,14 @@ build/
 benchmark_results.json
 libdaemon_tests.rlib
 coverage.lcov
-${input:db_path}
 
 # Analysis session artifacts (ephemeral)
-*.yaml
+# yaml: agent sessions drop scratch yaml notes at the repo ROOT — the old
+# blanket `*.yaml` also hid real tracked yaml everywhere else (none exists
+# today, nothing was ever tracked under it), so the ignore is root-anchored:
+# it keeps catching the root droppings and can never bury a tracked .yaml/.yml
+# deeper in the tree.
+/*.yaml
 AUTOMATION_VS_UNIT_TESTS.md
 BETTER_COVERAGE_METRICS.md
 BUGS_FOUND.md
@@ -84,6 +88,10 @@ META-INF/
 /.janitor/
 # late: agent harness state (command allowlist) — same rationale as janitor
 /.late/
+# continuum: agent harness state (autonomous-run plans, dispatch contracts,
+# capture/report files) — same category as .late/: per-machine session state,
+# never part of the distribution (decision: untracked, files stay on disk)
+/continuum/
 .DS_Store
 Thumbs.db
 *.swp
@@ -93,6 +101,7 @@ Thumbs.db
 *.rej
 *.tmp
 *.bak
+*.backup
 __pycache__/
 *.pyc
 .venv/

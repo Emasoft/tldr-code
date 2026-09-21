@@ -1,5 +1,0 @@
-test cache_tests::test_cache_clear_removes_files ... ok
-test cache_tests::test_cache_stats_json_output ... ok
-
-test result: ok. 33 passed; 0 failed; 42 ignored; 0 measured; 0 filtered out; finished in 1.44s
-

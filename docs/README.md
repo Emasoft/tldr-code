@@ -1,6 +1,6 @@
 # TLDR Documentation
 
-Token-efficient code analysis for LLMs with 60+ commands across AST, call graph, data flow, security, and quality analysis.
+Token-efficient code analysis for LLMs with 66 commands (63 in a default build, 3 behind the `semantic` feature) across AST, call graph, data flow, security, and quality analysis.
 
 ## Contents
 

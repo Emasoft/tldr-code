@@ -6,6 +6,11 @@
   - `crates/tldr-cli` — binary `tldr` + wrappers `tldr-daemon`, `tldr-mcp`
   - `crates/tldr-daemon` — daemon crate
   - `crates/tldr-mcp` — MCP server crate
+  - `vendor/tree-sitter-yaml` — vendored, int32-row-patched YAML grammar (path-dep member)
+- YAML grammar work goes through the vendored crate, never a registry version:
+  provenance, the patch, and re-vendor steps live in its README.
+- The grammar pins are `grammar_stability_test` and the `yaml_vendored_grammar_v1`
+  suite (both in `crates/tldr-core/tests/`) — run them after any vendor change.
 
 ## Commands (blessed)
 ```bash

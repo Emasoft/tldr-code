@@ -39,6 +39,9 @@ tldr-code/
 │   ├── tldr-cli/         # CLI application
 │   ├── tldr-daemon/      # Background daemon
 │   └── tldr-mcp/         # MCP server integration
+├── vendor/
+│   └── tree-sitter-yaml/ # Vendored, int32-row-patched YAML grammar
+│                         # (workspace path-dep member; see its README.md)
 ├── docs/                 # Documentation
 └── target/               # Build output
 ```
@@ -49,22 +52,37 @@ The core analysis engine. See individual modules below.
 
 ### tldr-cli (`crates/tldr-cli/`)
 
-CLI interface built with `clap`. Commands are organized in `src/commands/`:
+CLI interface built with `clap`. `src/main.rs` defines the subcommands; each is
+implemented as a module in `src/commands/` (`mod.rs` is the wiring of record —
+module list + `Args` re-exports). The real layout, grouped by analysis area:
 
 ```
 commands/
-├── ast.rs          # tree, structure, extract, imports
-├── callgraph.rs    # calls, impact, dead, refs
-├── cfg.rs          # CFG extraction
-├── dfg.rs          # DFG extraction
-├── pdg.rs          # PDG and slicing
-├── search.rs      # BM25 search
-├── semantic.rs     # Embedding search
-├── quality/        # smells, complexity, health
-├── security/       # taint, vuln, api-check
-├── patterns/       # design pattern detection
-├── daemon/        # Daemon client (IPC)
-└── ...
+├── mod.rs                    # module list + Args re-exports
+├── AST:                      # tree, structure, extract, imports, importers,
+│                             # body, context, order, logs
+├── call graph / impact:      # calls, impact, dead, hubs, whatbreaks,
+│                             # references, change-impact, dice
+├── data flow / slicing:      # reaching-defs, available, slice
+├── quality / metrics:        # churn, complexity, smells, debt, health,
+│                             # hotspots, clones, cognitive, halstead,
+│                             # coverage, loc, diagnostics, doctor
+├── search:                   # search (BM25); embed/semantic/similar behind
+│                             # the `semantic` feature
+├── structure patterns:       # deps, inheritance, detect-patterns
+├── contracts/                # contracts, specs, invariants, verify,
+│                             # dead-stores, chop
+├── patterns/                 # cohesion, coupling, interface, resources,
+│                             # temporal
+├── bugbot/                   # bugbot check runner
+├── remaining/                # todo, explain, secure, definition, diff,
+│                             # api-check (+ vuln, graph utils)
+├── daemon/ + daemon_router.rs  # daemon IPC client (start/stop/status/list/
+│                             # log/query/notify), cache clear/stats, warm/
+│                             # stats, and the auto-routing through the cache
+├── misc:                     # taint, fix, api-surface
+└── archived/                 # retired deep-analysis commands kept for
+                              # reference (cfg, dfg, ssa, dominators, bounds, …)
 ```
 
 ### tldr-daemon (`crates/tldr-daemon/`)
@@ -217,9 +235,12 @@ through their own layers:
 - **Element extraction** — `tldr-core/src/ast/elements.rs` emits element-level
   definitions (JSON keys, TOML sections, YAML documents, XML/SVG/HTML elements,
   CSS selectors, LaTeX sections/environments, Markdown headings/code-blocks/tables)
-  through the normal `DefinitionInfo` channel; `tldr-core/src/ast/csvscan.rs`
-  (CSV/TSV records + header cells) and `tldr-core/src/ast/logs.rs` (log entries)
-  are the native no-grammar counterparts.
+  through the normal `DefinitionInfo` channel. The native no-grammar scanners are
+  its counterparts: `tldr-core/src/ast/csvscan.rs` (CSV/TSV records + header
+  cells), `tldr-core/src/ast/sqlscan.rs` (`.sql`/`.ddl` schema outline — DDL
+  statements as elements, `REFERENCES` targets as reference edges),
+  `tldr-core/src/ast/logs.rs` (log entries), and `tldr-core/src/ast/dotfiles.rs`
+  (`.env`-family `KEY=value` lines and `.gitignore`-family glob patterns).
 - **Document reference graph** — `tldr-core/src/ast/doclinks.rs` scans link/path/
   URL/import references out of markdown, HTML, XML, CSS, LaTeX, JSON, YAML, TOML,
   Bash, and text; `tldr-core/src/analysis/doc_impact.rs` resolves them to project
@@ -229,6 +250,22 @@ through their own layers:
   headings/TOC; `tldr-core/src/ast/ooxml.rs` unzips `.docx`/`.xlsx`/`.pptx` and
   walks the main XML part; `tldr-core/src/fs/sniff.rs` makes extensionless text
   files first-class targets (binary sniff + shebang→XML→text ladder).
+- **Virtual documents** — embedded code is a document, not decoration
+  (virtual-documents-v1, `ast/elements.rs`): an inline `<script>` body re-parses
+  with the JavaScript grammar, a `<style>` body with the CSS grammar, and SVG
+  `foreignObject` content with the HTML grammar — each emitting the same rows a
+  standalone file would. Rows and outbound references ride the host file's
+  arrays with additive provenance fields: `DefinitionInfo::container` /
+  `ImportInfo::via` name the virtual document (`page.html#script-1`,
+  `page.html#style-2`), and nested documents compose hierarchically
+  (`page.html#fo-1#script-1`). Recursion is bounded three ways — every re-parse
+  operates on a strictly smaller same-file byte slice (no cross-file parsing:
+  external `src`/`href` stay references), `MAX_EMBED_DEPTH` (8) caps nesting,
+  and `MAX_VIRTUAL_DOCS_PER_FILE` (256) caps documents per file — so circular
+  html→svg→foreignObject markup cannot hang or blow up the walk. Full-fidelity
+  YAML element extraction rides the vendored `vendor/tree-sitter-yaml` workspace
+  member (int32-row-patched grammar — upstream aborts into one root `ERROR` past
+  row 32768), with no chunking or outline workaround.
 
 ---
 
@@ -281,16 +318,19 @@ Source Code
 | Tier | Languages | Notes |
 |------|-----------|-------|
 | 1 | Python, Go, C, C++ | Most complete implementations |
-| 2 | TypeScript, Rust, Ruby, Java | Full support |
+| 2 | TypeScript, JavaScript, Rust, Ruby, Java | Full support (TS/JS ride the two TypeScript-grammar dialects) |
 | 3 | C#, Kotlin, Swift | Full support |
 | 4 | Scala, PHP, Lua, Luau, Elixir, OCaml | Full support |
 | formats | JSON, YAML, TOML, XML/SVG, HTML, CSS, Bash | Parsed via tree-sitter; element-level extraction (keys, sections, documents, elements, selectors) instead of functions/classes; excluded from project-language detection |
 | formats (documents) | LaTeX, Markdown | Parsed via tree-sitter; element extraction (LaTeX sections/environments, Markdown headings/code-blocks/tables) |
 | formats (data) | CSV, TSV | No usable tree-sitter grammar — native streaming RFC 4180 scanner (`ast/csvscan.rs`); records and header cells as elements |
 | native (no grammar) | Log, Text | No tree-sitter grammar exists — native scanners only (`ast/logs.rs` entry scanner, `ast/toc.rs` plain-text heading scanner) |
+| native (path predicate) | .sql / .ddl | No `Language` variant and no usable grammar on crates.io (`tree-sitter-sql` 0.0.2 is source-only and dead; full vendoring evaluated and deferred — see the root `Cargo.toml`) — files resolve to `Language::Text` and the native schema-outline scanner (`ast/sqlscan.rs`) runs behind the `is_sql_path` path predicate; DDL statements become elements, `REFERENCES` targets become reference edges |
 | containers | .docx / .xlsx / .pptx | OOXML containers, NOT languages — no `Language` variant; the main XML part is unzipped and walked by the XML element walker (`ast/ooxml.rs`) |
 
-18 code languages + 11 formats + 2 native no-grammar languages = 31.
+18 code languages + 11 formats + 2 native no-grammar languages = 31 `Language`
+variants; `.sql`/`.ddl` and the OOXML containers carry no variant at all (they
+are reached by path predicates, not by language dispatch).
 
 ---
 
