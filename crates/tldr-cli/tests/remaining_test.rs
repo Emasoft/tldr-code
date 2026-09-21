@@ -143,6 +143,8 @@ mod remaining_types {
         pub name: String,
         #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
         pub type_hint: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub default: Option<String>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1328,6 +1330,100 @@ mod explain_command {
             .failure()
             .code(20)
             .stderr(predicate::str::contains("not found").or(predicate::str::contains("symbol")));
+    }
+
+    // -------------------------------------------------------------------------
+    // JavaScript/TypeScript params (issue #11)
+    // -------------------------------------------------------------------------
+
+    /// (js-explain-params-v1) Issue #11: `tldr explain` reported
+    /// `"params": []` for every JavaScript function — `function topLevel(x)`
+    /// and the arrow form `arrowFunc = (x) => …` alike — because the TSX
+    /// grammar wraps parameters in required_parameter/optional_parameter
+    /// nodes that the params extraction never matched.
+    #[test]
+    fn test_explain_javascript_params_issue11() {
+        let temp = TempDir::new().unwrap();
+        let js_source = r#"function topLevel(x) {
+    return x * 2;
+}
+
+const arrowFunc = (x) => x + 1;
+
+function multi(a, b = 5) {
+    return a + b;
+}
+"#;
+        let file_path = create_test_file(&temp, "sample.js", js_source);
+
+        // Exact repro from the issue: function topLevel(x) → params == ["x"]
+        let output = tldr_cmd()
+            .args(["explain", file_path.to_str().unwrap(), "topLevel"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "explain should succeed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let report: ExplainReport = serde_json::from_str(&stdout).expect("valid ExplainReport");
+        assert_eq!(report.signature.params.len(), 1, "topLevel params");
+        assert_eq!(report.signature.params[0].name, "x");
+
+        // Arrow form: arrowFunc = (x) => x + 1 → params == ["x"]
+        let output = tldr_cmd()
+            .args(["explain", file_path.to_str().unwrap(), "arrowFunc"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "explain should succeed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let report: ExplainReport = serde_json::from_str(&stdout).expect("valid ExplainReport");
+        assert_eq!(report.signature.params.len(), 1, "arrowFunc params");
+        assert_eq!(report.signature.params[0].name, "x");
+
+        // Multi-param + default value: multi(a, b = 5)
+        let output = tldr_cmd()
+            .args(["explain", file_path.to_str().unwrap(), "multi"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "explain should succeed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let report: ExplainReport = serde_json::from_str(&stdout).expect("valid ExplainReport");
+        assert_eq!(report.signature.params.len(), 2, "multi params");
+        assert_eq!(report.signature.params[0].name, "a");
+        assert_eq!(report.signature.params[1].name, "b");
+        assert_eq!(report.signature.params[1].default.as_deref(), Some("5"));
+    }
+
+    /// TypeScript control (same TSX grammar + handler as JavaScript):
+    /// typed params, a default value and an optional parameter.
+    #[test]
+    fn test_explain_typescript_params() {
+        let temp = TempDir::new().unwrap();
+        let ts_source = r#"function typed(a: number, b = 5, c?: string): boolean {
+    return true;
+}
+"#;
+        let file_path = create_test_file(&temp, "sample.ts", ts_source);
+
+        let output = tldr_cmd()
+            .args(["explain", file_path.to_str().unwrap(), "typed"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "explain should succeed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let report: ExplainReport = serde_json::from_str(&stdout).expect("valid ExplainReport");
+        assert_eq!(report.signature.params.len(), 3, "typed params");
+        assert_eq!(report.signature.params[0].name, "a");
+        assert_eq!(
+            report.signature.params[0].type_hint.as_deref(),
+            Some("number")
+        );
+        assert_eq!(report.signature.params[1].name, "b");
+        assert_eq!(report.signature.params[1].default.as_deref(), Some("5"));
+        assert_eq!(report.signature.params[2].name, "c");
+        assert_eq!(
+            report.signature.params[2].type_hint.as_deref(),
+            Some("string")
+        );
+        assert_eq!(report.signature.return_type.as_deref(), Some("boolean"));
     }
 
     // -------------------------------------------------------------------------

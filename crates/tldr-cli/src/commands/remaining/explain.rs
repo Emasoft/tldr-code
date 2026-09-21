@@ -692,11 +692,26 @@ fn extract_signature(func_node: Node, source: &[u8], language: Language) -> Sign
     // Extract parameters
     if let Some(params_node) = func_node.child_by_field_name("parameters") {
         sig.params = extract_params(params_node, source);
+    } else if let Some(param_node) = func_node.child_by_field_name("parameter") {
+        // Single-parameter arrow (TS/JS): `x => ...` has no formal_parameters
+        // wrapper — the identifier sits in the `parameter` field (mirrors
+        // extract_ts_arrow_params in tldr-core ast/extract.rs).
+        let name = node_text(param_node, source);
+        if !name.is_empty() {
+            sig.params = vec![ParamInfo::new(name)];
+        }
     }
 
     // Extract return type
     if let Some(return_node) = func_node.child_by_field_name("return_type") {
-        sig.return_type = Some(node_text(return_node, source).to_string());
+        // The TSX grammar's return_type is the annotation node (": boolean");
+        // Python's type node is bare. Normalize both to the bare type text.
+        let ty = node_text(return_node, source)
+            .trim_start_matches(':')
+            .trim();
+        if !ty.is_empty() {
+            sig.return_type = Some(ty.to_string());
+        }
     }
 
     // Extract decorators (look for decorated_definition parent or decorator children)
@@ -708,9 +723,28 @@ fn extract_signature(func_node: Node, source: &[u8], language: Language) -> Sign
     sig
 }
 
-/// Extract parameters from a parameters node
+/// Extract parameters from a parameters node.
+///
+/// Handles two grammar families:
+/// - Python-style: `parameters` children are bare `identifier`,
+///   `typed_parameter`, `typed_default_parameter`, `default_parameter`.
+/// - TS/JS (parsed with the tree-sitter TSX grammar): every parameter is
+///   wrapped in a `required_parameter` / `optional_parameter` node whose
+///   `pattern` field carries the name, an optional `type_annotation` child
+///   carries the type, and a default value follows the `=` operator child.
+///   A single-parameter arrow (`x => x + 1`) puts the identifier directly
+///   in the `parameters` field with no wrapper at all.
 fn extract_params(params_node: Node, source: &[u8]) -> Vec<ParamInfo> {
     let mut params = Vec::new();
+
+    // Single-parameter arrow function: the `parameters` field IS the identifier.
+    if params_node.kind() == "identifier" {
+        let name = node_text(params_node, source);
+        if !name.is_empty() {
+            params.push(ParamInfo::new(name));
+        }
+        return params;
+    }
 
     for child in params_node.children(&mut params_node.walk()) {
         match child.kind() {
@@ -719,6 +753,14 @@ fn extract_params(params_node: Node, source: &[u8]) -> Vec<ParamInfo> {
                 let name = node_text(child, source);
                 if name != "self" && name != "cls" {
                     params.push(ParamInfo::new(name));
+                }
+            }
+            "required_parameter" | "optional_parameter" => {
+                // (js-explain-params-v1) TS/JS parameter (issue #11): the TSX
+                // grammar wraps every parameter, so the Python-shaped arms
+                // below never matched and explain reported empty params.
+                if let Some(param) = extract_ts_wrapper_param(child, source) {
+                    params.push(param);
                 }
             }
             "typed_parameter" | "typed_default_parameter" => {
@@ -767,6 +809,45 @@ fn extract_params(params_node: Node, source: &[u8]) -> Vec<ParamInfo> {
     }
 
     params
+}
+
+/// Extract one TS/JS parameter from a `required_parameter` /
+/// `optional_parameter` wrapper node (tree-sitter TSX grammar, used for both
+/// JavaScript and TypeScript). Mirrors `extract_ts_params` in
+/// tldr-core `ast/extract.rs`: name from the `pattern` field, type from an
+/// optional `type_annotation` child, default from the expression after `=`.
+fn extract_ts_wrapper_param(wrapper: Node, source: &[u8]) -> Option<ParamInfo> {
+    let mut param = ParamInfo::new("");
+    if let Some(pattern) = wrapper.child_by_field_name("pattern") {
+        param.name = node_text(pattern, source).to_string();
+    }
+    if param.name.is_empty() {
+        return None;
+    }
+
+    let mut after_eq = false;
+    for part in wrapper.children(&mut wrapper.walk()) {
+        match part.kind() {
+            "type_annotation" => {
+                let ty = node_text(part, source).trim_start_matches(':').trim();
+                if !ty.is_empty() {
+                    param.type_hint = Some(ty.to_string());
+                }
+            }
+            "=" => after_eq = true,
+            "?" | "," | ";" => {}
+            _ if after_eq => {
+                let default = param.default.get_or_insert_with(String::new);
+                if !default.is_empty() {
+                    default.push(' ');
+                }
+                default.push_str(node_text(part, source));
+            }
+            _ => {}
+        }
+    }
+
+    Some(param)
 }
 
 /// Extract decorators
@@ -2687,6 +2768,151 @@ export const processItems = (items: string[]) => {
             exported.is_some(),
             "Should find exported TS arrow function 'processItems'"
         );
+    }
+
+    // =========================================================================
+    // (js-explain-params-v1) Issue #11: explain reported empty params for
+    // JavaScript functions. Root cause: JS/TS are parsed with the TSX grammar
+    // (see get_parser), whose parameters are wrapped in required_parameter /
+    // optional_parameter nodes — the Python-shaped arms in extract_params
+    // never matched, so every JS/TS param was dropped.
+    // =========================================================================
+
+    /// Issue #11 exact repro: `function topLevel(x)` and the arrow form
+    /// `arrowFunc = (x) => x + 1` must both yield params == ["x"].
+    #[test]
+    fn test_extract_signature_javascript_params_issue11() {
+        let source = r#"
+function topLevel(x) {
+    return x * 2;
+}
+
+const arrowFunc = (x) => x + 1;
+"#;
+        let language = Language::JavaScript;
+        let func_kinds = get_function_node_kinds(language);
+        let mut parser = get_parser(language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let func = find_function_node(root, source.as_bytes(), "topLevel", func_kinds).unwrap();
+        let sig = extract_signature(func, source.as_bytes(), language);
+        assert_eq!(
+            sig.params.len(),
+            1,
+            "issue #11: topLevel should have 1 param, got {:?}",
+            sig.params
+        );
+        assert_eq!(sig.params[0].name, "x");
+        assert!(sig.params[0].type_hint.is_none());
+
+        let arrow = find_function_node(root, source.as_bytes(), "arrowFunc", func_kinds).unwrap();
+        let sig = extract_signature(arrow, source.as_bytes(), language);
+        assert_eq!(
+            sig.params.len(),
+            1,
+            "issue #11: arrowFunc should have 1 param, got {:?}",
+            sig.params
+        );
+        assert_eq!(sig.params[0].name, "x");
+    }
+
+    /// JS multi-parameter function with a default value, and a class method.
+    #[test]
+    fn test_extract_signature_javascript_multi_param_and_method() {
+        let source = r#"
+function multi(a, b = 5, ...rest) {
+    return a + b;
+}
+
+class Animal {
+    constructor(name) {
+        this.name = name;
+    }
+}
+"#;
+        let language = Language::JavaScript;
+        let func_kinds = get_function_node_kinds(language);
+        let mut parser = get_parser(language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let func = find_function_node(root, source.as_bytes(), "multi", func_kinds).unwrap();
+        let sig = extract_signature(func, source.as_bytes(), language);
+        assert!(sig.params.len() >= 2, "multi params, got {:?}", sig.params);
+        assert_eq!(sig.params[0].name, "a");
+        assert_eq!(sig.params[1].name, "b");
+        assert_eq!(sig.params[1].default.as_deref(), Some("5"));
+
+        let method =
+            find_function_node(root, source.as_bytes(), "constructor", func_kinds).unwrap();
+        let sig = extract_signature(method, source.as_bytes(), language);
+        assert_eq!(
+            sig.params.len(),
+            1,
+            "constructor params, got {:?}",
+            sig.params
+        );
+        assert_eq!(sig.params[0].name, "name");
+    }
+
+    /// Single-parameter arrow without parentheses: the `parameters` field is
+    /// the identifier itself, no formal_parameters wrapper.
+    #[test]
+    fn test_extract_signature_single_param_arrow_js() {
+        let source = "const double = x => x * 2;\n";
+        let language = Language::JavaScript;
+        let func_kinds = get_function_node_kinds(language);
+        let mut parser = get_parser(language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let func = find_function_node(root, source.as_bytes(), "double", func_kinds).unwrap();
+        let sig = extract_signature(func, source.as_bytes(), language);
+        assert_eq!(sig.params.len(), 1, "double params, got {:?}", sig.params);
+        assert_eq!(sig.params[0].name, "x");
+    }
+
+    /// TypeScript control (same TSX grammar + handler): multi-param
+    /// declaration with types, a default value and an optional parameter —
+    /// names plus the types/defaults the grammar carries.
+    #[test]
+    fn test_extract_signature_typescript_params() {
+        let source = r#"
+function typed(a: number, b = 5, c?: string): boolean {
+    return true;
+}
+
+class K {
+    method(m: string, n = 1) {
+        return m;
+    }
+}
+"#;
+        let language = Language::TypeScript;
+        let func_kinds = get_function_node_kinds(language);
+        let mut parser = get_parser(language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let root = tree.root_node();
+
+        let func = find_function_node(root, source.as_bytes(), "typed", func_kinds).unwrap();
+        let sig = extract_signature(func, source.as_bytes(), language);
+        assert_eq!(sig.params.len(), 3, "typed params, got {:?}", sig.params);
+        assert_eq!(sig.params[0].name, "a");
+        assert_eq!(sig.params[0].type_hint.as_deref(), Some("number"));
+        assert_eq!(sig.params[1].name, "b");
+        assert_eq!(sig.params[1].default.as_deref(), Some("5"));
+        assert_eq!(sig.params[2].name, "c");
+        assert_eq!(sig.params[2].type_hint.as_deref(), Some("string"));
+        assert_eq!(sig.return_type.as_deref(), Some("boolean"));
+
+        let method = find_function_node(root, source.as_bytes(), "method", func_kinds).unwrap();
+        let sig = extract_signature(method, source.as_bytes(), language);
+        assert_eq!(sig.params.len(), 2, "method params, got {:?}", sig.params);
+        assert_eq!(sig.params[0].name, "m");
+        assert_eq!(sig.params[0].type_hint.as_deref(), Some("string"));
+        assert_eq!(sig.params[1].name, "n");
+        assert_eq!(sig.params[1].default.as_deref(), Some("1"));
     }
 
     // =========================================================================
