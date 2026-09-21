@@ -36,6 +36,15 @@ use crate::output::{format_enriched_search_text, OutputFormat, OutputWriter};
 pub struct SmartSearchArgs {
     /// Search query (natural language or code terms; BM25 by default,
     /// regex when `--regex` is set)
+    ///
+    /// Issue #13: flag-like queries (`tldr search '--port' <dir>`) used to be
+    /// rejected by clap with a misleading "tip: a similar argument exists:
+    /// '--format'". `allow_hyphen_values` lets the first positional swallow
+    /// hyphen-prefixed tokens, so they are treated as the query. The explicit
+    /// escape form (`tldr search -f json -- '--port' <dir>`) keeps working,
+    /// and registered flags (`-f`, `-k`, `-l`, `--regex`, ...) are still
+    /// parsed as flags, not values.
+    #[arg(allow_hyphen_values = true)]
     pub query: String,
 
     /// Directory to search in (default: current directory)

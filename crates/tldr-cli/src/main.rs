@@ -489,6 +489,19 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
+            // Issue #12: Unix pipe convention. When the stdout reader goes
+            // away mid-write (`tldr search fn <dir> -f json | head -c 1`),
+            // writes fail with `ErrorKind::BrokenPipe`. That is the READER's
+            // decision, not a tldr failure — downstream tools routinely
+            // consume a prefix and exit early (`head`, `grep -m`, `less`).
+            // Reporting "Error: Broken pipe (os error 32)" with exit 1 made
+            // every such pipeline look broken. Exit 0, silently. This check
+            // lives at the single top-level error boundary, so it applies to
+            // every command, not per-command.
+            if is_broken_pipe(&e) {
+                return ExitCode::SUCCESS;
+            }
+
             // Print error with helpful context (M20 mitigation)
             eprintln!("Error: {}", e);
 
@@ -517,6 +530,21 @@ fn main() -> ExitCode {
             }
         }
     }
+}
+
+/// Issue #12: does this error chain end in a `BrokenPipe` IO failure?
+///
+/// Walks the whole `anyhow` chain because EPIPE surfaces through two
+/// wrappers depending on the command's plumbing: commands writing through
+/// `OutputWriter` bubble the raw `std::io::Error` (anyhow `?` conversion),
+/// while commands that map it through tldr-core produce
+/// `TldrError::IoError` (`#[error(transparent)]`, whose `source()` is the
+/// original io error). Both must be recognized here or the same pipeline
+/// behaves differently per command.
+fn is_broken_pipe(err: &anyhow::Error) -> bool {
+    err.chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|io_err| io_err.kind() == std::io::ErrorKind::BrokenPipe)
 }
 
 /// Stable, user-facing name for a `Command` variant.
