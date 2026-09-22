@@ -17,9 +17,11 @@ pub struct ReachingDefsArgs {
     pub function: String,
     pub var: Option<String>,
     pub line: Option<u32>,
-    pub show_chains: bool,
-    pub show_uninitialized: bool,
+    pub show_chains: bool,        // enabled by default
+    pub show_uninitialized: bool, // enabled by default
     pub show_in_out: bool,
+    pub chains_only: bool,
+    pub params: Option<String>,
 }
 ```
 
@@ -27,6 +29,8 @@ pub struct ReachingDefsArgs {
 1. Builds CFG for function
 2. Computes IN/OUT sets per block using dataflow framework
 3. Tracks where each variable definition reaches
+
+Def-use chains (`--show-chains`) and uninitialized-use detection (`--show-uninitialized`) are both **enabled by default** — the flags re-affirm them, they don't opt you in.
 
 **Example:**
 ```bash
@@ -38,8 +42,11 @@ tldr reaching-defs src/process.py process_data --var user_input
 # Show at specific line
 tldr reaching-defs src/process.py process_data --line 25
 
-# Show def-use chains
-tldr reaching-defs src/process.py process_data --show-chains
+# Chains only — hide header, blocks, and statistics
+tldr reaching-defs src/process.py process_data --chains-only
+
+# Pass function parameters (comma-separated) for uninitialized-use detection
+tldr reaching-defs src/process.py process_data --params user_input,limit
 ```
 
 **Output:**
@@ -85,6 +92,9 @@ tldr available src/process.py process_data --at-line 50
 
 # Show what kills an expression
 tldr available src/process.py process_data --killed-by "x + y"
+
+# Only CSE opportunities, skip per-block details
+tldr available src/process.py process_data --cse-only
 ```
 
 ---
@@ -126,6 +136,7 @@ pub struct SliceArgs {
     pub line: u32,
     pub direction: Direction,  // backward or forward
     pub variable: Option<String>,
+    pub contiguous: bool,
 }
 ```
 
@@ -134,6 +145,11 @@ pub struct SliceArgs {
 2. **Backward slice**: All statements affecting this line
 3. **Forward slice**: All statements affected by this line
 4. Optionally filter by variable
+
+**Hazard — slice output is NOT contiguous source:** the default output contains only the slice's criterion lines and **drops every non-criterion line between them**. The binary banner-warns on every default-mode run (`dataflow slice — NOT contiguous source; do not reconstruct or edit from this output`), so never reconstruct or edit code from default slice output. To read or reconstruct a region safely:
+
+- use `--contiguous` — it emits every line from the first to the last slice line, showing non-criterion lines as a visible `// ... elided` marker instead of dropping them; or
+- use `tldr body` (below) for a byte-faithful, contiguous read of a function body or line range.
 
 **Example:**
 ```bash
@@ -144,6 +160,9 @@ tldr slice src/process.py process_data 25 -d forward
 
 # Filter by variable
 tldr slice src/process.py process_data 25 --variable result
+
+# Gapless view: elided lines shown as markers instead of dropped
+tldr slice src/process.py process_data 25 --contiguous
 ```
 
 ---
@@ -164,3 +183,27 @@ tldr slice src/process.py process_data 25 --variable result
 # Statements from line 10 that affect line 50
 tldr chop src/process.py process_data 10 50
 ```
+
+---
+
+## body
+
+**Purpose:** Print the exact contiguous source of a function body or line range — byte-faithful (preserves CRLF/BOM/whitespace). Safe to read or reconstruct from, unlike slice/chop.
+
+**Implementation:** `crates/tldr-cli/src/commands/body.rs`
+
+**Usage:** `tldr body <file> [function] [--from N --to M]`
+
+- With `[function]`: prints that function's exact body lines.
+- With `--from N --to M`: prints the contiguous, 1-indexed, inclusive line range (the newline terminating line M is included). `--from` and `--to` require each other.
+
+**Example:**
+```bash
+# Whole function body, byte-faithful
+tldr body src/process.py process_data
+
+# Exact contiguous line range
+tldr body src/process.py --from 10 --to 25
+```
+
+JSON output reports `file`, `function`, `language`, `line_start`, `line_end`, `line_count`, and `byte_count` alongside the `body` text.
