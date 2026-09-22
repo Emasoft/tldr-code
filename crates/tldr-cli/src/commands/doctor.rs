@@ -451,8 +451,10 @@ fn format_companions_text() -> String {
 
     // Detected, not assumed. An unconditional "[--] not installed" line reads as a fact and is
     // wrong the moment anyone runs `make install-skill`; a doctor that lies about one row makes
-    // the reader distrust the rows that are right. `skills add -g` writes
-    // `<agent-root>/skills/tldr-code/SKILL.md`, so that file's presence IS the install.
+    // the reader distrust the rows that are right. `skills add -g` installs one real copy in
+    // the universal root `~/.agents/skills/<name>` and symlinks it into each supported agent
+    // root, so `<agent-root>/skills/tldr-code/SKILL.md` resolves through the link and its
+    // presence IS the install.
     match installed_skill_path() {
         Some(p) => out.push_str(&format!(
             "  {} agent skill - {}\n",
