@@ -2,6 +2,9 @@
 
 TLDR includes a Model Context Protocol (MCP) server for integration with Claude Code and other MCP-compatible clients.
 
+> Source of truth for everything on this page: `crates/tldr-mcp/src/` — the tool registry in
+> `crates/tldr-mcp/src/tools/mod.rs` builds every tool definition and schema by hand.
+
 ## What is MCP?
 
 The [Model Context Protocol](https://modelcontextprotocol.io/) is a standard interface for connecting AI assistants to external tools and data sources. TLDR's MCP server exposes code analysis capabilities to any MCP client.
@@ -21,6 +24,8 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) is a standard int
                                            │  (analysis engine)│
                                            └─────────────────┘
 ```
+
+The MCP server computes every result directly through `tldr-core`. It does not talk to `tldr-daemon`; the daemon's query cache is a separate mechanism used by the CLI (see [Caching](#caching)).
 
 ## Installation
 
@@ -42,27 +47,13 @@ Add to your Claude Code MCP configuration:
 {
   "mcpServers": {
     "tldr": {
-      "command": "/path/to/tldr-mcp",
-      "args": ["--project", "/path/to/your/codebase"]
+      "command": "/path/to/tldr-mcp"
     }
   }
 }
 ```
 
-Or using environment variable in config file:
-
-```json
-{
-  "mcpServers": {
-    "tldr": {
-      "command": "tldr-mcp",
-      "env": {
-        "TLDR_PROJECT_ROOT": "/path/to/your/codebase"
-      }
-    }
-  }
-}
-```
+The server takes no command-line arguments and reads no environment variables. Every tool call carries its own `path` argument, so no project-root configuration exists at the server level.
 
 #### Other MCP Clients
 
@@ -70,73 +61,95 @@ The server uses stdio transport and JSON-RPC 2.0 protocol, making it compatible 
 
 ## Available Tools
 
-The MCP server exposes these tool categories:
+The registry exposes **30 tools**, registered in `crates/tldr-mcp/src/tools/mod.rs`
+(methods `register_ast_tools`, `register_callgraph_tools`, `register_flow_tools`,
+`register_search_tools`, `register_quality_tools`, `register_security_tools`,
+`register_composite_tools`; the startup banner `TLDR MCP server ready (30 tools)`
+prints the same count). Required arguments are listed first; `?` marks optional ones.
 
-### AST Analysis (L1)
-
-| Tool | Description | Arguments |
-|------|-------------|-----------|
-| `tldr_tree` | Show file tree structure | `path?`, `extensions?`, `include_hidden?` |
-| `tldr_structure` | Extract code structure | `path`, `language`, `max_results?`, `max_depth?` |
-| `tldr_extract` | Complete module info | `file` |
-| `tldr_imports` | Parse imports | `file` |
-
-### Call Graph (L2)
+### AST / Navigation
 
 | Tool | Description | Arguments |
 |------|-------------|-----------|
-| `tldr_calls` | Build call graph | `path?`, `max_items?` |
-| `tldr_impact` | Find callers of function | `function`, `path?`, `depth?` |
-| `tldr_dead` | Find dead code | `path?` |
-| `tldr_refs` | Find symbol references | `symbol`, `path?` |
+| `tldr_tree` | File tree structure for a directory | `path`, `extensions?`, `exclude_hidden?` |
+| `tldr_structure` | Code structure (functions, classes, imports) from files; codemap overview | `path`, `language`, `max_results?`, `max_depth?` |
+| `tldr_extract` | Complete module info from a single file (functions, classes, docstrings, intra-file call graph) | `file`, `base_path?` |
+| `tldr_imports` | Parse import statements from a source file | `file`, `language?` |
 
-### Data Flow (L3-L4)
+### Call Graph / Analysis
 
 | Tool | Description | Arguments |
 |------|-------------|-----------|
-| `tldr_reaching_defs` | Reaching definitions | `file`, `function` |
-| `tldr_available` | Available expressions | `file`, `function` |
-| `tldr_dead_stores` | Dead store detection | `file`, `function` |
-| `tldr_slice` | Program slice | `file`, `function`, `line` |
+| `tldr_calls` | Cross-file call graph: which functions call which | `path`, `language` |
+| `tldr_impact` | All callers of a function (reverse call-graph traversal) | `path`, `function`, `language`, `depth?`, `file?` |
+| `tldr_dead` | Dead code: functions that are never called | `path`, `language`, `entry_points?` |
+| `tldr_importers` | All files that import a given module | `path`, `module`, `language` |
+| `tldr_arch` | Architecture layers (entry/service/utility) and circular dependencies | `path`, `language` |
+
+### Data Flow
+
+| Tool | Description | Arguments |
+|------|-------------|-----------|
+| `tldr_cfg` | Control flow graph for a function (basic blocks, control-flow edges) | `file`, `function`, `language?` |
+| `tldr_complexity` | Cyclomatic and cognitive complexity for a function | `file`, `function`, `language?` |
+| `tldr_dfg` | Data flow graph for a function (definitions, uses, def-use chains) | `file`, `function`, `language?` |
+| `tldr_slice` | Program slice from a line: what affects it (backward) or what it affects (forward) | `file`, `function`, `line`, `direction?`, `variable?`, `language?` |
+| `tldr_pdg` | Program dependence graph combining CFG and DFG | `file`, `function`, `language?` |
 
 ### Search
 
 | Tool | Description | Arguments |
 |------|-------------|-----------|
-| `tldr_search` | BM25 search | `query`, `path?` |
-| `tldr_semantic` | Natural language search | `query`, `path?` |
-| `tldr_context` | LLM context from entry | `entry`, `project?` |
+| `tldr_search` | Regex search over files | `pattern`, `path`, `extensions?`, `context_lines?`, `max_results?`, `max_files?` |
+| `tldr_bm25` | BM25 keyword search ranked by relevance | `query`, `path`, `language?`, `top_k?` |
+| `tldr_semantic` | Hybrid search combining BM25 and semantic embeddings via RRF* | `query`, `path`, `language?`, `top_k?` |
+
+\* `tldr_semantic` is registered in every build. Embeddings live behind tldr-core's
+`semantic` feature (`dep:fastembed`), which is not enabled by default; without it —
+and in fact with the current MCP handler, which passes no embedding client
+(`tools/search.rs`) — the tool degrades gracefully to BM25-only results and reports
+`fallback_mode: "bm25_only"`.
 
 ### Quality
 
 | Tool | Description | Arguments |
 |------|-------------|-----------|
-| `tldr_smells` | Code smell detection | `path?` |
-| `tldr_complexity` | Cyclomatic complexity | `file`, `function` |
-| `tldr_health` | Health dashboard | `path?` |
-| `tldr_hotspots` | Churn x complexity | `path?` |
+| `tldr_context` | Token-efficient LLM context from an entry point (~95% token savings vs reading full files) | `path`, `entry_point`, `language`, `depth?`, `include_docstrings?` |
+| `tldr_change_impact` | Tests affected by changed files (selective test running) | `path`, `language`, `changed_files?` |
+| `tldr_smells` | Code smell detection (God Class, Long Method, Long Parameter List, …) | `path`, `threshold?`, `smell_type?`, `suggest?` |
+| `tldr_maintainability` | Maintainability Index (MI) score for files | `path`, `include_halstead?`, `language?` |
+| `tldr_diagnostics` | Type checking and linting (pyright/ruff for Python) | `path`, `language?` |
+| `tldr_diff` | Semantic diff between two versions of code | `old`, `new`, `language?` |
+| `tldr_debt` | Technical debt estimate from complexity and smells | `path`, `language?` |
 
 ### Security
 
 | Tool | Description | Arguments |
 |------|-------------|-----------|
-| `tldr_taint` | Taint flow analysis | `file`, `function` |
-| `tldr_vuln` | Vulnerability scan | `path?` |
-| `tldr_api_check` | API misuse patterns | `path?` |
-| `tldr_secure` | Security dashboard | `path?` |
+| `tldr_secrets` | Hardcoded secrets scan (API keys, passwords, private keys) | `path`, `entropy_threshold?`, `include_test?`, `severity_filter?` |
+| `tldr_vuln` | Vulnerability detection via taint analysis (SQL injection, XSS, command injection, …) | `path`, `language?`, `vuln_type?` |
+| `tldr_api_check` | Insecure API usage patterns | `path`, `language?` |
+
+### Composite
+
+| Tool | Description | Arguments |
+|------|-------------|-----------|
+| `tldr_health` | Health dashboard combining complexity, smells, maintainability | `path`, `language?` |
+| `tldr_todo` | Action items from analysis (high complexity, dead code, security issues) | `path`, `language?` |
+| `tldr_secure` | Security summary combining secrets scan and vulnerability detection | `path`, `language?` |
 
 ## Tool Definitions
 
-Tool definitions are in [`crates/tldr-mcp/src/tools/`](https://github.com/parcadei/tldr-code/tree/main/crates/tldr-mcp/src/tools):
+Tool handlers and registrations live in [`crates/tldr-mcp/src/tools/`](https://github.com/parcadei/tldr-code/tree/main/crates/tldr-mcp/src/tools):
 
-| File | Category |
-|------|----------|
-| `ast.rs` | L1 AST analysis |
-| `callgraph.rs` | L2 call graph analysis |
-| `flow.rs` | L3-L4 data flow analysis |
-| `search.rs` | Search commands |
-| `quality.rs` | Quality metrics |
-| `security.rs` | Security analysis |
+| File | Tools handled |
+|------|---------------|
+| `ast.rs` | `tldr_tree`, `tldr_structure`, `tldr_extract`, `tldr_imports` |
+| `callgraph.rs` | `tldr_calls`, `tldr_impact`, `tldr_dead`, `tldr_importers`, `tldr_arch` |
+| `flow.rs` | `tldr_cfg`, `tldr_complexity`, `tldr_dfg`, `tldr_slice`, `tldr_pdg` |
+| `search.rs` | `tldr_search`, `tldr_bm25`, `tldr_semantic` |
+| `quality.rs` | `tldr_context`, `tldr_change_impact`, `tldr_smells`, `tldr_maintainability`, `tldr_diagnostics`, `tldr_diff`, `tldr_debt` + composite `tldr_health`, `tldr_todo` |
+| `security.rs` | `tldr_secrets`, `tldr_vuln`, `tldr_api_check` + composite `tldr_secure` |
 
 ## Usage Examples
 
@@ -148,7 +161,7 @@ Once configured, use natural language:
 What's the call graph for the auth module?
 What functions call parse_config?
 Find dead code in the utils directory.
-Analyze taint flows in the user input handler.
+Scan this project for vulnerabilities and hardcoded secrets.
 ```
 
 ### Direct JSON-RPC
@@ -159,106 +172,137 @@ The MCP server accepts standard JSON-RPC 2.0 requests:
 # Initialize
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | tldr-mcp
 
+# Post-handshake notification (namespaced form; notifications get no response)
+echo '{"jsonrpc":"2.0","method":"notifications/initialized"}' | tldr-mcp
+
 # List tools
 echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | tldr-mcp
 
-# Call a tool
-echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tldr_structure","arguments":{"path":"src"}}}' | tldr-mcp
+# Call a tool (arguments validated against the tool's inputSchema)
+echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tldr_structure","arguments":{"path":"src","language":"python"}}}' | tldr-mcp
 ```
 
 ## Configuration
 
-### Environment Variables
+The `tldr-mcp` binary itself has no configuration surface: it parses no CLI
+arguments and reads no environment variables. All inputs — project root, file
+paths, language — are arguments on each tool call.
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `TLDR_PROJECT_ROOT` | Default project root | Current directory |
-| `TLDR_LOG` | Log level (debug, info, warn, error) | `info` |
-| `TLDR_CACHE_DIR` | Cache directory | Platform-specific |
+The only `TLDR_*` environment variable in the codebase is `TLDR_LOG`, and it is
+consumed by `tldr-daemon`, not by the MCP server:
 
-### Tool Filtering
+| Variable | Consumed by | Where | Default |
+|----------|-------------|-------|---------|
+| `TLDR_LOG` | `tldr-daemon` | `crates/tldr-daemon/src/lib.rs` (tracing `EnvFilter`) and `crates/tldr-daemon/src/server.rs` (log level) | `info` |
 
-You can limit which tools are exposed via MCP config:
-
-```json
-{
-  "mcpServers": {
-    "tldr": {
-      "command": "tldr-mcp",
-      "env": {
-        "TLDR_PROJECT_ROOT": "/path/to/project",
-        "TLDR_TOOLS": "ast,callgraph,security"
-      }
-    }
-  }
-}
-```
+There is no tool filtering: every build of the server exposes all 30 tools.
 
 ## Caching
 
-The MCP server uses a two-level cache:
+The MCP server has a single in-process result cache (`crates/tldr-mcp/src/cache.rs`):
 
-1. **L1 In-process cache** (memory) — Tool results cached for session
-2. **L2 Persistent cache** (disk) — Shared across sessions via daemon
+- **L1 in-process cache** — keyed `tool_name:sorted_args_json` (object keys are
+  recursively sorted, so argument order never matters), TTL 15 s, bounded at 200
+  entries with oldest-entry eviction.
+- Only **successful** results are cached; errors are retryable and never cached.
+- Six project-wide tools are excluded from caching entirely (large results,
+  rarely repeated): `tldr_calls`, `tldr_dead`, `tldr_health`, `tldr_todo`,
+  `tldr_secure`, `tldr_arch`.
+- There is no disk cache and no file-mtime component in the MCP cache key. The
+  15 s TTL is the freshness mechanism: a repeated identical call within the TTL
+  window is served from memory, anything else recomputes.
 
-Cache key: `hash(tool_name + arguments + file_mtimes)`
-
-Invalidation: Automatic on file modification (via `tldr daemon notify`)
+Separately, the **daemon** (`tldr daemon start`) maintains its own query cache
+for CLI commands, invalidated by file-change notifications (`tldr daemon notify`).
+That cache is not consulted by the MCP server.
 
 ## Error Handling
 
-Errors are returned as JSON-RPC error responses:
+Two distinct error surfaces:
+
+1. **Tool-level failures** come back as a normal JSON-RPC *result* with
+   `"isError": true` (missing arguments, paths that don't exist, analysis
+   errors, panics caught at the tool boundary):
 
 ```json
 {
   "jsonrpc": "2.0",
-  "error": {
-    "code": -32603,
-    "message": "Failed to parse file",
-    "data": {
-      "file": "src/main.py",
-      "error": "Unsupported syntax in Python 3.12"
-    }
+  "id": 3,
+  "result": {
+    "content": [{ "type": "text", "text": "Missing required argument: function" }],
+    "isError": true
   }
 }
 ```
 
-Error codes:
-- `-32603` — Internal error (parse failed, etc.)
-- `-32602` — Invalid arguments
-- `-32600` — Invalid request
+2. **Protocol-level errors** are JSON-RPC error responses (see `protocol.rs`):
+
+| Code | Meaning |
+|------|---------|
+| `-32700` | Parse error (invalid JSON; response carries `id: null`) |
+| `-32600` | Invalid request (wrong `jsonrpc` version) |
+| `-32601` | Method not found |
+| `-32602` | Invalid params (missing/malformed `tools/call` params) |
+| `-32603` | Internal error (serialization failure, etc.) |
+
+Notifications (frames without `id`) never receive a response, not even on error.
 
 ## Development
 
 ### Adding a New Tool
 
-1. Add tool definition in `tools/*.rs`:
+There is no `#[derive(Tool)]` macro — definitions are hand-built. To add a tool:
+
+1. Write a handler in the matching category file (`crates/tldr-mcp/src/tools/ast.rs`,
+   `callgraph.rs`, `flow.rs`, `search.rs`, `quality.rs`, or `security.rs`), using the
+   argument helpers exported by `tools/mod.rs`:
 
 ```rust
-#[derive(Tool)]
-pub struct MyTool {
-    pub name: String,
-    pub description: String,
-    pub arguments: Vec<Argument>,
-}
-
-impl Tool for MyTool {
-    fn execute(&self, args: HashMap<String, serde_json::Value>) -> Result<serde_json::Value> {
-        // Call tldr-core function
-        // Return JSON result
-    }
+pub fn handle_my_thing(args: Value) -> ToolsCallResult {
+    let file = match get_required_string(&args, "file") {
+        Ok(f) => f,
+        Err(e) => return ToolsCallResult::error(e),
+    };
+    let depth = get_optional_int(&args, "depth");
+    // Call tldr-core, serialize the result, return ToolsCallResult::text(...)
 }
 ```
 
-2. Register in `tools/mod.rs`
+2. Register it in the matching `register_*_tools()` method in
+   `crates/tldr-mcp/src/tools/mod.rs` with a hand-built `json!` input schema —
+   required arguments must be listed in `"required"`:
 
-3. Rebuild: `cargo build --release`
+```rust
+self.register(
+    ToolDefinition {
+        name: "tldr_my_thing".to_string(),
+        description: "One-line description shown to MCP clients.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "file": { "type": "string", "description": "Source file path" },
+                "depth": { "type": "integer", "description": "Traversal depth" }
+            },
+            "required": ["file"]
+        }),
+    },
+    ast::handle_my_thing,
+);
+```
+
+3. Update the module doc comment at the top of `tools/mod.rs` (it states the tool
+   count and categories).
+
+4. Rebuild: `cargo build --release`
+
+Tool dispatch is wrapped in `catch_unwind`, so a panicking handler becomes an
+`isError` result instead of a crashed server.
 
 ### Testing MCP Server
 
 ```bash
-# Run tests
-cargo test -p tldr-mcp
+# Run the crate's tests
+timeout 600 cargo test -p tldr-mcp
 
 # Manual test with echo
 echo '{"jsonrpc":"2.0","id":0,"method":"initialize"}' | target/debug/tldr-mcp
@@ -271,13 +315,16 @@ echo '{"jsonrpc":"2.0","id":0,"method":"initialize"}' | target/debug/tldr-mcp
 1. Check binary exists and is executable:
 ```bash
 ls -la target/release/tldr-mcp
-./target/release/tldr-mcp --version
+./target/release/tldr-mcp
 ```
+The startup banner on stderr (`TLDR MCP server ready (N tools)`) confirms the
+server is up and shows the registered tool count.
 
 2. Check logs:
 ```bash
-TLDR_LOG=debug ./target/release/tldr-mcp 2>&1
+TLDR_LOG=debug tldr daemon start --project <path> 2>&1   # daemon-side logging only
 ```
+The MCP server itself emits only stderr diagnostics; it does not read `TLDR_LOG`.
 
 ### Tools not appearing
 
@@ -290,16 +337,17 @@ echo '{"jsonrpc":"2.0","id":0,"method":"initialize"}' | tldr-mcp
 
 ### Slow tool execution
 
-1. Pre-warm the cache:
-```bash
-tldr daemon start
-tldr warm /path/to/project
-```
-
-2. MCP client should then hit L1 cache
+Every MCP tool call recomputes through `tldr-core`; only an identical call within
+the 15 s L1 TTL window is served from memory. The daemon's warmed cache speeds up
+CLI commands, not MCP tool calls — for interactive MCP sessions there is no
+persistent warm-up path.
 
 ## See Also
 
-- [TLDR Architecture](ARCHITECTURE.md) — How the analysis engine works
-- [Command Reference](commands/) — Detailed command documentation
+Link paths below are relative to the repository root (this document lives at
+`docs/MCP.md` and is mirrored verbatim to
+`skills/tldr-code/references/mcp-integration.md`):
+
+- [TLDR Architecture](docs/ARCHITECTURE.md) — How the analysis engine works
+- [Command Reference](docs/commands/) — Detailed command documentation
 - [MCP Protocol Spec](https://modelcontextprotocol.io/spec) — Protocol specification
