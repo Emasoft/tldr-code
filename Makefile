@@ -26,14 +26,16 @@ install: build
 # OpenCode, …) and is idempotent, so re-running is safe.
 # `-g` is load-bearing: without it `skills add` installs project-level, i.e. into THIS repo's
 # .claude/skills — the one project where nobody needs it. The skill documents a binary that lives
-# on $PATH, so it belongs at user level alongside it. `--all` = every skill, every detected agent,
-# no prompts, which is what makes the target usable from `install-full` and safe to re-run.
+# on $PATH, so it belongs at user level alongside it. `-y` is written explicitly (Skip
+# confirmation prompts) so the non-interactive promise does not rest on `--all`'s implied `-y`;
+# `--all` = every skill, every detected agent, which is what makes the target usable from
+# `install-full` and safe to re-run.
 # tldr-scan-workflow rides along on the same target: it is the calibrated full-codebase
 # scan-and-fix pipeline built on this binary, and it is useless without it. Two `skills add`
 # calls rather than one over ./skills, because the CLI takes one skill directory per invocation.
 install-skill:
-	npx --yes skills add -g --all ./skills/tldr-code
-	npx --yes skills add -g --all ./skills/tldr-scan-workflow
+	npx --yes skills add -g -y --all ./skills/tldr-code
+	npx --yes skills add -g -y --all ./skills/tldr-scan-workflow
 
 # fastedit — the AST-scoped WRITE companion (https://github.com/parcadei/fastedit). tldr READS
 # code; fastedit EDITS it by symbol name, so an agent never repeats old lines to say where an
