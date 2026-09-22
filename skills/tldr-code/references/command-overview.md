@@ -128,7 +128,7 @@ tldr health src/
 | Command | Description |
 |---------|-------------|
 | `calls` | Cross-file call graph |
-| `impact` | Reverse call graph — who calls this? |
+| `impact` | Reverse call graph — who calls this? (also non-call reference sites) |
 | `dead` | Dead code detection |
 | `hubs` | Hub functions (centrality analysis) |
 | `whatbreaks` | What breaks if target changes? |
@@ -145,7 +145,7 @@ tldr health src/
 ### Program Dependence (L5)
 | Command | Description |
 |---------|-------------|
-| `slice` | Backward program slice |
+| `slice` | Backward/forward program slice — NOT contiguous source by default (banner-warned); `--contiguous` emits a gapless view |
 | `chop` | Chop slice (forward + backward intersection) |
 | `body` | Byte-faithful source of a function body or line range |
 | `taint` | Taint flow analysis |
