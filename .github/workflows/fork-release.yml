@@ -158,7 +158,6 @@ jobs:
           tar -tzf "$SKILL_BUNDLE" > /dev/null # archive sanity check
           sha256sum "$SKILL_BUNDLE" > "$SKILL_BUNDLE.sha256"
           cat "$SKILL_BUNDLE.sha256"
-          tar -tzf "$SKILL_BUNDLE" | head -5
 
       - name: Create GitHub Release and upload artifacts
         env:
