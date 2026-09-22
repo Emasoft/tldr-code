@@ -2419,7 +2419,7 @@ pub fn extract_definition_entries<'tree>(
 ///
 /// Necessary because a name derived from a callee is not unique by construction: one line of real
 /// code, `Promise.race([closed.then(() => true), sleep(5000).then(() => false)])`, yields two
-/// distinct `then` regions. Anything that looks a definition up BY NAME — `fastedit --replace`
+/// distinct `then` regions. Anything that looks a definition up BY NAME — `fastedit edit --replace`
 /// resolves first-match-wins with no ambiguity check — would silently edit the wrong one.
 ///
 /// Scoped to `"call"` entries ON PURPOSE, and this is what keeps the two collectors in agreement:
@@ -3366,10 +3366,10 @@ fn is_first_callable_of(call: Node, callable: Node, calls: &[&str], callables: &
 /// function, a closure bound to a variable (already named by `get_definition_node_name` via its
 /// `variable_declarator`), and a bare block all fall through to the generic path untouched.
 ///
-/// The emitted `name` is deliberately DOT-FREE: `fastedit --replace <name>` splits a name on its
-/// first dot to mean `Class.method`, so `http.HandleFunc` as a name would be unresolvable. The last
-/// segment is used (`HandleFunc`) and the full callee text is preserved in `signature`, which is
-/// what `fastedit read` displays.
+/// The emitted `name` is deliberately DOT-FREE: `fastedit edit --replace <name>` splits a name on
+/// its first dot to mean `Class.method`, so `http.HandleFunc` as a name would be unresolvable. The
+/// last segment is used (`HandleFunc`) and the full callee text is preserved in `signature`, which
+/// is what `fastedit read` displays.
 pub(crate) fn try_callback_call_definition(
     node: Node,
     source: &str,
@@ -5543,7 +5543,8 @@ interface IFace {
     #[test]
     fn test_anon_callback_title_slug_disambiguates_siblings() {
         // Two `test(…)` calls: the callee alone would name both identically, and a name-keyed
-        // consumer (fastedit --replace) resolves first-match-wins — it would edit the wrong one.
+        // consumer (fastedit edit --replace) resolves first-match-wins — it would edit the
+        // wrong one.
         let source =
             "test('first case', () => {\n  a();\n});\ntest('second case', () => {\n  b();\n});\n";
         let defs = call_defs(source, Language::TypeScript);
@@ -5559,7 +5560,7 @@ interface IFace {
 
     #[test]
     fn test_anon_callback_member_callee_is_dot_free() {
-        // `fastedit --replace` splits a name on its FIRST dot to mean Class.method, so a name
+        // `fastedit edit --replace` splits a name on its FIRST dot to mean Class.method, so a name
         // like `http.HandleFunc` could never resolve. Last segment only; full text in signature.
         let source = "func main() {\n\thttp.HandleFunc(\"/api\", func(w int, r int) {\n\t\tprintln(w)\n\t})\n}\n";
         let tree = parse(source, Language::Go).unwrap();
