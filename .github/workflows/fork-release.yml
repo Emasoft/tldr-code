@@ -12,7 +12,11 @@
 #   * generates the curl-one-liner installer `tldr-cli-installer.sh` from the
 #     committed template `scripts/fork-install.sh` (sed of the tag placeholder),
 #     keeping the artifact name the README install URL points at,
-#   * publishes one GitHub Release with all artifacts.
+#   * packages `skills/tldr-code` + `skills/tldr-scan-workflow` into the
+#     `tldr-skill-<tag>.tar.gz` bundle (+ sha256) that the installer installs
+#     into ~/.agents/skills,
+#   * publishes one GitHub Release with all artifacts (idempotent on re-runs:
+#     create-if-missing + `gh release upload --clobber`).
 #
 # No cargo-dist CLI, no dist manifest, no reuse of release.yml.
 
@@ -138,18 +142,40 @@ jobs:
           sh -n tldr-cli-installer.sh # syntax smoke check
           head -5 tldr-cli-installer.sh
 
+      # Package the agent skills (tldr-code + tldr-scan-workflow) into a single
+      # bundle the installer can fetch. Archive paths are `tldr-code/...` and
+      # `tldr-scan-workflow/...` (tar -C skills), so extraction straight into
+      # ~/.agents/skills lands the two skill dirs at the universal root the
+      # Vercel skills CLI uses.
+      - name: Package agent skill bundle
+        shell: bash
+        run: |
+          set -eu
+          SKILL_BUNDLE="tldr-skill-$TAG.tar.gz"
+          test -f skills/tldr-code/SKILL.md
+          test -f skills/tldr-scan-workflow/SKILL.md
+          tar -czf "$SKILL_BUNDLE" -C skills tldr-code tldr-scan-workflow
+          tar -tzf "$SKILL_BUNDLE" > /dev/null # archive sanity check
+          sha256sum "$SKILL_BUNDLE" > "$SKILL_BUNDLE.sha256"
+          cat "$SKILL_BUNDLE.sha256"
+          tar -tzf "$SKILL_BUNDLE" | head -5
+
       - name: Create GitHub Release and upload artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -eu
-          # Create the release if it doesn't exist yet; --target pins the tag to
-          # this commit when workflow_dispatch runs without a pre-existing tag.
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "tldr fork $TAG" --generate-notes --target "$GITHUB_SHA"
-          fi
+          # Idempotent on re-runs: create the release if it doesn't exist
+          # (--target pins the tag to this commit when workflow_dispatch runs
+          # without a pre-existing tag); the `||` swallows the already-exists
+          # case when the workflow re-runs on a moved tag. The upload below
+          # then --clobber-overwrites every same-named asset and adds the new
+          # ones (e.g. the skill bundle).
+          gh release create "$TAG" --title "tldr fork $TAG" --generate-notes --target "$GITHUB_SHA" \
+            || echo "release $TAG already exists — reusing it and replacing assets"
           # --clobber makes re-runs idempotent (overwrites same-named assets).
-          gh release upload "$TAG" --clobber tldr-cli-installer.sh artifacts/*
+          gh release upload "$TAG" --clobber \
+            tldr-cli-installer.sh "tldr-skill-$TAG.tar.gz" "tldr-skill-$TAG.tar.gz.sha256" artifacts/*
           echo "--- Release contents ---"
           gh release view "$TAG" --json assets --jq '.assets[].name'

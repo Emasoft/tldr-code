@@ -13,6 +13,16 @@
 #   TLDR_INSTALL_URL_BASE   download base URL        (default: .../releases/download/$TAG;
 #                           set to file:///path for local testing)
 #   TLDR_INSTALL_DIR        install directory        (default: ${CARGO_HOME:-$HOME/.cargo}/bin)
+#   TLDR_INSTALL_SKILLS_DIR agent skill install dir  (default: $HOME/.agents/skills — the
+#                           universal root the Vercel skills CLI uses, so existing
+#                           per-agent symlinks keep working)
+#   TLDR_INSTALL_NO_SKILL   set to 1 to skip the agent skill install entirely
+#
+# The binaries are the primary payload: if the skill bundle cannot be downloaded
+# or its checksum does not match, the installer prints a WARNING and finishes
+# with the binaries installed (a partial release must not fail the whole
+# install). The skill bundle itself (`tldr-skill-<tag>.tar.gz`, sha256-verified)
+# extracts to <skills-dir>/tldr-code and <skills-dir>/tldr-scan-workflow.
 #
 # Platforms: macOS arm64/x86_64, Linux arm64/x86_64.
 # Windows is NOT installed by this script: download
@@ -29,6 +39,10 @@ err() {
 
 info() {
     printf 'fork-install: %s\n' "$1"
+}
+
+warn() {
+    printf 'fork-install: WARNING: %s\n' "$1" >&2
 }
 
 # ---------------------------------------------------------------- tag + base
@@ -93,6 +107,22 @@ fetch() {
     fi
 }
 
+# fetch_soft <url> <dest-file> — like fetch but RETURNS non-zero instead of
+# exiting. Used for the optional skill bundle: a missing/partial release must
+# not abort an install whose binaries already came through.
+fetch_soft() {
+    if command -v curl >/dev/null 2>&1; then
+        case "$1" in
+            file://*) curl -fSL -o "$2" "$1" ;;
+            *) curl --proto '=https' --tlsv1.2 -fSL -o "$2" "$1" ;;
+        esac
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "$2" "$1"
+    else
+        return 1
+    fi
+}
+
 TMPDIR_DL="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_DL"' EXIT INT TERM
 
@@ -132,4 +162,36 @@ case ":$PATH:" in
         info "      export PATH=\"$INSTALL_DIR:\$PATH\""
         ;;
 esac
+
+# ---------------------------------------------------------------- agent skill
+# Installs the tldr-code + tldr-scan-workflow agent skills from the same
+# release. Optional on every axis: TLDR_INSTALL_NO_SKILL=1 skips it, a failed
+# download or a checksum mismatch is a WARNING (never a failed install — the
+# binaries above are the primary payload and are already in place).
+SKILLS_DIR="${TLDR_INSTALL_SKILLS_DIR:-$HOME/.agents/skills}"
+SKILL_BUNDLE="tldr-skill-$TAG.tar.gz"
+
+if [ "${TLDR_INSTALL_NO_SKILL:-0}" = "1" ]; then
+    info "TLDR_INSTALL_NO_SKILL=1 — skipping agent skill install"
+elif fetch_soft "$BASE/$SKILL_BUNDLE" "$TMPDIR_DL/$SKILL_BUNDLE" &&
+    fetch_soft "$BASE/$SKILL_BUNDLE.sha256" "$TMPDIR_DL/$SKILL_BUNDLE.sha256"; then
+    if (cd "$TMPDIR_DL" && $SUM -c "$SKILL_BUNDLE.sha256" >/dev/null 2>&1); then
+        mkdir -p "$SKILLS_DIR"
+        if tar -xzf "$TMPDIR_DL/$SKILL_BUNDLE" -C "$SKILLS_DIR" &&
+            [ -f "$SKILLS_DIR/tldr-code/SKILL.md" ] &&
+            [ -f "$SKILLS_DIR/tldr-scan-workflow/SKILL.md" ]; then
+            info "checksum OK: $SKILL_BUNDLE"
+            info "installed agent skills (tldr-code, tldr-scan-workflow) to: $SKILLS_DIR"
+            info "NOTE: per-agent symlinks for the skills can be managed with: npx skills add -g -y --all"
+        else
+            warn "skill bundle did not extract the expected skill directories into $SKILLS_DIR — skipping (binaries are unaffected)"
+        fi
+    else
+        (cd "$TMPDIR_DL" && $SUM -c "$SKILL_BUNDLE.sha256") || true # show the failing line(s)
+        warn "sha256 checksum mismatch for $SKILL_BUNDLE — skipping skill install (binaries are unaffected; expected hash from $SKILL_BUNDLE.sha256)"
+    fi
+else
+    warn "could not download $SKILL_BUNDLE from $BASE — skipping skill install (binaries are the primary payload and are already installed)"
+fi
+
 info "done"
