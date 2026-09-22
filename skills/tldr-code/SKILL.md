@@ -1,20 +1,19 @@
 ---
 name: tldr-code
 description: >
-  Token-efficient code analysis (READ, via `tldr`) AND AST-scoped editing (WRITE, via `fastedit` — edit/insert/rename/move/delete/refactor a symbol without repeating old code) for 31 languages
-  (Python, TypeScript, JavaScript, Go, Rust, Java, C, C++, Ruby, Kotlin, Swift,
-  C#, Scala, PHP, Lua, Luau, Elixir, OCaml, JSON, YAML, TOML, XML, HTML, CSS,
-  Bash, LaTeX, Markdown, CSV, TSV, Log, Text). Reach for it BEFORE reading whole
-  files or editing unfamiliar code: it extracts ONLY the lines that define a
-  symbol, that it calls, or that call it — plus call graphs, reverse-impact,
-  program slices, taint/security flows, complexity metrics, dead code, design
-  patterns, and BM25 + natural-language semantic search. Invoke it INTENTIONALLY
-  (you choose what to query) — it is dramatically cheaper than dumping source
-  into context. Use when you need to understand, navigate, locate, or assess
-  impact in a codebase: "where is X defined / who calls X / what breaks if I
-  change X / show me only the code that affects line N / is this input tainted /
-  what's the structure of this module / find dead code / find the function that
-  does Y".
+  Token-efficient code analysis (READ, via `tldr`) AND AST-scoped editing (WRITE,
+  via `fastedit` — edit/insert/rename/move/delete/refactor a symbol without
+  repeating old code) for 31 languages (Python, TypeScript, JavaScript, Go, Rust,
+  Java, C, C++, Ruby, Kotlin, Swift, C#, Scala, PHP, Lua, Luau, Elixir, OCaml,
+  JSON, YAML, TOML, XML, HTML, CSS, Bash, LaTeX, Markdown, CSV, TSV, Log, Text).
+  Reach for it BEFORE reading whole files or editing unfamiliar code: it extracts
+  ONLY the lines that define a symbol, that it calls, or that call it — plus call
+  graphs, reverse-impact, program slices, taint/security flows, complexity
+  metrics, dead code, design patterns, and BM25 + natural-language semantic
+  search. Use when you need to understand, navigate, locate, or assess impact in
+  a codebase — where is X defined, who calls X, what breaks if I change X, what
+  affects line N, is this input tainted, what's the structure of this module,
+  find dead code, find the function that does Y.
 ---
 
 # tldr — surgical, token-efficient code analysis
@@ -37,6 +36,11 @@ it, the callers, the slice. You decide the query; `tldr` returns the signal.
 > output cheaper; `tldr` makes you ask a better question in the first place.
 
 ## When to reach for tldr (instead of Read/Grep)
+
+Trigger questions this skill answers: "where is X defined / who calls X / what
+breaks if I change X / show me only the code that affects line N / is this input
+tainted / what's the structure of this module / find dead code / find the
+function that does Y" — the table below maps each to the command that answers it:
 
 | You want to… | Don't | Do |
 |---|---|---|
