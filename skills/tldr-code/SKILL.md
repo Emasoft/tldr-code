@@ -284,7 +284,7 @@ inserted above them, which a positional index would not be. Only genuine collisi
 fall back to the `#N` suffix.
 
 Why it matters for an agent: `tldr structure spec/api_spec.rb` now returns one line
-per `it` block with its line range, so `tldr slice`, `fastedit --replace`, and a
+per `it` block with its line range, so `tldr slice`, `fastedit edit --replace`, and a
 plain ranged `Read` can all target a single test without touching the file around it.
 
 ## Global flags & output formats
@@ -339,14 +339,15 @@ Three edit modes: `--after <symbol>` = text insert after it (0 tok, instant) ·
 | File's symbols + line ranges | `fastedit read <file>` |
 | Replace a function/class body | `fastedit edit <file> --replace <symbol> --snippet '<body; #... keeps untouched lines>'` |
 | Insert code after a symbol | `fastedit edit <file> --after <symbol> --snippet '<code>'` |
-| Many edits to one file | `fastedit batch-edit <file> --edits '[{"after":"x","snippet":"…"}]'` |
+| Many edits to one file | `fastedit batch-edit <file> --edits '[{"after":"x","snippet":"…"}]'` (`-` for stdin) |
 | Edits across MANY files (one pass) | `fastedit multi-edit --file-edits '[{"file_path":"a.py","edits":[…]}]'` (`-` for stdin) |
-| Find a symbol / its references | `fastedit search <query> [path]` (`--mode search\|regex\|hybrid\|references`) |
+| Find a symbol / its references | `fastedit search <query> [path]` (`--mode search\|regex\|hybrid\|references`, `--top-k N`) |
 | Delete a symbol (caller-safe) | `fastedit delete <file> <symbol>` (refuses if cross-file callers; `--force`) |
 | Move a symbol within a file | `fastedit move <file> <symbol> --after <other>` |
 | Rename in one file (AST-verified) | `fastedit rename <file> <old> <new>` (`--dry-run`; skips strings/comments) |
 | Rename across a tree | `fastedit rename-all <dir> <old> <new>` (`--dry-run`, `--only function`) |
 | Move a symbol to another file (+rewrite importers) | `fastedit move-to-file <symbol> <src> <dst>` (`--dry-run`) |
+| New file / copy / split / join | `fastedit create <file> --content '…'` · `duplicate <src> <dst>` · `split <file> --out DIR` · `join PARTS… -o FILE` |
 | Verify / revert last edit | `fastedit diff <file>` · `fastedit undo <file>` |
 | Diagnose setup | `fastedit doctor` |
 
@@ -361,15 +362,20 @@ fastedit edit src/app.py --replace handle_request --snippet '
 '
 fastedit diff src/app.py                     # confirm  ·  fastedit undo <file> to revert
 ```
-`--replace` auto-preserves the signature; `#...` means "keep the untouched lines".
-Prefer `fastedit rename`/`rename-all` over manual find-replace (AST-verified, skips
-strings/comments). 13 languages (Python, JS, TS, Rust, Go, Java, C, C++, Ruby,
-Swift, Kotlin, C#, PHP). Backend: local MLX (Apple Silicon) / vLLM (GPU), or any
-OpenAI-compatible server via `FASTEDIT_BACKEND=llm` + `FASTEDIT_LLM_API_BASE=<url>`.
-An optional MCP server (`fastedit-mcp`, 12 tools) + an Edit→fast_edit hook
-(`fastedit-hook`) exist but are NOT enabled here: intentional-CLI use keeps the
-per-turn token cost at zero, whereas a hook that fires on every tool call injects
-text into the transcript and re-bills the cached prefix.
+`--replace` auto-preserves the signature; `#...` (C-family: `// ...`) means "keep
+the untouched lines". Prefer `fastedit rename`/`rename-all` over manual
+find-replace (AST-verified, skips strings/comments). Languages: the offline
+tree-sitter pack — 173 e2e-proven (175 classified; 26 wired by extension by
+default); unsupported extensions refuse symbol-targeted edits. Backend: local
+MLX (Apple Silicon) / vLLM (GPU), or any OpenAI-compatible server via
+`--backend vllm --api-base <url>` (env `FASTEDIT_VLLM_API_BASE` /
+`FASTEDIT_VLLM_MODEL`). Every edit is parse-checked against the original and
+per-file write-locked (a second fastedit exits 1 naming the holder); backups
+(5 per file / 24 h) bound how far `undo` steps back. An optional MCP server
+exists — `fastedit mcp-install` writes the Claude Code entry (12 `fast_*` tools;
+`--scope user|project`) — but it is NOT enabled here: intentional-CLI use keeps
+the per-turn token cost at zero, whereas an MCP/hook path that fires on every
+tool call injects text into the transcript and re-bills the cached prefix.
 
 ## Coexistence with distill
 

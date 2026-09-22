@@ -76,7 +76,8 @@ which would install it into this repo and nowhere you actually work.
 
 `tldr` reads code. [`fastedit`](https://github.com/parcadei/fastedit) edits it, by symbol name,
 so an agent never repeats old lines just to say where an edit goes. They pair naturally: `tldr
-structure` locates the symbol, `fastedit --replace <symbol>` changes it.
+structure` locates the symbol, `fastedit edit <file> --replace <symbol> --snippet '<change>'`
+changes it.
 
 ```bash
 make install-full     # tldr + fastedit + the skill

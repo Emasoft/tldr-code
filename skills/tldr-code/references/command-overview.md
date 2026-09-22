@@ -6,6 +6,7 @@ Token-efficient code analysis for LLMs. 66 commands (63 in a default build, 3 be
 > ```sh
 > curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Emasoft/tldr-code/releases/download/v0.4.1-fork.1/tldr-cli-installer.sh | sh
 > ```
+> …and installs the `tldr-code` agent skill into `~/.agents/skills` (skip with `TLDR_INSTALL_NO_SKILL=1`).
 > Windows: download `tldr-fork-v0.4.1-fork.1-x86_64-pc-windows-msvc.zip` from the [release page](https://github.com/Emasoft/tldr-code/releases/tag/v0.4.1-fork.1) and extract the three `.exe` files onto your PATH — no installer script is shipped for Windows. Build from source instead: `cargo install --path crates/tldr-cli`. Verify: `tldr --version` → `0.4.1-fork.1`.
 
 ## Why
@@ -75,7 +76,8 @@ which would install it into this repo and nowhere you actually work.
 
 `tldr` reads code. [`fastedit`](https://github.com/parcadei/fastedit) edits it, by symbol name,
 so an agent never repeats old lines just to say where an edit goes. They pair naturally: `tldr
-structure` locates the symbol, `fastedit --replace <symbol>` changes it.
+structure` locates the symbol, `fastedit edit <file> --replace <symbol> --snippet '<change>'`
+changes it.
 
 ```bash
 make install-full     # tldr + fastedit + the skill
