@@ -25,12 +25,25 @@ tldr doctor --install rust
 tldr doctor --install go
 ```
 
-**Supported languages and tools:**
-- Python: pyright, ruff, mypy
-- TypeScript: typescript-language-server, tsc
-- Go: gopls, golangci-lint
-- Rust: rustc, cargo
-- Java: checkstyle, spotbugs
+**Supported languages and tools** (type checker, linter — from `get_tool_info()` in the implementation):
+- Python: pyright, ruff
+- TypeScript: tsc
+- JavaScript: eslint (linter only)
+- Go: go, golangci-lint
+- Rust: cargo, cargo-clippy
+- Java: javac, checkstyle
+- C: gcc, cppcheck
+- C++: g++, cppcheck
+- Ruby: rubocop
+- PHP: phpstan
+- Kotlin: kotlinc, ktlint
+- Swift: swiftc, swiftlint
+- C#: dotnet (type checker only)
+- Scala: scalac (type checker only)
+- Elixir: elixir, mix
+- Lua: luacheck
+
+`--install` auto-installs for a subset of languages (python, go, rust, ruby, kotlin, swift, lua); other languages only report install instructions.
 
 ---
 
@@ -102,19 +115,34 @@ tldr fix diagnose --source src/main.ts -e "TS2339: ..." --api-surface surface.js
 
 ### fix apply
 
-Apply fix edits to source code.
+Apply fix edits to source code and write the patched result. `--source <SOURCE>` is **required**; the error text is passed via `-e/--error`, `--error-file`, or `--stdin` (same contract as `fix diagnose` — stdin carries error text, never a fixes JSON). The patched source goes to **stdout** by default; write it with `-o/--output <FILE>` or `-i/--in-place`, and preview with `-d/--diff` (unified diff instead of the full patched source).
 
 ```bash
-tldr fix apply < fix.json
+# Patched source to stdout
+tldr fix apply --source src/main.ts -e "TS2339: Property 'foo' does not exist on type 'Bar'."
+
+# Error text from a file, patched in place
+tldr fix apply --source src/main.ts --error-file build.log --in-place
+
+# Preview as a unified diff
+tldr fix apply --source src/main.ts --error-file build.log --diff
+
+# Write the patched result to a different file
+tldr fix apply --source src/main.ts --error-file build.log -o src/main.fixed.ts
+
+# Enhanced analysis with an API surface JSON (e.g. TS2339 property suggestions)
+tldr fix apply --source src/main.ts -e "TS2339: ..." --api-surface surface.json
 ```
 
 ### fix check
 
-Run test command, diagnose failures, apply fixes, re-run in a loop.
+Run test command, diagnose failures, apply fixes, and re-run in a loop. Requires `--file <FILE>` (the source file to fix) and `--test-cmd <TEST_CMD>` (the test command as a single quoted string); `--max-attempts` caps the loop (default: 5).
 
 ```bash
-tldr fix check -- cargo test
-tldr fix check -- pytest
+tldr fix check --file src/app.py --test-cmd "pytest tests/test_app.py"
+
+# Cap the fix loop at 3 attempts
+tldr fix check --file src/index.ts --test-cmd "npm test" --max-attempts 3
 ```
 
 ---

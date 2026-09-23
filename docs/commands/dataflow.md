@@ -169,18 +169,22 @@ tldr slice src/process.py process_data 25 --contiguous
 
 ## chop
 
-**Alias:** `chp`
+**Alias:** `deps-between` (legacy `chp` still works but is hidden from `--help`)
 
-**Purpose:** Compute chop slice — intersection of forward and backward slices.
+**Purpose:** Compute the dependency closure between two lines (forward slice of FROM ∩ backward slice of TO).
+
+**Implementation:** `crates/tldr-cli/src/commands/contracts/chop.rs`
 
 **How it works:**
-1. Computes backward slice from source
-2. Computes forward slice from target
-3. Returns intersection: statements that affect target AND are affected by source
+1. Computes the **forward slice** of the source line (`source_line`) — all statements the source can affect
+2. Computes the **backward slice** of the target line (`target_line`) — all statements that can affect the target
+3. Returns the intersection: statements on a dependency path from source to target
+
+**Hazard — chop is NOT a line-range extractor:** the output is not bounded by `FROM..TO` and may include lines outside that window (or nothing at all when no dependency path exists). Do not use it to extract contiguous source text — use `tldr body` (below).
 
 **Example:**
 ```bash
-# Statements from line 10 that affect line 50
+# Find all lines on the dependency path from line 10 to line 50
 tldr chop src/process.py process_data 10 50
 ```
 

@@ -151,8 +151,9 @@ tldr warm src/ -b
 tldr stats
 ```
 
-Shows:
-- Total queries run
-- Cache hit rate
-- Average query time
-- Most used commands
+Reads `~/.tldr/stats.jsonl` (written by the daemon) and aggregates it. JSON output reports:
+- `total_invocations` — total daemon-tracked invocations
+- `raw_tokens_total` / `tldr_tokens_total` / `estimated_tokens_saved` — token-savings accounting
+- `savings_percent` — estimated percent saved
+
+With no usage recorded (no stats file or no entries) it returns an empty-state payload: `"No usage recorded yet"` plus `next_steps` (start the daemon with `tldr daemon start`, run commands while it is up, re-run `tldr stats`) and `requires`. Usage tracking requires the daemon — stats are only recorded for daemon-tracked invocations.
