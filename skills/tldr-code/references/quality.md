@@ -15,6 +15,9 @@ pub struct SmellsArgs {
     pub smell_type: Option<SmellType>,
     pub suggest: bool,
     pub deep: bool,
+    pub no_default_ignore: bool,
+    pub files: Vec<PathBuf>,
+    pub include_tests: bool,
 }
 ```
 
@@ -35,6 +38,18 @@ pub struct SmellsArgs {
 - `data-class` — many fields, few methods
 - And more...
 
+**Scope flags:**
+- `--files <PATH>` — limit the scan to specific files (repeatable;
+  **exact paths only**, no glob expansion; each entry must exist and be
+  traversal-free). When set, the positional path becomes a project-root
+  anchor for output ordering only and the directory walker is bypassed.
+  Implies `--include-tests` (the caller picked the list)
+- `--include-tests` — include findings from test files. Default: test-file
+  findings are excluded (PR-review default); implicit `true` when
+  `--files` is non-empty
+- `--no-default-ignore` — walk vendored/build dirs (node_modules, target,
+  dist, ...) that would normally be skipped
+
 **Example:**
 ```bash
 tldr smells src/
@@ -50,6 +65,9 @@ tldr smells src/ --suggest
 
 # Deep analysis
 tldr smells src/ --deep
+
+# Exact-file scan (walker bypassed; tests implicitly included)
+tldr smells src/ --files src/a.py --files src/b.py
 ```
 
 ---
@@ -224,7 +242,16 @@ tldr health src/ --detail complexity
 
 # Summary only
 tldr health src/ --summary
+
+# Threshold preset + result caps
+tldr health src/ --preset strict --max-items 100
 ```
+
+**Flags:**
+- `--preset <PRESET>` — threshold preset: `strict`, `default` (default),
+  or `relaxed` (legacy code)
+- `--max-items <N>` — maximum items returned for coupling and similarity
+  analyses (default: 50)
 
 ---
 
@@ -266,6 +293,17 @@ tldr hotspots src/ --days 90 --recency-halflife 30
 - **Type 2**: Same structure, different literals
 - **Type 3**: Modified statements
 
+**Flags:**
+- `--type-filter <1|2|3|all>` — filter by clone type (default: all)
+- `--normalize <none|identifiers|literals|all>` — normalization mode
+  (default: all)
+- `--show-classes` — show clone classes (transitive grouping)
+- `--exclude-generated` — exclude generated files (`*.pb.go`,
+  `*_generated.ts`, `vendor/`, ...)
+- `--include-within-file` — include clones within the same file
+- `-o, --output <json|text|sarif>` — output format (default json); use
+  **sarif** for IDE/CI integration (GitHub, VS Code, ...)
+
 **Example:**
 ```bash
 tldr clones src/
@@ -278,6 +316,12 @@ tldr clones src/ -t 0.8
 
 # Exclude tests
 tldr clones src/ --exclude-tests
+
+# Type-2 clones only, normalized, as SARIF for CI
+tldr clones src/ --type-filter 2 --normalize all -o sarif
+
+# Transitive clone classes, including intra-file clones
+tldr clones src/ --show-classes --include-within-file --exclude-generated
 ```
 
 ---
@@ -304,7 +348,13 @@ tldr cohesion src/ --min-methods 3
 
 **Alias:** `coup`
 
-**Purpose:** Analyze coupling between modules/classes.
+**Purpose:** Analyze coupling between modules/classes via cross-module
+**call edges** (afferent/efferent, instability).
+
+**Not import-level coupling:** the analysis measures function-call
+coupling — it builds on the call graph, not on `import` statements. For
+import-level dependencies use `tldr deps` or `tldr imports` instead
+(P12.AGG12-14).
 
 **Metrics:**
 - **Afferent**: Incoming dependencies (what depends on this)

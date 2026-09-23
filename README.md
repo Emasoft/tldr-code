@@ -235,14 +235,22 @@ tldr health src/
 
 ## Daemon mode
 
-For repeated queries, the daemon caches results in memory:
+The daemon caches analysis results in memory for repeated queries:
 
 ```bash
 tldr daemon start
 tldr warm src/          # Pre-warm cache
-tldr calls src/         # Fast — cache hit
+tldr calls src/         # query may route through the daemon
 tldr daemon stop
 ```
+
+**Measured reality check:** in re-measurement on 0.4.1-fork.1 the daemon
+gave **no measurable speedup** — `tldr structure` over the same tree took
+~10 s cold and 11–13 s with the daemon running and warmed, and the
+daemon's request log showed the query never routed through it. It is an
+index-reuse optimization whose payoff depends on repo size and query
+volume: **measure before assuming it helps** rather than starting it
+reflexively. It never hurts correctness — it just may not pay off.
 
 | Command | Description |
 |---------|-------------|

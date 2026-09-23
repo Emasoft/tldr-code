@@ -91,6 +91,12 @@ pub fn run(&self, format: OutputFormat, quiet: bool) -> Result<()> {
 3. Traverses up to `--depth` levels
 4. Returns all functions that transitively call target
 
+**Non-call reference sites (impact-reference-sites-v1):** the caller list
+also includes sites that merely *reference* the function without calling
+it (address-of, storage in a struct/table, callback registration). Such a
+row is explicitly labeled `reference (not a call) at line N` — it is an
+impact-relevant site, not a proven runtime caller.
+
 **Example:**
 ```bash
 # Who calls parse_config?
@@ -114,7 +120,7 @@ tldr impact process_data src/ --type-aware
 **Implementation:** `crates/tldr-cli/src/commands/dead.rs`
 
 ```rust
-// Two analysis modes (dead.rs:111-145)
+// Two analysis modes (dead.rs:132-173)
 if self.call_graph {
     // Mode 1: Call graph based (slower, more accurate)
     dead_code_analysis(&graph, &all_functions, entry_points)
@@ -147,6 +153,10 @@ tldr dead src/ --call-graph
 
 # With custom entry points
 tldr dead src/ -e main,api_v1,WebHandler
+
+# Walk vendored/build dirs (node_modules, target, dist, ...) that are
+# normally skipped
+tldr dead src/ --no-default-ignore
 ```
 
 **Output:**
@@ -187,6 +197,9 @@ tldr hubs src/ --algorithm pagerank
 
 # Top 20
 tldr hubs src/ --top 20
+
+# Only hubs scoring above a composite-score threshold (0.0-1.0)
+tldr hubs src/ --threshold 0.6
 ```
 
 ---
@@ -213,6 +226,9 @@ tldr whatbreaks src/utils.py
 
 # Force function type
 tldr whatbreaks process_data -t function src/
+
+# Skip the slow diff-impact analysis
+tldr whatbreaks src/utils.py --quick
 ```
 
 ---
@@ -228,7 +244,23 @@ tldr whatbreaks process_data -t function src/
 2. Searches for identifier occurrences
 3. Filters by reference kind
 
+**Flags:**
+- `--include-definition` — include the definition location in the results
+- `-t, --kinds <KINDS>` — filter by reference kinds (comma-separated:
+  `call,read,write,import,type`)
+- `-s, --scope <SCOPE>` — search scope: `local`, `file`, or `workspace`
+  (default: `workspace`)
+- `-n, --limit <LIMIT>` — maximum number of results (default: **20**)
+- `--min-confidence <0.0-1.0>` — references below this confidence are
+  filtered out (default: 0.0 = keep everything)
+- `-C, --context-lines <N>` — **advertised but not implemented**: the flag
+  is accepted (default 0) and documented as "not implemented yet"; setting
+  it has no effect on the output
+
 **Example:**
 ```bash
 tldr references my_function src/ -t call,read
+
+# Bounded result set with a confidence floor
+tldr references my_function src/ -n 50 --min-confidence 0.5
 ```

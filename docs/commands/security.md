@@ -71,6 +71,21 @@ tldr taint src/process.py handle_request -v
 - `memory_safety` — Buffer overflow, use-after-free
 - And more...
 
+**Suppressed by default (opt-in flags):**
+- **JS/TS test files** — findings on JavaScript/TypeScript test files are
+  suppressed by default (paths under `test/`, `tests/`, `__tests__/`, or
+  filenames ending in `.test.{js,ts,jsx,tsx}`, `.spec.{js,ts,jsx,tsx}`, or
+  `.e2e.{js,ts}`): they exercise sink behavior on synthetic inputs and
+  pollute production-codebase scans. Pass `--include-tests` to restore
+  them.
+- **Code-smell findings** — e.g. per-`.unwrap()` Panic emissions on Rust
+  files are suppressed by default. Pass `--include-smells` to restore the
+  legacy emission set.
+- **Informational findings** — suppressed unless `--include-informational`
+  is passed.
+- `--no-default-ignore` — additionally walk vendored/build dirs
+  (node_modules, target, dist, ...) that would normally be skipped.
+
 **Example:**
 ```bash
 tldr vuln src/
@@ -80,6 +95,9 @@ tldr vuln src/ --severity high
 
 # Specific type
 tldr vuln src/ --vuln-type sql_injection
+
+# Restore test-file and smell findings
+tldr vuln src/ --include-tests --include-smells --include-informational
 ```
 
 ---
@@ -102,6 +120,17 @@ tldr vuln src/ --vuln-type sql_injection
    - `mutability` — Mutable state issues
 2. Aggregates into security score
 
+**Flags:**
+- `--quick` — quick mode (taint, resources, bounds only)
+- `--detail <SUB>` — show details for a specific sub-analysis
+- `--include-tests` — include findings from test files; mirrors
+  `tldr vuln --include-tests`. Default `false` — findings from JS/TS test
+  files (same path patterns as `vuln`) **and** Rust test files (paths
+  under `/tests/` or filenames ending in `_test.rs` / `tests.rs`) are
+  suppressed
+- `--no-default-ignore` — walk vendored/build dirs normally skipped
+- `-o, --output <FILE>` — write output to file instead of stdout
+
 **Example:**
 ```bash
 tldr secure src/
@@ -111,6 +140,9 @@ tldr secure src/ --quick
 
 # Detail specific sub-analysis
 tldr secure src/ --detail taint
+
+# Include test-file findings, write to a file
+tldr secure src/ --include-tests -o security.json
 ```
 
 ---
@@ -159,6 +191,13 @@ tldr api-check src/ --severity high
 - **R4**: Use-after-close
 - **R6**: Suggest context manager usage
 - **R7**: Detailed leak paths
+- **R9**: Generate LLM constraints (`--constraints`)
+
+**Flags:**
+- `--constraints` — generate LLM constraints (R9)
+- `--summary` — output summary statistics only
+- `--check-all` — run all checks (R2, R3, R4)
+- `--project-root <DIR>` — project root for path validation (optional)
 
 **Example:**
 ```bash
@@ -172,4 +211,8 @@ tldr resources src/database.py --show-paths
 
 # With suggestions
 tldr resources src/database.py --suggest-context
+
+# LLM constraints / summary-only output
+tldr resources src/database.py --constraints
+tldr resources src/database.py --summary
 ```

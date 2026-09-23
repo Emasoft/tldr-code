@@ -97,12 +97,20 @@ tldr contracts src/process.py process_data --limit 50
 2. Extracts test names, fixtures, assertions
 3. Generates formal spec from tests
 
+**Flags:**
+- `-t, --from-tests <PATH>` — test file or directory to scan (required)
+- `--function <FN>` — filter to specific function under test
+- `--source <DIR>` — source directory for cross-referencing (optional)
+
 **Example:**
 ```bash
 tldr specs --from-tests tests/test_process.py
 
 # Filter to specific function
 tldr specs --from-tests tests/test_process.py --function process_data
+
+# Cross-reference against the implementation tree
+tldr specs --from-tests tests/test_process.py --source src/
 ```
 
 ---
@@ -182,6 +190,36 @@ tldr temporal src/ --query connect
 
 # Minimum support
 tldr temporal src/ --min-support 5
+
+# Stricter pattern acceptance, 3-method sequences, hard time bound
+tldr temporal src/ --min-confidence 0.8 --include-trigrams --timeout 30
+```
+
+**Flags:**
+- `--min-confidence <0.0-1.0>` — minimum confidence threshold
+  (default: 0.5)
+- `--include-trigrams` — mine 3-method sequences in addition to pairs
+- `--timeout <SECONDS>` — analysis timeout (default: 60; E03 mitigation)
+- `--max-files <N>` — maximum files to analyze (default: 1000)
+- `--source-lang <LANG>` — legacy source-language hint (prefer the global
+  `--lang/-l` flag); default `python`
+
+---
+
+## order
+
+**Purpose:** Report use-before-define / TDZ hazards computed from
+definition line ranges (JavaScript, TypeScript, Python).
+
+**How it works:**
+1. Parses the file and collects definition line ranges
+2. Flags uses that occur before their definition
+3. Reports temporal-dead-zone hazards (e.g. `const`/`let`/`class` used
+   before initialization)
+
+**Example:**
+```bash
+tldr order src/main.py
 ```
 
 ---
@@ -199,7 +237,13 @@ tldr temporal src/ --min-support 5
 2. Builds API surface
 3. Infers contracts from signatures and usage
 
+**Flags:**
+- `--project-root <DIR>` — project root for path validation
+
 **Example:**
 ```bash
 tldr interface src/
+
+# Validate paths against an explicit project root
+tldr interface src/ --project-root .
 ```

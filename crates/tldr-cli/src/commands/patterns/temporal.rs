@@ -75,7 +75,7 @@ pub struct TemporalArgs {
     pub query: Option<String>,
 
     /// Source language hint (legacy; prefer the global `--lang/-l` flag).
-    /// Accepts any of the 18 TLDR languages or `auto` for autodetect.
+    /// Accepts any of the 31 TLDR languages or `auto` for autodetect.
     #[arg(long = "source-lang", default_value = "python")]
     pub source_lang: String,
 

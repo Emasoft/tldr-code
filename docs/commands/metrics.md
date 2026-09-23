@@ -15,6 +15,15 @@ Metrics commands analyze code size, complexity, coverage, and similarity.
 - `lcov` — llvm-cov, gcov
 - `coveragepy` — coverage.py JSON
 
+**Flags:**
+- `-R, --report-format <FORMAT>` — `cobertura`, `lcov`, `coveragepy`, or
+  `auto` (auto-detect from file content; default)
+- `--threshold <PCT>` — minimum coverage threshold (default: **80**)
+- `--uncovered-only` — show only files below threshold
+- `--filter <PATTERN>` — filter to files matching pattern (repeatable)
+- `--base-path <PATH>` — base path for resolving file paths (for
+  existence checking)
+
 **Example:**
 ```bash
 tldr coverage coverage.xml
@@ -27,6 +36,12 @@ tldr coverage coverage.xml --uncovered
 
 # Sort by coverage
 tldr coverage coverage.xml --sort asc
+
+# Explicit format, custom threshold, only files below it
+tldr coverage lcov.info -R lcov --threshold 90 --uncovered-only
+
+# Restrict to matching paths
+tldr coverage coverage.xml --filter 'src/api/*' --filter 'src/auth/*'
 ```
 
 ---
@@ -61,6 +76,12 @@ tldr dice src/utils.py src/helpers.py --normalize none
 **Alias:** `sim`
 
 **Purpose:** Find similar code fragments using embeddings.
+
+**Feature gate:** requires the `semantic` cargo feature
+(`cargo build --features semantic`) — it is **NOT** in the default build.
+On a default binary the subcommand is unrecognized
+(`error: unrecognized subcommand 'similar'`), as are `semantic` and
+`embed`.
 
 **Example:**
 ```bash
@@ -104,12 +125,35 @@ tldr definition --symbol process_data --file src/main.py
 - Callers (functions that call this)
 - Callees (functions this calls)
 
+**Scoping flags (use them on any real repo):**
+- `--scope <dir>` — bounds the caller/callee graph traversal **and** the
+  reference search to that directory, instead of the auto-detected
+  project root
+- `--no-callers` — skip caller discovery entirely (per-file walker,
+  project call graph, and reference scans); `callers` is emitted empty,
+  every other field unchanged
+- `--depth <N>` — bounds the caller traversal (default: 2)
+
+**Performance (measured):** unscoped `explain` resolves the caller+callee
+call graph across the ENTIRE detected project — the same function in the
+same file took **0.1 s alone in a 1-file dir vs 8.9 s inside a 395-file
+tree** (~90× jump from repo size alone), and a 3-line function took
+**~300 s** on a mid-size TypeScript repo. Scoped (`--scope`) or with
+`--no-callers`, it is bounded / sub-second. `--project`, `--workspace`,
+and `--no-workspace` are rejected for `explain` — the flag is `--scope`.
+
 **Example:**
 ```bash
 tldr explain src/process.py process_data
 
 # Deeper call graph
 tldr explain src/process.py process_data --depth 5
+
+# Bounded traversal + reference search (the default posture on big repos)
+tldr explain src/process.py process_data --scope src/
+
+# Skip caller discovery entirely (sub-second)
+tldr explain src/process.py process_data --no-callers
 ```
 
 ---

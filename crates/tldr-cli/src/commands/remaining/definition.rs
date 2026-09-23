@@ -361,7 +361,7 @@ pub fn find_definition_by_name(
     }
 
     // Detect language. Returns UnsupportedLanguage for genuinely unknown
-    // extensions; the supported set covers all 18 TLDR languages (VAL-015).
+    // extensions; the supported set covers all 31 TLDR languages (VAL-015).
     let language = detect_language(file, lang_hint)?;
 
     // Python builtins still surface as a builtin definition with no
@@ -434,7 +434,7 @@ pub fn find_definition_by_position(
         return Err(RemainingError::file_not_found(file));
     }
 
-    // Detect language. Supports all 18 TLDR languages (VAL-015).
+    // Detect language. Supports all 31 TLDR languages (VAL-015).
     let language = detect_language(file, lang_hint)?;
 
     // Read and parse file
@@ -4062,7 +4062,7 @@ pub fn is_builtin(name: &str, language: &Language) -> bool {
 
 /// Detect language from a file extension or an explicit hint.
 ///
-/// Supports all 18 TLDR languages (VAL-015). The hint is the lower-case
+/// Supports all 31 TLDR languages (VAL-015). The hint is the lower-case
 /// language name (`"python"`, `"typescript"`, ..., `"ocaml"`); a hint of
 /// `"auto"` falls through to extension-based detection via
 /// [`Language::from_path`].

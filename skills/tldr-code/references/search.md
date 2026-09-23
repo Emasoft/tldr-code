@@ -25,6 +25,13 @@ pub struct SmartSearchArgs {
 3. **Call graph**: Adds callers/callees to result cards
 4. **Hybrid mode**: Combine BM25 + regex filtering
 
+**Flag-like queries:** the `<QUERY>` positional uses `allow_hyphen_values`,
+so a hyphen-prefixed query is taken verbatim — `tldr search '--port' src/`
+searches for the literal string `--port` instead of being rejected as an
+unknown flag (issue #13). Registered flags (`-f`, `-k`, `-l`, `--regex`,
+...) are still parsed as flags, not values, and the explicit escape form
+`tldr search -f json -- '--port' src/` keeps working.
+
 **Example:**
 ```bash
 tldr search "parse config" src/
@@ -40,6 +47,9 @@ tldr search "get.*user" src/ --regex
 
 # Hybrid: BM25 ranking with regex filtering
 tldr search "handler" src/ --hybrid ".*_handler"
+
+# Flag-like query taken verbatim
+tldr search '--port' src/
 ```
 
 **Output:**
@@ -66,6 +76,12 @@ tldr search "handler" src/ --hybrid ".*_handler"
 **Alias:** `sem`
 
 **Purpose:** Semantic code search using natural language.
+
+**Feature gate:** requires the `semantic` cargo feature
+(`cargo build --features semantic`) — it is **NOT** in the default build.
+On a default binary the subcommand is unrecognized
+(`error: unrecognized subcommand 'semantic'`), as are `similar` and
+`embed`.
 
 **Implementation:** `crates/tldr-cli/src/commands/semantic.rs`
 
@@ -108,6 +124,12 @@ tldr semantic "caching" src/ -m arctic-l
 **Alias:** `sim`
 
 **Purpose:** Find similar code fragments to a given file/function.
+
+**Feature gate:** requires the `semantic` cargo feature
+(`cargo build --features semantic`) — it is **NOT** in the default build.
+On a default binary the subcommand is unrecognized
+(`error: unrecognized subcommand 'similar'`), as are `semantic` and
+`embed`.
 
 **Implementation:** `crates/tldr-cli/src/commands/similar.rs`
 
@@ -156,6 +178,11 @@ pub struct ContextArgs {
    - Local context (variables, helpers)
    - Called functions (up to depth N)
 3. Formats for LLM consumption (token-efficient)
+
+**Project root:** prefer the positional `<PATH>` argument (mirrors sibling
+path-taking commands like `impact`, `whatbreaks`). `-p/--project` is a
+**deprecated** back-compat alias; when both are given the positional takes
+precedence.
 
 **Example:**
 ```bash

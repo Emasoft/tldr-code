@@ -91,6 +91,14 @@ tldr structure src/ -m 50
 tldr structure src/ -f text
 ```
 
+**Markup depth filter:** `--max-depth N` keeps only markup element
+definitions at nesting depth ≤ N (root-level elements are depth 0).
+Markup-node-tree only (markup-node-tree-v1): it applies to formats that
+carry element depths — XML/SVG/HTML/XHTML and OOXML parts. Definitions
+without depth semantics (code symbols, inner-CSS/inner-JS rows,
+json/yaml/toml keys, log/text/csv/sql rows) are never filtered. Unset =
+no filtering (the full flat element list, JSON-complete).
+
 **Output structure:**
 ```json
 {
@@ -163,6 +171,12 @@ pub fn get_imports(file_path: &Path, language: Language) -> TldrResult<Vec<Impor
 2. Categorizes as standard library, third-party, or local
 3. Returns source location for each import
 
+**Output shape:** by default a canonical envelope object
+`{file, language, imports}`. `--legacy-array` emits the legacy bare-array
+JSON shape (`[ImportInfo, ...]`) instead, for backward compatibility with
+consumers that hard-coded `jq '.[]'` over the top level. New code should
+consume the envelope shape.
+
 **Example:**
 ```bash
 tldr imports src/main.py
@@ -202,10 +216,54 @@ tldr imports src/main.py
 1. Scans all files for imports matching target module
 2. Returns list of importing files
 
+**Result cap:** `-m/--limit <LIMIT>` — maximum number of importing files
+to show (default **50**, `0` = unlimited).
+
 **Example:**
 ```bash
 tldr importers os src/
 tldr importers mymodule src/
+
+# Show all importers, not just the first 50
+tldr importers mymodule src/ -m 0
+```
+
+---
+
+## logs
+
+**Purpose:** Filter and list log entries from a log file.
+
+**Implementation:** native, streaming log-entry scanner (`ast::logs`) —
+`.log` files never parse through tree-sitter (no grammar exists); entries
+are heuristically delimited by timestamps / level tokens.
+
+**How it works:**
+1. Streams the file through the native log-entry scanner
+2. Prints the entries matching **all** supplied filters
+3. Entries whose timestamp is missing or year-less are excluded and
+   counted as unfilterable
+
+**Filters:**
+- `--from <TS>` — inclusive lower bound on the entry timestamp
+  (e.g. `2026-09-14`, `2026-09-14T08:00:00Z`, `2026-09-14 08:00:00`)
+- `--to <TS>` — inclusive upper bound (same forms as `--from`)
+- `--level <LEVEL>` — exact normalized level, case-insensitive
+  (fatal/critical/emerg/alert/panic → error-family; warn/warning → warn;
+  info/notice/information → info; debug/trace/fine/finer/finest → debug)
+- `--grep <PAT>` — case-sensitive substring filter on the entry's raw
+  source text
+
+**Example:**
+```bash
+# All entries
+tldr logs app.log
+
+# Time window + level
+tldr logs app.log --from 2026-09-14 --to 2026-09-15 --level error
+
+# Substring filter
+tldr logs app.log --grep "connection refused"
 ```
 
 ---
