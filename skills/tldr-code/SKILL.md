@@ -95,9 +95,11 @@ tldr structure page.html --max-depth 2    # markup node TREE, narrowed to the to
 tldr context handle_request src/          # LLM-ready context graph from an entry point
 tldr calls src/                           # cross-file call graph
 
-# FIND code by meaning (semantic feature — installed):
-tldr semantic 'where do we validate the JWT signature' src/
+# FIND code without an exact name — `tldr search` works in every build:
 tldr search 'retry.*backoff' src/         # BM25 + structure + call-graph context cards
+# (`tldr semantic` — natural-language search — requires the `semantic` build
+#  feature, which the default build does NOT include; see the * footnote in the
+#  command catalog before trying it)
 
 # SECURITY / CORRECTNESS sweeps:
 tldr taint src/auth.py authenticate       # injection/XSS taint flows (FILE + FUNCTION, not a dir)

@@ -188,8 +188,11 @@ The `tldr-mcp` binary itself has no configuration surface: it parses no CLI
 arguments and reads no environment variables. All inputs — project root, file
 paths, language — are arguments on each tool call.
 
-The only `TLDR_*` environment variable in the codebase is `TLDR_LOG`, and it is
-consumed by `tldr-daemon`, not by the MCP server:
+Other `TLDR_*` variables do exist in the codebase, but the `tldr-mcp` binary
+reads none of them: they belong to `tldr-daemon` and `tldr-cli` (daemon socket
+and registry directories, the bugbot daemon client, the semantic embedding
+cache, quiet mode) — `docs/commands/daemon.md` documents `TLDR_SOCKET_DIR`.
+The daemon's log level, for instance, comes from:
 
 | Variable | Consumed by | Where | Default |
 |----------|-------------|-------|---------|

@@ -186,7 +186,7 @@ lever this workflow has against the refutation tax.
 ## 9. Cost
 
 Roughly **198K tokens per landed fix**, measured — 36.85M tokens for 186 fixes
-across 142 batches, 77 minutes, 296 agents. A ~2800-line pilot batch cost 158K
+across 142 batches, 77 minutes, 297 agents. A ~2800-line pilot batch cost 158K
 tokens and 171 s. Full numbers, and an explicit list of what is still
 unmeasured (per-wave gate time, the hardened prompt's yield, the revert rate
 under the evidence gate, fastedit as the write path), are in
